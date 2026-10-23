@@ -1,0 +1,47 @@
+# Go 构建产物
+asset-server
+scope-agent
+asset-server-linux
+scope-agent-linux
+scope-agent-linux-arm64
+scope-agent-windows.exe
+*.exe
+
+# 前端
+web/node_modules/
+web/dist/
+
+# 运行时数据（不要提交到 git）
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+/tmp/
+
+# 编辑器/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 环境变量（含密码）
+.env
+.env.local
+
+# 第三方二进制
+third_party/tscanplus.tar.gz
+third_party/TscanPlus-main/
+third_party/tscanclient_win/
+
+# Go
+vendor/

@@ -1,0 +1,21 @@
+# ---------- 后端构建 ----------
+FROM golang:1.26-alpine AS go-builder
+ENV GOPROXY=https://goproxy.cn,direct
+ENV CGO_ENABLED=0
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/scope-agent ./cmd/agent
+
+# ---------- 运行时 ----------
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
+ENV TZ=Asia/Shanghai
+WORKDIR /app
+
+COPY --from=go-builder /out/scope-agent /app/scope-agent
+COPY third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscanclient/TscanClient
+RUN chmod +x /app/tscanclient/TscanClient
+
+CMD ["/app/scope-agent", "-server", "http://server:8080", "-name", "node-docker", "-tscan", "/app/tscanclient/TscanClient"]

@@ -1,0 +1,14 @@
+# 依赖与构建产物
+web/node_modules
+web/dist
+data
+
+# 第三方大文件（保留 tscanclient_linux / tscanclient_win 供分发下载）
+third_party/TscanPlus-main
+third_party/*.tar.gz
+third_party/*.zip
+
+# 其他
+.git
+.workbuddy
+*.log
