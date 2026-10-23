@@ -1,4 +1,8 @@
-# 未见系统
+<div align="center">
+  <img src="assets/logo.png" alt="未见系统" width="200" />
+  <h1>未见系统</h1>
+  <p><em>见你未见 · 照你所患</em></p>
+</div>
 
 企业内网资产发现、合规检测与处置管理平台。
 
