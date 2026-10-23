@@ -1,0 +1,2 @@
+-- 服务端监听端口（默认 18888）
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS port INTEGER DEFAULT 18888;

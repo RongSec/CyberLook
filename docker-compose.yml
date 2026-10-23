@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: asset-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: asset
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-asset123}
+      POSTGRES_DB: asset_platform
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asset -d asset_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: asset-redis
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asset-server
+    restart: always
+    ports:
+      - "18888:18888"
+    environment:
+      SERVER_PORT: "18888"
+      PG_DSN: postgres://asset:${POSTGRES_PASSWORD:-asset123}@postgres:5432/asset_platform?sslmode=disable
+      REDIS_ADDR: redis:6379
+      TSCANCLIENT_PATH: /app/third_party/tscanclient_linux/TscanClient
+      # JWT_SECRET 不要写死在这里：首次启动会自动生成 32 字节随机密钥并保存到
+      # /app/data/jwt.secret（已挂载到宿主机 ./data/files，重启不丢）。
+      # 如需外部注入，改用 env_file 提供强随机值，不要用可猜测的字符串。
+      # JWT_SECRET: <通过 env_file 注入>
+    volumes:
+      - ./data/files:/app/data
+      - ./data/backup:/app/backup
+      - tscan-config:/app/third_party/tscanclient_linux/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 扫描节点：默认走内部网络。若要扫描宿主机所在内网，放开 network_mode: host 并改 -server 为 http://127.0.0.1:8080
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: asset-agent
+    restart: always
+    # network_mode: host
+    command: ["/app/scope-agent", "-server", "http://server:18888", "-name", "node-docker-1", "-tscan", "/app/tscanclient/TscanClient"]
+    volumes:
+      - agent-tscan-config:/app/tscanclient/config
+    depends_on:
+      - server
+
+volumes:
+  pg-data:
+  redis-data:
+  tscan-config:
+  agent-tscan-config:
