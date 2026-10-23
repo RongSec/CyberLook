@@ -106,7 +106,7 @@ func InstallPs1(c *gin.Context) {
 		return
 	}
 	server := serverBase(c)
-	script := fmt.Sprintf(`# 洞若观火 - Windows 节点一键加入
+	script := fmt.Sprintf(`# 未见 - Windows 节点一键加入
 $ErrorActionPreference = "Stop"
 $Server = "%s"
 $Token = "%s"
