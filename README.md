@@ -1,4 +1,4 @@
-# 内网资产巡检平台
+# 未见系统
 
 企业内网资产发现、合规检测与处置管理平台。
 
@@ -46,18 +46,30 @@ npm install
 npm run build
 ```
 
-### 3. 启动
+### 3. 一键部署
 
+**Linux / macOS**：
 ```bash
 cd asset-platform
-docker compose up -d
+bash init.sh
 ```
+
+**Windows (PowerShell)**：
+```powershell
+cd asset-platform
+.\init.ps1
+```
+
+**脚本自动完成**：
+1. 生成 `.env`（**随机数据库密码**，用户无需关心）
+2. 编译前端（`web/dist`）
+3. 启动 Docker 服务
 
 **默认端口**：`18888`（可在系统配置页修改）
 
 **访问**：`http://localhost:18888`
 
-**默认账号**：`admin` / 首次登录后请修改密码
+**默认账号**：`admin` / **默认密码**：`admin123`（首次登录后请修改）
 
 ### 4. 加入扫描节点
 
@@ -228,4 +240,14 @@ docker compose restart server        # 不要用 up -d
 
 ## 许可证
 
-内部使用，未开源。
+MIT License — 详见 [LICENSE](LICENSE)
+
+**开源说明**：
+- ✅ 可自由使用、修改、商用
+- ✅ 需保留版权声明
+- ✅ 无任何担保
+
+**使用前请遵守**：
+- 不得用于非法用途
+- 扫描目标需获得授权
+- 遵守当地法律法规
