@@ -1,6 +1,7 @@
 package config
 
 import (
+	"time"
 	"asset-platform/internal/version"
 	"log"
 
@@ -32,6 +33,13 @@ func InitDB(dsn string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// 连接池配置（防止 database is closed）
+	sqlDB, err := DB.DB()
+	if err == nil {
+		sqlDB.SetMaxIdleConns(10)
+		sqlDB.SetMaxOpenConns(100)
+		sqlDB.SetConnMaxLifetime(time.Hour)
 	}
 	log.Printf("[db] PostgreSQL 连接成功")
 	return nil
