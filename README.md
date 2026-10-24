@@ -1,22 +1,26 @@
 <div align="center">
-  <img src="assets/logo.png" alt="未见系统" width="200" />
-  <h1>未见系统</h1>
+  <img src="assets/logo.png" alt="未见" width="200" />
+  <h1>未见</h1>
   <p><em>见你未见 · 照你所患</em></p>
 </div>
 
-企业内网资产发现、合规检测与处置管理平台。
+企业内网资产发现、合规检测与处置管理平台。致力于用事实发现和动态维护内网资产。
+
+## 特别鸣谢
+- https://github.com/TideSec/TscanPlus
+- 本系统核心扫描能力均依赖于内嵌的tscanclient,日后也会对tscanclient的更新在第一时间做主动适配。
 
 ## 功能特性
 
-- **资产发现**：基于 TscanClient 的端口扫描、Web 指纹识别、响应长度分析
-- **分布式扫描**：多节点（支持 Windows/Linux/ARM64）批量调度，按 IP 分片，完成即领下一批
-- **资产处置**：新出现 / 新变更 / 台账导入，按 IP 自动去重合并
-- **SimHash 内容变更检测**：基于页面内容指纹判断资产是否改版（与台账标题无关）
-- **合规检测**：端口 + 指纹双重判定，支持服务名识别
+- **资产发现**：基于 TscanClient 的端口扫描、Web 指纹识别
+- **分布式扫描**：多节点（支持 Windows/Linux）批量调度，可对节点单独设置参数，灵活分片，敏捷调度
+- **资产处置**：按分类处置资产（新出现 / 新变更 / 台账导入）
+- **SimHash 内容变更检测**：基于页面内容指纹判断资产是否改版，避免重复劳动
+- **合规检测**：记录在扫描中发现的可直连数据库等违规操作，可自定义规则
 - **页面快照**：Web 资产截图留存
-- **定时任务**：支持 cron 表达式，自动分发到节点
+- **定时任务**：支持对扫描任务定时执行，可自动分发到节点
 - **通知**：企业微信 / 钉钉 / 飞书 / 通用 Webhook / 邮件
-- **系统在线升级**：从 GitHub Release 拉取更新，支持代理与回滚
+- **系统在线升级**：从 GitHub 拉取更新，支持代理与回滚
 
 ## 技术栈
 
@@ -145,7 +149,6 @@ asset-platform/
 | 升级备份 | `./data/backup` | 系统升级前的二进制 |
 | TscanClient 配置 | `tscan-config` | 扫描结果缓存 |
 
-**更新后数据不丢失**（卷持久化）。
 
 ## 常用操作
 
@@ -184,29 +187,6 @@ asset-platform/
 /api/nodes/agent-binary?os=linux&arch=amd64&token=<TOKEN>
 /api/nodes/tscan-binary?os=linux&arch=arm64&token=<TOKEN>
 ```
-
-## Git 工作流
-
-```bash
-# 首次克隆
-git clone https://github.com/<用户名>/<仓库>.git
-cd asset-platform
-
-# 日常开发
-git pull                      # 拉最新
-# ... 修改代码 ...
-git add .                     # 暂存改动
-git commit -m "fix: 修复xxx"  # 提交
-git push                      # 推送
-```
-
-**提交信息规范**：
-- `feat:` 新功能
-- `fix:` 修复
-- `refactor:` 重构
-- `security:` 安全
-- `docs:` 文档
-
 ## 端口说明
 
 | 端口 | 用途 |
@@ -246,10 +226,6 @@ docker compose restart server        # 不要用 up -d
 
 MIT License — 详见 [LICENSE](LICENSE)
 
-**开源说明**：
-- ✅ 可自由使用、修改、商用
-- ✅ 需保留版权声明
-- ✅ 无任何担保
 
 **使用前请遵守**：
 - 不得用于非法用途
