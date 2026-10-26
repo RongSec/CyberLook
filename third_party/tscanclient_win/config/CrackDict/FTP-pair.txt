@@ -1,0 +1,9 @@
+anonymous:anonymous
+ftp:ftp
+admin:admin
+admin:123456
+root:root
+root:123456
+www:www
+test:test
+guest:guest

@@ -1,0 +1,6 @@
+svn:svn
+admin:admin
+admin:123456
+guest:guest
+test:test
+web:web

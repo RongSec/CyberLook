@@ -1,0 +1,5 @@
+admin:admin
+admin:123456
+test:test
+guest:guest
+zookeeper:zookeeper

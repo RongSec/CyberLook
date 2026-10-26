@@ -1,0 +1,428 @@
+# 主动指纹匹配路径配置
+# 用于端口扫描和web指纹探测时对 HTTP/HTTPS 服务进行主动指纹匹配
+# 格式说明：
+#   paths: 要探测的路径列表
+#   matchers: 匹配规则
+#     - status: 期望的状态码列表
+#     - body_contains: 响应体必须包含的关键词（任意一个匹配即可）
+#     - body_not_contains: 响应体不能包含的关键词（用于排除误报）
+#     - content_type: Content-Type 必须包含的关键词
+#     - header_contains: 响应头必须包含的关键词
+
+Alibaba-Nacos:
+  paths:
+    - "/nacos/"
+    - "/nacos/v1/cs/configs"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "nacos"
+      - "console-ui"
+      - "nacosserver"
+
+Alibaba-Druid:
+  paths:
+    - "/druid/index.html"
+    - "/druid/login.html"
+  matchers:
+    status: [200]
+    body_contains:
+      - "druid"
+      - "Druid Stat Index"
+      - "DruidStatService"
+
+泛微-协同办公OA:
+  paths:
+    - "/wui/index.html"
+    - "/wui/theme/ecology8/page/login.jsp"
+  matchers:
+    status: [200]
+    body_contains:
+      - "ecology"
+      - "泛微"
+      - "e-cology"
+      - "wui/common"
+
+SpringBoot-Actuator:
+  paths:
+    - "/actuator"
+    - "/actuator/env"
+    - "/actuator/health"
+    - "/actuator/info"
+  matchers:
+    status: [200]
+    body_contains:
+      - "activeProfiles"
+      - "applicationConfig"
+      - "contextPath"
+      - "_links"
+    content_type:
+      - "application/json"
+      - "application/vnd.spring-boot.actuator"
+
+SpringBoot-Error:
+  paths:
+    - "/error"
+  matchers:
+    status: [200, 500]
+    body_contains:
+      - "Whitelabel Error Page"
+      - "This application has no explicit mapping"
+
+Swagger-API:
+  paths:
+    - "/swagger-ui.html"
+    - "/swagger-ui/"
+    - "/swagger-resources"
+    - "/v2/api-docs"
+    - "/v3/api-docs"
+  matchers:
+    status: [200]
+    body_contains:
+      - "swagger"
+      - "api-docs"
+      - "SwaggerUIBundle"
+      - "openapi"
+
+帆软-FineReport:
+  paths:
+    - "/WebReport/ReportServer"
+    - "/ReportServer"
+    - "/webroot/decision/login"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "FineReport"
+      - "finereport"
+      - "帆软"
+      - "decision"
+
+XXL-JOB:
+  paths:
+    - "/xxl-job-admin/toLogin"
+    - "/xxl-job/toLogin"
+  matchers:
+    status: [200]
+    body_contains:
+      - "xxl-job"
+      - "XXL-JOB"
+      - "任务调度"
+
+GeoServer:
+  paths:
+    - "/geoserver/web/"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "GeoServer"
+      - "geoserver"
+
+百度-UEditor:
+  paths:
+    - "/ueditor/ueditor.all.js"
+    - "/js/ueditor/ueditor.all.js"
+  matchers:
+    status: [200]
+    body_contains:
+      - "UEditor"
+      - "ueditor"
+      - "baidu"
+
+易软天创-禅道系统:
+  paths:
+    - "/zentao/"
+    - "/zentao/user-login.html"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "zentao"
+      - "禅道"
+      - "ZenTao"
+
+phpMyAdmin:
+  paths:
+    - "/phpmyadmin/"
+    - "/pma/"
+    - "/phpMyAdmin/"
+  matchers:
+    status: [200]
+    body_contains:
+      - "phpMyAdmin"
+      - "phpmyadmin"
+
+ArcGIS:
+  paths:
+    - "/arcgis/"
+    - "/arcgis/rest/services"
+  matchers:
+    status: [200]
+    body_contains:
+      - "ArcGIS"
+      - "arcgis"
+      - "Esri"
+
+SMARTBI:
+  paths:
+    - "/smartbi/vision/index.jsp"
+  matchers:
+    status: [200]
+    body_contains:
+      - "smartbi"
+      - "Smartbi"
+
+HARBOR:
+  paths:
+    - "/harbor/"
+    - "/api/v2.0/systeminfo"
+  matchers:
+    status: [200]
+    body_contains:
+      - "harbor"
+      - "Harbor"
+
+MINIO:
+  paths:
+    - "/minio/"
+    - "/minio/health/live"
+  matchers:
+    status: [200]
+    body_contains:
+      - "minio"
+      - "MinIO"
+
+Tomcat-Manager:
+  paths:
+    - "/manager/html"
+    - "/manager/status"
+  matchers:
+    status: [200, 401, 403]
+    body_contains:
+      - "Tomcat"
+      - "Apache"
+      - "Manager"
+
+Jenkins:
+  paths:
+    - "/jenkins/login"
+    - "/login"
+  matchers:
+    status: [200]
+    body_contains:
+      - "Jenkins"
+      - "jenkins"
+    header_contains:
+      - "X-Jenkins"
+
+Zabbix:
+  paths:
+    - "/zabbix/"
+    - "/zabbix/index.php"
+  matchers:
+    status: [200]
+    body_contains:
+      - "Zabbix"
+      - "zabbix"
+
+Apereo-CAS:
+  paths:
+    - "/cas/login"
+  matchers:
+    status: [200]
+    body_contains:
+      - "CAS"
+      - "Central Authentication Service"
+      - "apereo"
+
+Weblogic:
+  paths:
+    - "/console/"
+    - "/console/login/LoginForm.jsp"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "WebLogic"
+      - "weblogic"
+      - "Oracle"
+
+万户OA:
+  paths:
+    - "/defaultroot/officeserverservlet"
+  matchers:
+    status: [200]
+    body_contains:
+      - "万户"
+      - "wanhu"
+      - "ezOFFICE"
+
+致远OA:
+  paths:
+    - "/seeyon/"
+    - "/seeyon/main.do"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "seeyon"
+      - "致远"
+      - "Seeyon"
+
+用友NC:
+  paths:
+    - "/nc/servlet/"
+    - "/nccloud/"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "用友"
+      - "yonyou"
+      - "UFIDA"
+
+蓝凌OA:
+  paths:
+    - "/km/login/login.jsp"
+    - "/sys/ui/km-portal.jsp"
+  matchers:
+    status: [200]
+    body_contains:
+      - "蓝凌"
+      - "landray"
+      - "Landray"
+
+Grafana:
+  paths:
+    - "/grafana/"
+    - "/api/health"
+  matchers:
+    status: [200]
+    body_contains:
+      - "grafana"
+      - "Grafana"
+
+Kibana:
+  paths:
+    - "/app/kibana"
+    - "/api/status"
+  matchers:
+    status: [200]
+    body_contains:
+      - "kibana"
+      - "Kibana"
+      - "elastic"
+
+Elasticsearch:
+  paths:
+    - "/"
+    - "/_cat/indices"
+  matchers:
+    status: [200]
+    body_contains:
+      - "cluster_name"
+      - "elasticsearch"
+      - "lucene_version"
+
+Redis-Commander:
+  paths:
+    - "/redis-commander/"
+  matchers:
+    status: [200]
+    body_contains:
+      - "redis"
+      - "Redis Commander"
+
+RabbitMQ:
+  paths:
+    - "/rabbitmq/"
+    - "/api/overview"
+  matchers:
+    status: [200]
+    body_contains:
+      - "rabbitmq"
+      - "RabbitMQ"
+
+Solr:
+  paths:
+    - "/solr/"
+    - "/solr/admin/"
+  matchers:
+    status: [200]
+    body_contains:
+      - "Solr"
+      - "solr"
+      - "Apache"
+
+Confluence:
+  paths:
+    - "/confluence/"
+    - "/login.action"
+  matchers:
+    status: [200]
+    body_contains:
+      - "Confluence"
+      - "confluence"
+      - "Atlassian"
+
+JIRA:
+  paths:
+    - "/jira/"
+    - "/secure/Dashboard.jspa"
+  matchers:
+    status: [200]
+    body_contains:
+      - "JIRA"
+      - "jira"
+      - "Atlassian"
+
+GitLab:
+  paths:
+    - "/users/sign_in"
+    - "/explore"
+  matchers:
+    status: [200]
+    body_contains:
+      - "GitLab"
+      - "gitlab"
+
+Jupyter:
+  paths:
+    - "/jupyter/"
+    - "/lab"
+  matchers:
+    status: [200]
+    body_contains:
+      - "jupyter"
+      - "Jupyter"
+
+PHPInfo:
+  paths:
+    - "/phpinfo.php"
+    - "/info.php"
+  matchers:
+    status: [200]
+    body_contains:
+      - "PHP Version"
+      - "phpinfo"
+      - "Configuration"
+
+Adminer:
+  paths:
+    - "/adminer.php"
+    - "/adminer/"
+  matchers:
+    status: [200]
+    body_contains:
+      - "Adminer"
+      - "adminer"
+
+Jeecg-Boot:
+  paths:
+    - "/jeecg-boot/"
+    - "/jeecg-boot/swagger-resources"
+    - "/jeecg-boot/doc.html"
+  matchers:
+    status: [200, 302]
+    body_contains:
+      - "jeecg-boot"
+      - "JeecgBoot"
+      - "Jeecg-Boot"
+      - "企业级低代码平台"
+      - "jmreport"
+      - "Swagger-Bootstrap-UI"

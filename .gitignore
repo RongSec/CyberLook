@@ -6,6 +6,9 @@ scope-agent-linux
 scope-agent-linux-arm64
 scope-agent-windows.exe
 *.exe
+# 例外：第三方扫描引擎需要随仓库分发
+!third_party/**/*.exe
+!third_party/**
 
 # 前端
 web/node_modules/
@@ -41,7 +44,6 @@ Thumbs.db
 # 第三方二进制
 third_party/tscanplus.tar.gz
 third_party/TscanPlus-main/
-third_party/tscanclient_win/
 
 # Go
 vendor/
@@ -59,3 +61,4 @@ jwt.secret
 
 # 断点文件
 data/pipeline/
+third_party/tscanclient_win/config/CheckKB-CVEs.csv

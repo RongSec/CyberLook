@@ -1,0 +1,6 @@
+admin:admin
+admin:123456
+test:test
+guest:guest
+proxy:proxy
+user:user

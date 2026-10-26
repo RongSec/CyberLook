@@ -1,0 +1,8 @@
+tomcat:tomcat
+admin:admin
+admin:123456
+manager:manager
+tomcat:admin
+role1:role1
+both:tomcat
+admin:password

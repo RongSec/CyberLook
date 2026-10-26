@@ -1,0 +1,6 @@
+admin:admin
+jboss:jboss
+admin:123456
+root:root
+admin:password
+jboss:admin

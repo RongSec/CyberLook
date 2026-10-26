@@ -1,0 +1,6 @@
+postmaster:postmaster
+admin:admin
+admin:123456
+root:root
+mail:mail
+user:user

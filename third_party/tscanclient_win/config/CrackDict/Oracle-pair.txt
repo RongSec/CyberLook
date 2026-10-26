@@ -1,0 +1,8 @@
+system:oracle
+system:manager
+sys:oracle
+sys:change_on_install
+system:system
+scott:tiger
+admin:admin
+orcl:orcl

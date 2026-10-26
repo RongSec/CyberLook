@@ -1,0 +1,9 @@
+root:root
+root:123456
+root:mysql
+root:
+root:password
+root:root123
+mysql:mysql
+test:test
+admin:admin

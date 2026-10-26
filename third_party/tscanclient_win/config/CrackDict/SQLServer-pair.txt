@@ -1,0 +1,8 @@
+sa:sa
+sa:123456
+sa:
+sa:sa123
+sa:Password1
+sa:sqlserver
+sql:sql
+admin:admin

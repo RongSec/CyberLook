@@ -1,0 +1,242 @@
+CurrentVersion: 3.4.3
+NewVersion: 3.5.4
+PocVersion: 1.4.6
+PocNewVersion: 1.4.6
+Poc2Version: 2.1.5
+Poc2NewVersion: 2.1.7
+AgreePolicy: true
+CheckUpdate: 2026.10.18
+CheckUpdateSN: 0B3511217600A07E0041C804E00006A00600800000000000002A17A000000000
+LicenseKey: 32AFCC90B828537154084A4ACF01AB195516AF851BA163B538194B687377DC29303D642BE954555FDA61B6960242F4A2087BE876C4D8A854A9952C97D4140EFA
+InterFace: ""
+CfgUiMode: light
+CfgLanguage: zh
+CfgSlogan: true
+CfgTags: '[{"name":"已检测","color":"#18a058"},{"name":"待检测","color":"#f0a020"},{"name":"高危","color":"#d03050"},{"name":"中低危","color":"#2080f0"},{"name":"误报","color":"#02bdd4"},{"name":"清除","color":"#B1B2B2"}]'
+CfgPath: D:\workbuddy\2026-10-16-13-27-12\asset-platform\third_party\tscanclient_win\config
+CfgOutPath: D:\secapp\tool\TscanPlus_Win_Amd64
+MenuConfig: ""
+Cfgtimeout: "3000"
+CfgWebTimeout: "10000"
+CfgCookie: ""
+CfgBodyMaxSize: "1024"
+SelectedCfgUA: Cfgrandua
+Cfguatxt: Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko)
+  Chrome/80.0.3987.87 Safari/537.36 SE 2.X MetaSr 1.0
+CfgBody: ""
+CfgGlobalProxy: false
+CfgProxy: ""
+CfgProxyAddrs: socks5://127.0.0.1:51024
+CfgOpenFile: true
+Enginekeys:
+  fofa: ""
+  hunter: ""
+  quake: ""
+  zoomeyeapi: ""
+  zerozone: ""
+  shodan: ""
+  threatbook: ""
+  daydaymap: ""
+  virustotal: ""
+  github: ""
+  censys: ""
+  binaryedge: ""
+  chaos: ""
+  passivetotal: ""
+  bevigil: ""
+  certspotter: ""
+  securitytrails: ""
+  intelx: ""
+  EnginePages: "5"
+  EnginePerPage: "100"
+  EngineDelay: "1"
+  EngineTimeout: "30"
+  EngineProxy: false
+  FofaFull: false
+Engines:
+  fofa: false
+  hunter: false
+  quake: false
+  zoomeyeapi: false
+  zerozone: false
+  shodan: false
+  threatbook: false
+  daydaymap: false
+  virustotal: false
+  github: false
+  censys: false
+  binaryedge: false
+  chaos: false
+  passivetotal: false
+  bevigil: false
+  certspotter: false
+  securitytrails: false
+CyberHistory: ""
+AliveCheck: None
+IpThreadStr: "600"
+IpSelectedStrategy: all
+IpStrategyPorts: 1-65535
+IpCustomPort: 21,22,23,53,80,81,82,83,85,88,135,139,443,445,888,1433,1521,3306,3389,3443,4430,4433,4443,4899,5432,5443,5900,5985,6379,7001,8000,8001,8002,8003,8008,8009,8010,8080,8081,8082,8083,8086,8088,8089,8090,8443,8888,9000,9043,9100,9200,9443,9999,10443,11211,27017
+IpFinger: true
+IpPwdCheck: false
+IpPocCheck: false
+IpFingerOpt: ""
+IpTimeoutStr: "3000"
+IpFirewallCheck: true
+FilterPrint: true
+SmartMode: true
+SmartPortProbe: icmp,80
+SmartIpProbe: 1,254
+UrlThreadStr: "100"
+UrlPocCheck: false
+ActiveFinger: true
+UrlFingerOpt: tiny
+UrlFollowRedirect: true
+Screenshot: false
+SubThreadStr: "50"
+SubTimeoutStr: "3000"
+SubPortStr: 80,443
+SubFilterIp: ""
+SubApi: true
+SubWildCard: true
+SubPocCheck: false
+SubFinger: true
+SubSelectDns: 本机默认DNS
+SubCustomDictStr: ""
+PocThreadStr: "20"
+PocTimeDelay: "0"
+PocRetryStr: "1"
+PocFinger: true
+PocFingerForPoc: false
+PocNoMacthWithNoPoc: false
+PocLevel: 1,2
+PocTempDir: ""
+EnableOOB: false
+InteractshURL: ""
+InteractshToken: ""
+UsePocxray: false
+UsePocnuclei: false
+UsePocafrog: false
+UsePoccustom: false
+ExePathxray: ""
+ExePathnuclei: ""
+ExePathafrog: ""
+ExePathcustom: ""
+PocPathxray: ""
+PocPathnuclei: ""
+PocPathafrog: ""
+PocPathcustom: ""
+SelectPocsxray: ""
+SelectPocsnuclei: ""
+SelectPocsafrog: ""
+SelectPocscustom: ""
+PocThreadxray: "3"
+PocThreadnuclei: "3"
+PocThreadafrog: "3"
+PocArgsxray: webscan --plugins brute-force,cmd-injection,dirscan,jsonp,path-traversal,sqldet,ssrf,xss,fastjson,shiro,struts,thinkphp,xstream,phantasm
+PocArgsnuclei: -j -mhe 15 -ni
+PocArgsafrog: -doh
+PwdThreadStr: "1"
+PwdTimeoutStr: "3000"
+PwdRetryStr: "1"
+PwdOracleListen: orcl
+PwdFinger: true
+PwdSuffix: ""
+PwdExecCmd: whoami
+PwdUseInsideDict: true
+PwdCrackOneAccount: false
+PwdServices: SMB-445
+UnAuthServices: redis-6379,mongodb-27017,memcached-11211,ftp-21,ldap-389,rsync-873,zookeeper-2181,nfs-2049,dubbo_telnet-28096,zabbix-10051,elasticsearch-9200,docker-2375,docker_registry-5000,kubernetes-8080,k8s_api-6443,jenkins-8080,kibana-5601,rabbitmq-15672,activemq-8161,activemq_stomp-61613,mqtt-1883,nacos-8848,ollama-11434,vnc-5900,swagger-80,jupyter-8888,couchdb-5984,hadoop-8088,spark-6066,solr-8983,harbor-80,kong-8001,springboot-8080,druid-8888,weblogic-7001,jboss-8080,dubbo_admin-8080,thinkadmin-80,wordpress-80,crowd-8095,ruoyi-80,bt_phpmyadmin-80,php_fpm-80,uwsgi-1717,smb-445,ipc-445
+UnAuthThreadStr: "100"
+UnAuthTimeoutStr: "5000"
+UnAuthIntervalStr: "100"
+PwdDictAddMode: false
+PwdDictFile: ""
+PwdDictPairMode: false
+DirSelectMode: 字典模式
+DirSelectMethod: GET
+DirRecursion: false
+DirExtFilter: js,gif,jpg,png,css
+DirCodeFilter: 400,404,5xx
+DirKeyFilter: ""
+DirLenFilter: ""
+DirFileExt: jsp,php,asp,aspx
+DirTimeDelayStr: "0"
+DirThreadStr: "50"
+DirCustomDictStr: /usr/share/dirbuster/wordlists/directory-list-2.3-medium.txt
+DirCheckDict: dirs1k
+DirWafCheck: true
+JsThreadStr: "50"
+JsStepStr: "3"
+JsMaxStr: "999"
+JsOnlyMyJs: false
+JsCodeFilter: 400,404,5xx
+JsKeyFilter: ""
+JsLenFilter: ""
+JsMode: 普通模式
+HostThreadStr: ""
+HostPort: ""
+HostCodeFilter: ""
+HostLenFilter: ""
+BypassThreadStr: ""
+BypassRedirect: false
+BypassCodeFilter: ""
+SwaggerThreadStr: "20"
+SwaggerTimeout: "30"
+SwaggerCodeFilter: ""
+SwaggerSensitiveFilter: delete,remove,reset,logout
+WafDetectThreadStr: ""
+WafDetectTimeout: ""
+WafDetectFindAll: false
+WafDetectFollowRedirect: false
+ProxyListenAddr: ""
+VerifyWeb: https://www.baidu.com
+VerifyStr: 百度一下
+VerifyDel: false
+ProxyMode: pooling
+ProxyModeCfg: "10"
+FofaEnabled: false
+FofaQueryString: protocol=="socks5" && country="CN" && banner="Method:No Authentication"
+FofaQueryCount: "500"
+QuaKeEnabled: false
+QuaKeQueryString: 'service:socks5  AND country: "CN" AND response:"No authentication"'
+QuaKeQueryCount: "300"
+HunterEnabled: false
+HunterQueryString: protocol=="socks5"&&protocol.banner="No authentication"&&ip.country="CN"
+HunterQueryCount: "200"
+FreeEnabled: false
+FreeQueryType: socks5
+ProxyKeyMode: blockkey
+ProxyKeyWord: ""
+ProxyKeyAddr: ""
+ProxyLoopPool: false
+InfoTycToken: ""
+InfoBeianxToken: ""
+InfoAizhanCookie: ""
+InfoRiskbirdCookie: ""
+InfoChinazCookie: ""
+InfoICPQueryUrl: ""
+InfoJingxinKey: ""
+InfoJingxinQueryDelay: "10"
+InfoIpScan: false
+InfoWebFinger: false
+InfoSubDomain: false
+InfoSubsidiary: false
+InfoRiskbirdSum: "100"
+InfoHistory: ""
+AiEnable: true
+AiEnableMode: '["poc","dir","js"]'
+AiFeatureConfig: '{"models":[{"id":1,"provider":"硅基流动","apiUrl":"https://api.siliconflow.cn/v1/chat/completions","modelName":"deepseek-ai/DeepSeek-R1-0528-Qwen3-8B","apiKey":"sk-obioyihzbgiqhaxzqtdpvwyxnmtywmdqajuzapbwjtpljfif","enabled":false},{"id":2,"provider":"智谱AI","apiUrl":"https://open.bigmodel.cn/api/paas/v4/chat/completions","modelName":"glm-4.5-flash","apiKey":"93832b9563d4418f8665960aeda86495.sH6MIRhMjTJ8HdL4","enabled":false},{"id":1782891363520,"provider":"mimo","apiUrl":"https://token-plan-cn.xiaomimimo.com/v1/chat/completions","modelName":"mimo-v2.5","apiKey":"tp-c3hlg5p4sfm34sj8qddxg1dc1z3bdacvdkvqys5kalaps0o1","enabled":false},{"id":1787315705302,"provider":"sinochem","apiUrl":"https://ai.sinochem.com/kunlun/ingress/api/a17f1e/c639a73132884674a1b07adcd74d67e6/ai-b12ddb4abaad4b1cba35e2521639350c/service-25d4d1c8df3f4773b621a285afe6e114/v1/chat/completions","modelName":"deepseek-v4-flash-0731","apiKey":"UP5OTyDzZqHAjIoHJRAW2xdSTJ5nswYE","enabled":true}],"updatedAt":"2026-08-27T06:02:28.311Z","customProviders":[{"label":"mimo","value":"mimo","apiUrl":""},{"label":"sinochem","value":"sinochem","apiUrl":""}]}'
+AiLimitCount: "20"
+AiConcurrency: "3"
+CsPayloadWin: http://8.8.8.8/wincs.exe
+CsPayloadLinux: http://8.8.8.8/linuxcs
+ReverseIp: 8.8.8.8
+ReversePort: "8888"
+DecodeTab: 编码转换-Base64,加密解密-AES
+ProjectOptions: '{"EnIpScan":true,"EnUrlScan":true,"EnSubDomain":false,"EnCyber":false,"EnInfo":false,"InfoKey":"","InfoCheck":true,"EnPocCheck":false,"EnPwdCrack":false,"EnDirScan":false,"PortOption":"all","PingScan":false,"IpScanThread":"600","UrlThread":"100","FingerOption":"all","SubDic":true,"SubApi":true,"SubWild":true,"PocFinger":false,"PocThread":"50","PocAwvs":false,"PocAwvsAsset":"onlyurl","PwdTask":true,"PwdCrackOne":false,"DirEnum":false,"DirJsFinder":false,"DirEnumRecursion":false,"DirThread":"50","DirAsset":"allurl","EnCronTask":false,"CronTaskTime":"","TaskParallel":false}'
+AwvsOptions: ""
+NessusOptions: ""
+WeChatApplet: ""
+WeChatRules: []
+SecretStore: eyJ2ZXJzaW9uIjoxLCJzZXJ2ZXIiOltdfQ==

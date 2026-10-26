@@ -1,0 +1,6 @@
+guest:guest
+admin:admin
+admin:123456
+rabbitmq:rabbitmq
+user:user
+test:test

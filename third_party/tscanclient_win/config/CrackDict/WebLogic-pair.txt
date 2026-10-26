@@ -1,0 +1,7 @@
+weblogic:weblogic
+weblogic:Oracle@123
+weblogic:123456
+admin:admin
+system:system
+portaladmin:portaladmin
+guest:guest

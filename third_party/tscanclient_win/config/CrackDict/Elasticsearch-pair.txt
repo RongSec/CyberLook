@@ -1,0 +1,6 @@
+elastic:elastic
+elastic:changeme
+elastic:123456
+elastic:
+admin:admin
+elastic:password

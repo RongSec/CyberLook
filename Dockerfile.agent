@@ -15,7 +15,13 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 
 COPY --from=go-builder /out/scope-agent /app/scope-agent
-COPY third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscanclient/TscanClient
-RUN chmod +x /app/tscanclient/TscanClient
+# TscanClient 可选（仓库不提交二进制）
+COPY third_party/ /app/third_party/
+RUN mkdir -p /app/tscanclient && \
+    if [ -f /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 ]; then \
+        cp /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscanclient/TscanClient; \
+    fi && \
+    chmod +x /app/tscanclient/TscanClient 2>/dev/null; \
+    true
 
 CMD ["/app/scope-agent", "-server", "http://server:8080", "-name", "node-docker", "-tscan", "/app/tscanclient/TscanClient"]

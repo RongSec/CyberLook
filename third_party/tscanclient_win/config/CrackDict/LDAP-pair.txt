@@ -1,0 +1,5 @@
+admin:admin
+admin:123456
+cn=admin,dc=example,dc=com:admin
+root:root
+manage:manage

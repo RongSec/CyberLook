@@ -1,0 +1,6 @@
+rsync:rsync
+root:root
+admin:admin
+backup:backup
+rsync:123456
+admin:123456

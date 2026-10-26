@@ -1,0 +1,6 @@
+admin:admin
+kafka:kafka
+admin:123456
+user:user
+test:test
+guest:guest

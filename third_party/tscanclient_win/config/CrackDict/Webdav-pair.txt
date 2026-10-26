@@ -1,0 +1,6 @@
+admin:admin
+admin:123456
+web:web
+test:test
+guest:guest
+user:user

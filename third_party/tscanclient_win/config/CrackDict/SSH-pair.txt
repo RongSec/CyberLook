@@ -1,0 +1,10 @@
+root:root
+root:123456
+root:password
+admin:admin
+admin:123456
+test:test
+user:user
+ubuntu:ubuntu
+centos:centos
+oracle:oracle

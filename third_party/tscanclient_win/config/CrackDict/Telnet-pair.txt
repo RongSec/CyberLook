@@ -1,0 +1,7 @@
+root:root
+root:123456
+admin:admin
+admin:123456
+guest:guest
+cisco:cisco
+user:user
