@@ -43,7 +43,7 @@ func MatchRule(rule model.ComplianceRule, svc model.Service) bool {
 }
 
 // CheckComplianceForService 单服务实时合规检测（扫描入库时即时调用）
-func CheckComplianceForService(svc model.Service) {
+func CheckComplianceForService(svc model.Service, taskID uint) {
 	var rules []model.ComplianceRule
 	config.DB.Where("enabled = true").Find(&rules)
 	now := time.Now()
@@ -57,9 +57,12 @@ func CheckComplianceForService(svc model.Service) {
 			config.DB.Create(&model.ComplianceResult{
 				AssetID: svc.AssetID, IP: svc.IP, Port: svc.Port, RuleID: &rule.ID,
 				Status: "violation", DetectedAt: &now, LastSeen: &now,
+				TaskID: taskID, LastTaskID: taskID,
 			})
 		} else if err == nil {
-			config.DB.Model(&cr).Updates(map[string]interface{}{"status": "violation", "last_seen": now})
+			config.DB.Model(&cr).Updates(map[string]interface{}{
+				"status": "violation", "last_seen": now, "last_task_id": taskID,
+			})
 		}
 	}
 }

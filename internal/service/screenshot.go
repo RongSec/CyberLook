@@ -37,7 +37,14 @@ func CaptureWebServices() (int, int, error) {
 // captureOne 用 chromium 无头模式截图单个 URL
 func captureOne(url string, svc model.Service) error {
 	now := time.Now()
-	name := fmt.Sprintf("%s_%d_%d.png", strings.ReplaceAll(svc.IP, ".", "_"), svc.Port, now.Unix())
+	// 防路径遍历：IP 可能被上游污染，统一只保留字母数字和下划线
+	safeIP := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, svc.IP)
+	name := fmt.Sprintf("%s_%d_%d.png", safeIP, svc.Port, now.Unix())
 	path := filepath.Join(SnapshotDir, name)
 
 	cmd := exec.Command("chromium",

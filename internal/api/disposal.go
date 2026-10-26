@@ -86,6 +86,10 @@ func listDisposalItems() []DisposalItem {
 				it.Category = "in_ledger" // 台账有，待确认
 			}
 		} else {
+			// 台账没有，但如果已处置（svc.Confirmed），不该再出现在待处置列表
+			if svc.Confirmed {
+				continue
+			}
 			it.Category = "new" // 台账没有
 		}
 
@@ -119,8 +123,17 @@ func ConfirmByLedger(c *gin.Context) {
 			})
 		config.DB.Model(&model.Service{}).Where("ip = ?", ip).Update("confirmed", true)
 		// 无论台账导入还是扫描发现，处置确认后统一标记为 confirmed
-		config.DB.Model(&model.Asset{}).Where("ip = ?", ip).
-			Update("status", "confirmed")
+		// 若 assets 表还没有这条记录（扫描直接发现 web 服务但未建资产），这里补一条
+		var asset model.Asset
+		if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
+			asset = model.Asset{
+				IP: ip, Source: "scan", Status: "confirmed",
+			}
+			config.DB.Create(&asset)
+		} else {
+			config.DB.Model(&model.Asset{}).Where("ip = ?", ip).
+				Update("status", "confirmed")
+		}
 		ok++
 	}
 	c.JSON(http.StatusOK, gin.H{"confirmed": ok})
@@ -186,4 +199,55 @@ func BatchDeleteDisposal(c *gin.Context) {
 	config.DB.Where("ip IN ?", req.IPs).Delete(&model.Asset{})
 	config.DB.Where("ip IN ?", req.IPs).Delete(&model.Service{})
 	c.JSON(http.StatusOK, gin.H{"deleted": len(req.IPs)})
+}
+
+// ConfirmDisposal 确认处置（按 IP，带部门/负责人/系统名）
+func ConfirmDisposal(c *gin.Context) {
+	var req struct {
+		IP         string `json:"ip"`
+		SystemName string `json:"systemName"`
+		Owner      string `json:"owner"`
+		Department string `json:"department"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	if req.Owner == "" || req.Department == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "必须选择部门和负责人"})
+		return
+	}
+
+	// 查/建资产记录
+	var asset model.Asset
+	if err := config.DB.Where("ip = ?", req.IP).First(&asset).Error; err != nil {
+		asset = model.Asset{
+			IP: req.IP, Source: "scan", Status: "confirmed",
+			SystemName: req.SystemName, Owner: req.Owner, Department: req.Department,
+		}
+		config.DB.Create(&asset)
+	} else {
+		config.DB.Model(&model.Asset{}).Where("ip = ?", req.IP).Updates(map[string]interface{}{
+			"status":       "confirmed",
+			"system_name":  req.SystemName,
+			"owner":        req.Owner,
+			"department":   req.Department,
+		})
+	}
+
+	// 标记所有服务已处置
+	config.DB.Model(&model.Service{}).Where("ip = ?", req.IP).Update("confirmed", true)
+
+	// 记录页面指纹基线
+	var svc model.Service
+	if err := config.DB.Where("ip = ? AND (protocol ILIKE 'http%' OR title <> '')", req.IP).
+		Order("port").First(&svc).Error; err == nil {
+		config.DB.Model(&model.Asset{}).Where("ip = ?", req.IP).Updates(map[string]interface{}{
+			"confirmed_title":   svc.Title,
+			"confirmed_simhash": svc.PageSimhash,
+			"content_changed":   false,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "已确认入库"})
 }

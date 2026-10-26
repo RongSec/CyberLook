@@ -38,10 +38,16 @@
         <n-form-item label="网站标题"><n-input :value="form.title || '-'" disabled /></n-form-item>
         <n-form-item label="指纹"><n-input :value="form.fingerprint || '-'" disabled /></n-form-item>
         <n-form-item label="部门">
-          <n-select v-model:value="form.department" :options="deptOptions" placeholder="必选" @update:value="onDeptChange" />
+          <div style="display:flex;gap:8px;width:100%">
+            <n-select v-model:value="form.department" :options="deptOptions" placeholder="必选" @update:value="onDeptChange" style="flex:1" />
+            <n-button size="small" @click="openNewDept">新建</n-button>
+          </div>
         </n-form-item>
         <n-form-item label="负责人">
-          <n-select v-model:value="form.owner" :options="ownerOptions" tag filterable placeholder="必选（可从部门预设中选）" />
+          <div style="display:flex;gap:8px;width:100%">
+            <n-select v-model:value="form.owner" :options="ownerOptions" tag filterable placeholder="必选（可从部门预设中选）" style="flex:1" />
+            <n-button size="small" @click="openNewOwner">新建</n-button>
+          </div>
         </n-form-item>
         <n-form-item label="系统名"><n-input v-model:value="form.systemName" placeholder="可选，如 门户网站" /></n-form-item>
       </n-form>
@@ -49,6 +55,28 @@
         <n-space justify="end">
           <n-button @click="showConfirm = false">取消</n-button>
           <n-button type="primary" @click="doConfirm">确认入库</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 新建部门 -->
+    <n-modal v-model:show="showNewDept" preset="card" title="新建部门" style="width: 380px">
+      <n-input v-model:value="newDeptName" placeholder="部门名称" @keyup.enter="saveNewDept" />
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showNewDept = false">取消</n-button>
+          <n-button type="primary" @click="saveNewDept">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 新建负责人 -->
+    <n-modal v-model:show="showNewOwner" preset="card" title="新建负责人" style="width: 380px">
+      <n-input v-model:value="newOwnerName" placeholder="负责人姓名" @keyup.enter="saveNewOwner" />
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showNewOwner = false">取消</n-button>
+          <n-button type="primary" @click="saveNewOwner">保存</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -114,6 +142,10 @@ function resetFilters() {
 const departments = ref([])
 const loading = ref(false)
 const showConfirm = ref(false)
+const showNewDept = ref(false)
+const showNewOwner = ref(false)
+const newDeptName = ref('')
+const newOwnerName = ref('')
 const form = ref({ id: 0, ip: '', title: '', fingerprint: '', department: null, owner: null, systemName: '' })
 
 const deptOptions = computed(() => departments.value.map(d => ({ label: d.name, value: d.name })))
@@ -255,6 +287,36 @@ async function load() {
 
 async function loadDepartments() { departments.value = await api.get('/departments') }
 
+function openNewDept() {
+  newDeptName.value = ''
+  showNewDept.value = true
+}
+
+async function saveNewDept() {
+  const name = (newDeptName.value || '').trim()
+  if (!name) { message.warning('请输入部门名称'); return }
+  try {
+    await api.post('/departments', { name })
+    message.success(`部门「${name}」已创建`)
+    showNewDept.value = false
+    form.value.department = name
+    await loadDepartments()
+  } catch (e) { message.error(e.response?.data?.error || '创建失败') }
+}
+
+function openNewOwner() {
+  newOwnerName.value = ''
+  showNewOwner.value = true
+}
+
+function saveNewOwner() {
+  const name = (newOwnerName.value || '').trim()
+  if (!name) { message.warning('请输入负责人姓名'); return }
+  form.value.owner = name
+  showNewOwner.value = false
+  message.success(`负责人「${name}」已填入`)
+}
+
 function openConfirm(row) {
   form.value = { id: row.id, ip: row.ip, title: row.title, fingerprint: row.fingerprint, department: null, owner: null, systemName: '' }
   showConfirm.value = true
@@ -270,7 +332,8 @@ async function doConfirm() {
   if (!form.value.department) { message.warning('请选择部门'); return }
   if (!form.value.owner) { message.warning('请选择负责人'); return }
   try {
-    await api.put(`/assets/${form.value.id}/confirm`, {
+    await api.post('/disposal/confirm', {
+      ip: form.value.ip,
       systemName: form.value.systemName,
       owner: form.value.owner,
       department: form.value.department

@@ -44,6 +44,7 @@ func SaveNotifySettings(c *gin.Context) {
 		"on_task_done":     req.OnTaskDone,
 		"on_new_asset":     req.OnNewAsset,
 		"on_violation":     req.OnViolation,
+		"notify_faults":    req.OnFault,
 	}
 	if req.EmailPass != "" {
 		updates["email_pass"] = req.EmailPass
@@ -59,8 +60,15 @@ func SaveNotifySettings(c *gin.Context) {
 
 // TestNotify 发送测试通知
 func TestNotify(c *gin.Context) {
+	ch := c.Query("channel")
+	title := "未见 · 测试通知"
+	body := "这是一条测试消息，收到说明通知渠道配置正确。\n时间：" + time.Now().Format("2006-01-02 15:04:05")
+	if ch != "" {
+		c.JSON(http.StatusOK, gin.H{"results": service.BroadcastTo(ch, title, body)})
+		return
+	}
 	results := service.Broadcast(
-		"灯塔 · 测试通知",
+		title,
 		"这是一条测试消息，收到说明通知渠道配置正确。\n时间："+time.Now().Format("2006-01-02 15:04:05"),
 	)
 	c.JSON(http.StatusOK, gin.H{"results": results})

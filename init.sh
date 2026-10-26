@@ -23,21 +23,8 @@ else
     echo "⏭️  .env 已存在，跳过生成"
 fi
 
-# 2. 编译前端（如果未编译）
-if [ ! -d web/dist ]; then
-    echo "📦 编译前端..."
-    cd web
-    if [ ! -d node_modules ]; then
-        npm install
-    fi
-    npm run build
-    cd ..
-    echo "✅ 前端编译完成"
-else
-    echo "⏭️  前端已编译，跳过"
-fi
+# 2. 启动服务（多阶段构建会自动编译前后端）
 
-# 3. 启动服务
 echo "🚀 启动服务..."
 docker compose up -d
 

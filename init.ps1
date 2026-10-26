@@ -30,21 +30,8 @@ POSTGRES_PASSWORD=$Password
     Write-Host "SKIP: .env 已存在，跳过生成" -ForegroundColor Yellow
 }
 
-# 2. 编译前端（如果未编译）
-if (!(Test-Path "web/dist")) {
-    Write-Host "BUILD: 编译前端..." -ForegroundColor Cyan
-    Push-Location web
-    if (!(Test-Path "node_modules")) {
-        npm install
-    }
-    npm run build
-    Pop-Location
-    Write-Host "OK: 前端编译完成" -ForegroundColor Green
-} else {
-    Write-Host "SKIP: 前端已编译，跳过" -ForegroundColor Yellow
-}
+# 2. 启动服务（多阶段构建会自动编译前后端）
 
-# 3. 启动服务
 Write-Host "START: 启动服务..." -ForegroundColor Cyan
 docker compose up -d
 

@@ -53,6 +53,9 @@ func ListAssets(c *gin.Context) {
 	}
 	if status != "" {
 		q = q.Where("status = ?", status)
+	} else {
+		// 未确认的 web 服务只应出现在「资产处置」，不进资产总览
+		q = q.Where("status <> 'pending'")
 	}
 	if source != "" {
 		q = q.Where("source = ?", source)

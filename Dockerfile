@@ -16,6 +16,7 @@ RUN go mod download
 COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /out/asset-server ./cmd/server && \
     GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux ./cmd/agent && \
+    GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
     GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-windows.exe ./cmd/agent
 
 # ---------- 运行时 ----------
@@ -29,6 +30,7 @@ COPY --from=web-builder /web/dist /app/web/dist
 COPY migrations /app/migrations
 # 分发的 agent 二进制与扫描引擎（供一键加入脚本下载）
 COPY --from=go-builder /out/scope-agent-linux /app/agent/scope-agent-linux
+COPY --from=go-builder /out/scope-agent-linux-arm64 /app/agent/scope-agent-linux-arm64
 COPY --from=go-builder /out/scope-agent-windows.exe /app/agent/scope-agent-windows.exe
 COPY third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscan/TscanClient_Linux
 COPY third_party/tscanclient_win/TscanClient_Win.exe /app/tscan/TscanClient_Win.exe

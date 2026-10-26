@@ -1,7 +1,6 @@
 package api
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 
@@ -52,12 +51,8 @@ func AgentTaskAuth() gin.HandlerFunc {
 		}
 		tk := c.GetHeader("X-Node-Token")
 		if tk == "" {
-			if config.StrictAgentAuth() {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "缺少节点凭据"})
-				return
-			}
-			log.Printf("[安全警告] 分片 #%d 的请求未携带 X-Node-Token（节点 %s）", at.ID, n.Name)
-			c.Next()
+			// 与 AgentAuth 一致：默认拒绝，不允许未认证调用
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "缺少节点凭据 X-Node-Token"})
 			return
 		}
 		if n.Token == "" || n.Token != tk {

@@ -30,6 +30,11 @@
           </div>
           <n-data-table :columns="tplColumns" :data="templates" size="small" />
         </n-tab-pane>
+
+        <!-- 定时任务 tab -->
+        <n-tab-pane name="scheduled" tab="定时任务">
+          <ScheduledTasks />
+        </n-tab-pane>
       </n-tabs>
     </n-card>
 
@@ -283,6 +288,7 @@ import { NTag, NButton, NPopconfirm, NIcon, NProgress, useMessage } from 'naive-
 import { TerminalOutline } from '@vicons/ionicons5'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
+import ScheduledTasks from './ScheduledTasks.vue'
 
 // 导出列
 const exportCols = [
@@ -381,6 +387,8 @@ const statusMap = {
   failed: { text: '失败', type: 'error' }
 }
 
+const rowKey = (row) => row.id
+
 const columns = [
   { type: 'selection' },
   { title: 'ID', key: 'id', width: 60 },
@@ -422,18 +430,49 @@ const columns = [
       : h('span', { style: 'color:#9ca3af' }, '-')
   },
   { title: '创建时间', key: 'createdAt', width: 150, render: r => fmt(r.createdAt) },
-  { title: '操作', key: 'actions', width: 350, render: row => h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
-    // 编辑：执行中的任务只读，其余状态都可改
-    row.status !== 'running'
+  { title: '操作', key: 'actions', width: 420, render: row => h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
+    // 编辑：执行中/暂停的任务只读，其余状态都可改
+    row.status !== 'running' && row.status !== 'paused'
       ? h(NButton, { size: 'small', text: true, type: 'info', onClick: () => openConfig(row) }, { default: () => '编辑' })
+      : null,
+    // 运行中：可暂停、停止
+    row.status === 'running'
+      ? h(NButton, { size: 'small', type: 'warning', text: true, onClick: () => pauseTask(row) }, { default: () => '暂停' })
       : null,
     row.status === 'running'
       ? h(NButton, { size: 'small', type: 'error', text: true, onClick: () => stopTask(row) }, { default: () => '停止' })
-      : h(NButton, { size: 'small', type: 'primary', text: true, onClick: () => run(row) }, { default: () => '执行' }),
+      : null,
+    // 暂停中：可继续、停止
+    row.status === 'paused'
+      ? h(NButton, { size: 'small', type: 'primary', text: true, onClick: () => resumeTask(row) }, { default: () => '继续' })
+      : null,
+    row.status === 'paused'
+      ? h(NButton, { size: 'small', type: 'error', text: true, onClick: () => stopTask(row) }, { default: () => '停止' })
+      : null,
+    // 已结束/待执行：可执行、重跑
+    row.status !== 'running' && row.status !== 'paused'
+      ? h(NButton, { size: 'small', type: 'primary', text: true, onClick: () => run(row) }, { default: () => '执行' })
+      : null,
+    row.status === 'stopped' || row.status === 'done' || row.status === 'failed' || row.status === 'interrupted'
+      ? h(NButton, { size: 'small', type: 'warning', text: true, onClick: () => restartTask(row) }, { default: () => '重跑' })
+      : null,
     h(NButton, { size: 'small', text: true, onClick: () => openLog(row) }, { default: () => '日志' }),
     h(NButton, { size: 'small', text: true, onClick: () => openNodeProgress(row) }, { default: () => '节点进度' }),
     h(NPopconfirm, { onPositiveClick: () => del(row.id) }, { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }), default: () => '确认删除？' })
-  ]) }
+  ]) },
+  // 概览：本次扫描的 IP/存活/应用/违规（放在「节点进度」右侧）
+  {
+    title: '概览', key: 'overview', width: 240,
+    render: row => {
+      const o = row.overview || {}
+      const line = { style: 'font-size:12px;line-height:1.7;white-space:nowrap' }
+      return h('div', {}, [
+        h('div', line, `扫描 IP ${o.totalIps || 0} ｜ 存活 ${o.aliveIps || 0}`),
+        h('div', line, `应用 ${o.appsFound || 0} 个（新发现 ${o.appsNew || 0}）`),
+        h('div', line, `违规 ${o.violations || 0} 个（新增 ${o.violationsNew || 0}）`)
+      ])
+    }
+  }
 ]
 
 // cron 转人类可读
@@ -489,13 +528,24 @@ async function batchDelete() {
 
 async function loadTemplates() { templates.value = await api.get('/templates') }
 
-async function openCreate() {
-  showCreate.value = true
+// 扫描范围的候选数据（网段 / 资产）。
+// 新建和编辑都要加载，否则直接点「编辑」时下拉是空的
+async function loadScopeOptions() {
   try {
     const segs = await api.get('/segments')
-    segmentOptions.value = segs.map(s => ({ label: `${s.name}（${s.cidr}）`, value: s.cidr }))
+    segmentOptions.value = (segs || []).map(s => ({ label: `${s.name}（${s.cidr}）`, value: s.cidr }))
+  } catch (e) { console.error('[loadScopeOptions] segments:', e) }
+  try {
     const assets = await api.get('/assets', { params: { page: 1, size: 500 } })
-    assetOptions.value = assets.items.map(a => ({ label: a.systemName ? `${a.ip} - ${a.systemName}` : a.ip, value: a.ip }))
+    const items = assets?.items || []
+    assetOptions.value = items.map(a => ({ label: a.systemName ? `${a.ip} - ${a.systemName}` : a.ip, value: a.ip }))
+  } catch (e) { console.error('[loadScopeOptions] assets:', e) }
+}
+
+async function openCreate() {
+  showCreate.value = true
+  await loadScopeOptions()
+  try {
     await loadTemplates()
     templateOptions.value = templates.value.map(t => ({ label: t.name, value: t.id }))
   } catch (e) { console.error(e) }
@@ -531,6 +581,7 @@ async function create(run) {
       modules: form.value.modules.join(','),
       portMode: form.value.portMode,
       ports: form.value.ports,
+      batchSize: form.value.batchSize,
       thread: form.value.thread,
       timeout: form.value.timeout,
       finger: form.value.finger,
@@ -557,6 +608,30 @@ async function run(row) {
   load()
 }
 async function del(id) { await api.delete(`/tasks/${id}`); message.success('已删除'); load() }
+
+async function pauseTask(row) {
+  try {
+    await api.post(`/tasks/${row.id}/pause`)
+    message.success('已暂停，未完成的 IP 已收回待扫池')
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '暂停失败') }
+}
+
+async function resumeTask(row) {
+  try {
+    await api.post(`/tasks/${row.id}/resume`)
+    message.success('已继续')
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '继续失败') }
+}
+
+async function restartTask(row) {
+  try {
+    await api.post(`/tasks/${row.id}/restart`)
+    message.success('已重跑，探测进度清零')
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '重跑失败') }
+}
 
 async function stopTask(row) {
   try {
@@ -626,7 +701,7 @@ const showConfig = ref(false)
 const configTask = ref(null)
 const canEdit = ref(false)
 const savingCfg = ref(false)
-const editForm = ref({ name: '', ipRanges: '', segments: [], assets: [], manual: '', modules: [], portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', nodeIds: [], cron: '' })
+const editForm = ref({ name: '', ipRanges: '', segments: [], assets: [], manual: '', modules: [], portMode: 'top100', ports: '', batchSize: 100, thread: 600, timeout: 3, finger: 'tiny', nodeIds: [], cron: '' })
 
 // 编辑时的节点选项（含「全部节点」）
 const editNodeOptions = computed(() => [
@@ -678,7 +753,7 @@ function mergeIpRanges(f) {
   ].join(',')
 }
 
-function openConfig(row) {
+async function openConfig(row) {
   try {
     configTask.value = row
     canEdit.value = row.status !== 'running'
@@ -693,6 +768,7 @@ function openConfig(row) {
     modules: row.modules ? row.modules.split(',') : ['port'],
     portMode: row.portMode || 'top100',
     ports: row.ports || '',
+    batchSize: row.batchSize || 100,
     thread: row.thread || 600,
     timeout: row.timeout || 3,
     finger: row.finger || 'tiny',
@@ -702,6 +778,8 @@ function openConfig(row) {
     const [iv, hr] = parseCronExpr(row.cron || '')
     editCronInterval.value = iv
     editCronHour.value = hr
+    // 编辑弹窗同样需要网段/资产候选，否则下拉为空
+    await loadScopeOptions()
     showConfig.value = true
   } catch (e) {
     console.error('[openConfig] 打开编辑弹窗失败:', e)
@@ -720,6 +798,7 @@ async function saveTaskCfg() {
       modules: editForm.value.modules.join(','),
       portMode: editForm.value.portMode,
       ports: editForm.value.ports,
+      batchSize: editForm.value.batchSize,
       thread: editForm.value.thread,
       timeout: editForm.value.timeout,
       finger: editForm.value.finger,

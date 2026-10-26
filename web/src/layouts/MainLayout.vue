@@ -6,26 +6,15 @@
     <n-layout has-sider class="app-layout">
       <n-layout-sider bordered collapse-mode="width" :width="224" :collapsed-width="68" :collapsed="collapsed"
         :native-scrollbar="false" class="side" @collapse="collapsed = true" @expand="collapsed = false">
-        <div class="logo">
-          <div class="logo-mark">
-            <svg viewBox="0 0 64 64" width="26" height="26">
-              <defs>
-                <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0" stop-color="#fbbf24" /><stop offset="1" stop-color="#f97316" />
-                </linearGradient>
-              </defs>
-              <circle cx="32" cy="32" r="29" fill="url(#lg)" opacity="0.18" />
-              <circle cx="32" cy="32" r="21" fill="none" stroke="url(#lg)" stroke-width="1.6" opacity="0.65" />
-              <circle cx="32" cy="32" r="12" fill="none" stroke="url(#lg)" stroke-width="1.6" opacity="0.5" />
-              <line x1="32" y1="32" x2="32" y2="5" stroke="#fcd34d" stroke-width="2.4" stroke-linecap="round" />
-              <circle cx="32" cy="32" r="3.4" fill="#fef3c7" />
-              <circle cx="45" cy="19" r="2.6" fill="#fbbf24" />
-            </svg>
-          </div>
+        <div class="logo" :class="{ slim: collapsed }">
+          <img :src="logoSrc" class="logo-badge" alt="未见" title="系统升级" @click="goUpgrade" />
           <transition name="fade">
             <div v-if="!collapsed" class="logo-text">
-              <b>灯塔</b>
-              <span>LIGHTHOUSE · INSIGHT</span>
+              <div class="logo-title">
+                <b>未见</b>
+                <span class="ver" title="查看系统升级" @click="goUpgrade">v{{ sysVersion }}</span>
+              </div>
+              <span class="logo-sub">见你未见　照你所患</span>
             </div>
           </transition>
         </div>
@@ -59,7 +48,7 @@
             </n-tooltip>
             <n-tooltip trigger="hover">
               <template #trigger>
-                <a class="icon-btn" href="https://github.com/TideSec/TscanPlus" target="_blank" rel="noopener noreferrer">
+                <a class="icon-btn" href="https://github.com/RongSec/CyberLook" target="_blank" rel="noopener noreferrer">
                   <n-icon size="17"><LogoGithub /></n-icon>
                 </a>
               </template>
@@ -156,6 +145,22 @@ const auth = useAuthStore()
 const themeStore = useThemeStore()
 const message = useMessage()
 const collapsed = ref(false)
+const sysVersion = ref('0.0.1')
+// 亮色背景用深色线条 logo，暗色背景用浅青线条 logo
+const logoSrc = computed(() =>
+  themeStore.theme === 'light' ? '/logo-dark.png' : '/logo-transparent.png'
+)
+
+function goUpgrade() {
+  router.push('/settings#upgrade')
+}
+
+async function loadVersion() {
+  try {
+    const r = await api.get('/system/version')
+    if (r?.version) sysVersion.value = r.version
+  } catch (e) { /* 忽略 */ }
+}
 
 const currentPath = computed(() => route.path)
 const stats = ref({ cpuPercent: 0, memUsedMB: 0, memTotalMB: 0, memPercent: 0, runningTasks: 0 })
@@ -187,8 +192,9 @@ const menuOptions = [
   { label: '节点', key: '/nodes', icon: renderIcon(CubeOutline) },
   { label: 'IP 规划', key: '/network', icon: renderIcon(GitNetworkOutline) },
   { label: '组织结构', key: '/departments', icon: renderIcon(BusinessOutline) },
+  { label: '故障和日志', key: '/faults', icon: renderIcon(DocumentTextOutline) },
   { label: '通知设置', key: '/notify', icon: renderIcon(NotificationsOutline) },
-      { label: '系统配置', key: '/settings', icon: renderIcon(SettingsOutline) }
+  { label: '系统配置', key: '/settings', icon: renderIcon(SettingsOutline) }
 ]
 
 const userOptions = [
@@ -199,8 +205,12 @@ const userOptions = [
 function onMenu(key) { router.push(key) }
 
 function onUserSelect(key) {
-  if (key === 'profile') showProfile.value = true
-  else if (key === 'logout') { auth.logout(); message.success('已退出'); router.push('/login') }
+  if (key === 'profile') {
+    showProfile.value = true
+  } else if (key === 'logout') {
+    auth.logout()
+    router.push('/login')
+  }
 }
 
 async function savePassword() {
@@ -255,6 +265,7 @@ watch(showTerminal, (v) => { if (!v) stopSSE() })
 let statsTimer = null
 onMounted(() => {
   loadStats()
+  loadVersion()
   statsTimer = setInterval(loadStats, 3000)
 })
 onBeforeUnmount(() => { clearInterval(statsTimer); stopSSE() })
@@ -312,32 +323,78 @@ onBeforeUnmount(() => { clearInterval(statsTimer); stopSSE() })
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 18px;
+  padding: 0 14px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+  overflow: hidden;
 }
-.logo-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
+.logo.slim { padding: 0; justify-content: center; gap: 0; }
+
+.logo-badge {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  object-fit: contain;
+  cursor: pointer;
+  filter: drop-shadow(0 0 12px rgba(168, 232, 236, 0.55));
+  animation: logoBreathe 4.2s ease-in-out infinite;
+  transition: transform 0.2s ease;
+}
+@keyframes logoBreathe {
+  0%, 100% { opacity: 0.82; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1.03); }
+}
+.logo-badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 22px -3px rgba(127, 227, 234, 1);
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.logo-title {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(249, 115, 22, 0.22));
-  border: 1px solid rgba(251, 191, 36, 0.28);
-  box-shadow: 0 6px 18px rgba(245, 158, 11, 0.22);
-  flex-shrink: 0;
+  gap: 7px;
+  min-width: 0;
 }
-.logo-text { display: flex; flex-direction: column; line-height: 1.25; overflow: hidden; }
-.logo-text b {
-  font-size: 15px;
-  letter-spacing: 1.5px;
-  background: linear-gradient(90deg, #fef3c7, #f59e0b);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+.logo-title b {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text-primary);
   white-space: nowrap;
+  line-height: 1.2;
 }
-.logo-text span { font-size: 9px; letter-spacing: 2.4px; color: var(--text-muted); white-space: nowrap; }
+.ver {
+  flex: none;
+  padding: 1px 6px;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  border: 1px solid rgba(127, 227, 234, 0.28);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.ver:hover {
+  color: #7fe3ea;
+  border-color: rgba(127, 227, 234, 0.7);
+  background: rgba(127, 227, 234, 0.1);
+}
+.logo-sub {
+  font-size: 9.5px;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 

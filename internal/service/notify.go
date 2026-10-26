@@ -1,6 +1,7 @@
 package service
 
 import (
+	"io"
 	"asset-platform/internal/config"
 
 	"bytes"
@@ -30,6 +31,7 @@ type NotifySettings struct {
 	OnTaskDone   bool `gorm:"column:on_task_done" json:"onTaskDone"`
 	OnNewAsset   bool `gorm:"column:on_new_asset" json:"onNewAsset"`
 	OnViolation  bool `gorm:"column:on_violation" json:"onViolation"`
+	OnFault      bool `gorm:"column:notify_faults" json:"onFault"`
 }
 
 func (NotifySettings) TableName() string { return "notify_settings" }
@@ -48,6 +50,24 @@ func postJSON(url string, payload interface{}) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	// 必须解析响应体：企业微信/钉钉失败时也返回 HTTP 200，靠 errcode 区分
+	// 企业微信/钉钉：{"errcode":0,"errmsg":"ok"}
+	// 飞书：{"code":0,"msg":"success"}
+	respBody, _ := io.ReadAll(resp.Body)
+	var r struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+		Code    int    `json:"code"`
+		Msg     string `json:"msg"`
+	}
+	if err := json.Unmarshal(respBody, &r); err == nil {
+		if r.ErrCode != 0 {
+			return fmt.Errorf("webhook 错误 %d: %s", r.ErrCode, r.ErrMsg)
+		}
+		if r.Code != 0 {
+			return fmt.Errorf("webhook 错误 %d: %s", r.Code, r.Msg)
+		}
 	}
 	return nil
 }
@@ -137,6 +157,44 @@ func SendEmail(s NotifySettings, title, content string) error {
 }
 
 // Broadcast 按配置向所有已启用的渠道发送，返回各渠道结果
+// BroadcastTo 只向指定渠道发送（测试按钮用）
+func BroadcastTo(channel, title, content string) map[string]string {
+	var s NotifySettings
+	if err := config.DB.First(&s, 1).Error; err != nil {
+		return map[string]string{"error": "通知配置读取失败"}
+	}
+	var err error
+	name := channel
+	switch channel {
+	case "wecom":
+		name = "企业微信"
+		if s.WecomWebhook == "" { return map[string]string{name: "✗ 未填写 Webhook"} }
+		err = SendWecom(s.WecomWebhook, title, content)
+	case "dingtalk":
+		name = "钉钉"
+		if s.DingtalkWebhook == "" { return map[string]string{name: "✗ 未填写 Webhook"} }
+		err = SendDingtalk(s.DingtalkWebhook, title, content)
+	case "feishu":
+		name = "飞书"
+		if s.FeishuWebhook == "" { return map[string]string{name: "✗ 未填写 Webhook"} }
+		err = SendFeishu(s.FeishuWebhook, title, content)
+	case "generic":
+		name = "Webhook"
+		if s.GenericWebhook == "" { return map[string]string{name: "✗ 未填写 Webhook"} }
+		err = SendGeneric(s.GenericWebhook, title, content)
+	case "email":
+		name = "邮件"
+		if s.EmailSMTP == "" { return map[string]string{name: "✗ 未填写 SMTP"} }
+		err = SendEmail(s, title, content)
+	default:
+		return map[string]string{"error": "未知渠道：" + channel}
+	}
+	if err != nil {
+		return map[string]string{name: "✗ " + err.Error()}
+	}
+	return map[string]string{name: "✓ 已发送"}
+}
+
 func Broadcast(title, content string) map[string]string {
 	var s NotifySettings
 	if err := config.DB.First(&s, 1).Error; err != nil {
