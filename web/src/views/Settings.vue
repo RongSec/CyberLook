@@ -2,10 +2,9 @@
   <div>
     <n-card title="系统信息">
       <n-descriptions :column="1" bordered label-placement="left" size="small">
-        <n-descriptions-item label="平台名称">灯塔</n-descriptions-item>
-        <n-descriptions-item label="版本">1.0.0</n-descriptions-item>
-        <n-descriptions-item label="后端">Go + Gin + PostgreSQL</n-descriptions-item>
-        <n-descriptions-item label="扫描引擎">TscanClient（TideSec 无影）</n-descriptions-item>
+        <n-descriptions-item label="平台名称">未见</n-descriptions-item>
+        <n-descriptions-item label="版本">v{{ curVersion }}</n-descriptions-item>
+        <n-descriptions-item label="扫描引擎">TscanClient 3.4.3</n-descriptions-item>
       </n-descriptions>
     </n-card>
 
@@ -34,9 +33,13 @@
     </n-card>
   </div>
 
-    <n-card title="系统升级" style="margin-top: 16px">
-      <p class="muted" style="margin: 0 0 12px">
+    <n-card id="upgrade" title="系统升级" style="margin-top: 16px">
+      <p class="muted" style="margin: 0 0 10px">
         从 GitHub Release 拉取更新，支持代理（仅用于获取更新信息）。更新前自动备份，可一键回滚。
+      </p>
+      <p class="muted" style="margin: 0 0 12px">
+        当前版本 <code>v{{ curVersion }}</code>
+        <span v-if="curBuild"> · 构建于 {{ curBuild }}</span>
       </p>
       <n-grid :cols="2" :x-gap="16" item-responsive>
         <n-grid-item span="2 m:1">
@@ -114,6 +117,16 @@ async function savePwd() {
 // ===== 系统升级 =====
 const updateForm = ref({ githubRepo: '', githubToken: '', proxy: '', port: 18888 })
 const updateInfo = ref({ version: '', current: '', notes: '', publishedAt: '', hasUpdate: false, downloadUrl: '' })
+const curVersion = ref('0.0.1')
+const curBuild = ref('')
+
+async function loadVersion() {
+  try {
+    const r = await api.get('/system/version')
+    curVersion.value = r.version || curVersion.value
+    curBuild.value = r.buildTime && r.buildTime !== 'dev' ? r.buildTime : ''
+  } catch { /* ignore */ }
+}
 const checking = ref(false)
 const applying = ref(false)
 const rolling = ref(false)
@@ -173,7 +186,15 @@ async function rollback() {
   }
 }
 
-onMounted(loadUpdateSettings)
+onMounted(async () => {
+  await Promise.all([loadUpdateSettings(), loadVersion()])
+  // 从左上角版本号跳转过来时定位到升级卡片
+  if (location.hash === '#upgrade') {
+    setTimeout(() => {
+      document.getElementById('upgrade')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 120)
+  }
+})
 </script>
 
 <style scoped>

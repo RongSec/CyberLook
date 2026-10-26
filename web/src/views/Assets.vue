@@ -71,7 +71,7 @@
 
 <script setup>
 import { ref, h, computed, onMounted } from 'vue'
-import { NTag, NButton, useMessage } from 'naive-ui'
+import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 
@@ -84,7 +84,7 @@ const departments = ref([])
 const page = ref(1)
 const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
-const filters = ref({ ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null })
+const filters = ref({ ip: '', systemName: '', owner: '', department: null, source: null, status: 'confirmed', hasWeb: null })
 const checkedRows = ref([])
 
 const showPorts = ref(false)
@@ -162,7 +162,15 @@ const columns = [
     title: '操作', key: 'actions', width: 130,
     render: row => h('div', { style: 'display:flex;gap:8px' }, [
       h(NButton, { size: 'small', text: true, type: 'primary', onClick: () => openEdit(row) }, { default: () => '标注' }),
-      h(NButton, { size: 'small', text: true, onClick: () => showSnapshots(row) }, { default: () => '态势' })
+      h(NButton, { size: 'small', text: true, onClick: () => showSnapshots(row) }, { default: () => '态势' }),
+      h(NPopconfirm, {
+        onPositiveClick: () => delAsset(row),
+        positiveText: '删除',
+        negativeText: '取消'
+      }, {
+        trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
+        default: () => `确认删除资产 ${row.ip} ？其端口与违规记录会一并删除。`
+      })
     ])
   }
 ]
@@ -209,7 +217,7 @@ function search() { page.value = 1; load() }
 function onPage(p) { page.value = p; load() }
 function onPageSize(sz) { pageSize.value = sz; page.value = 1; load() }
 function reset() {
-  filters.value = { ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null }
+  filters.value = { ip: '', systemName: '', owner: '', department: null, source: null, status: 'confirmed', hasWeb: null }
   load()
 }
 function onChecked(keys) { checkedRows.value = keys }
@@ -220,6 +228,21 @@ async function selectAllFiltered() {
   })
   checkedRows.value = res.items.map(a => a.id)
   message.success(`已全选当前筛选的 ${checkedRows.value.length} 条`)
+}
+
+async function delAsset(row) {
+  try {
+    await api.post('/assets/batch-delete', { ids: [row.id] })
+    message.success(`已删除 ${row.ip}`)
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '删除失败') }
+}
+
+async function syncOrg() {
+  try {
+    const r = await api.post('/departments/sync')
+    message.success(`已同步组织架构：共 ${r.departments} 个部门，新建 ${r.created} 个`)
+  } catch (e) { message.error('同步失败：' + (e?.response?.data?.error || e?.message || e)) }
 }
 
 async function batchDelete() {

@@ -98,6 +98,7 @@ func DeleteTask(id uint) error {
 		removeTaskReports(task.ReportPath, taskProjectID(task))
 	}
 	config.DB.Where("task_id = ?", id).Delete(&model.ScanSnapshot{})
+	CleanPipeline(id) // 清掉内存里的流水线状态
 	return config.DB.Delete(&model.ScanTask{}, id).Error
 }
 
@@ -172,10 +173,12 @@ func StopTask(taskID uint) error {
 		return err
 	}
 	scanner.StopScan(taskProjectID(task))
+	now := time.Now()
+	// 停止时把未结束的分片统一置为 cancelled 并补结束时间，
+	// 否则它们会一直挂在 running，主任务永远不收敛
 	config.DB.Model(&model.AgentTask{}).
 		Where("task_id = ? AND status IN ?", taskID, []string{"pending", "running"}).
-		Updates(map[string]interface{}{"status": "cancelled", "message": "已手动停止"})
-	now := time.Now()
+		Updates(map[string]interface{}{"status": "cancelled", "message": "已手动停止", "finished_at": now})
 	return config.DB.Model(&task).Updates(map[string]interface{}{
 		"status": "stopped", "finished_at": now,
 	}).Error
@@ -265,7 +268,7 @@ func parseTargets(input string) []string {
 }
 
 // ingestService 单个服务 upsert + 确保资产存在（不写快照）
-func ingestService(ip string, p scanner.ScanResult) {
+func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	now := time.Now()
 	isWeb := strings.HasPrefix(strings.ToUpper(p.Protocol), "HTTP")
 
@@ -307,6 +310,7 @@ func ingestService(ip string, p scanner.ScanResult) {
 			Service: p.Service, Banner: p.Banner, Title: p.Title, Fingerprint: fpStr,
 			StatusCode: p.StatusCode, ContentLength: p.ContentLength, PageSimhash: fp,
 			FirstSeen: &now, LastSeen: &now,
+			TaskID: taskID, LastTaskID: taskID, // 首次发现归本任务
 		})
 	} else {
 		config.DB.Model(&svc).Updates(map[string]interface{}{
@@ -314,6 +318,7 @@ func ingestService(ip string, p scanner.ScanResult) {
 			"title": p.Title, "fingerprint": fpStr, "status_code": p.StatusCode,
 			"content_length": p.ContentLength, "page_simhash": fp,
 			"last_seen": now, "asset_id": asset.ID, "miss_count": 0,
+			"last_task_id": taskID, // 只更新「最近扫到」，不动首次归属
 		})
 	}
 
@@ -327,7 +332,7 @@ func ingestService(ip string, p scanner.ScanResult) {
 
 	// 实时合规检测（端口 + 指纹双重判定），发现即入库
 	config.DB.Where("ip = ? AND port = ?", ip, p.Port).First(&svc)
-	CheckComplianceForService(svc)
+	CheckComplianceForService(svc, taskID)
 }
 
 // markMissingServices 本次扫描未发现的服务累计缺席，连续 3 次才剔除
@@ -356,7 +361,7 @@ func markMissingServices(targetIPs []string, results []scanner.ScanResult) {
 // ingestServicesLive 实时入库（扫描过程中增量 upsert 服务，不写快照）
 func ingestServicesLive(results []scanner.ScanResult) {
 	for _, r := range results {
-		ingestService(r.IP, r)
+		ingestService(r.IP, r, 0)
 	}
 }
 
@@ -380,7 +385,7 @@ func ingestResults(taskID uint, results []scanner.ScanResult) error {
 
 		// 服务 upsert
 		for _, p := range ports {
-			ingestService(ip, p)
+			ingestService(ip, p, taskID)
 		}
 	}
 	return nil

@@ -25,25 +25,24 @@ func GetDashboardSummary() DashboardSummary {
 	var s DashboardSummary
 	// 三个资产指标统一按「可达 web 资产」统计，保证 总数 = 已登记 + 待确认
 	// 非 web 主机（SSH/RDP/SNMP 等）不计入资产登记，只在资产总览页按 IP 展示
-	config.DB.Raw(`SELECT count(DISTINCT s.ip) FROM services s
-		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
-		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')`).Scan(&s.AssetTotal)
-	config.DB.Raw(`SELECT count(DISTINCT s.ip) FROM services s
-		JOIN assets a ON a.ip = s.ip
+	// 只统计已确认的 web 资产：未确认的属于「待处置」，不进资产总览也不计入总数
+	// 按「服务条数」统计（一个 IP 可能有多个 web 服务，用户期望看到服务数）
+	config.DB.Raw(`SELECT count(*) FROM services s
 		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
 		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')
-		  AND a.status = 'confirmed'`).Scan(&s.AssetConfirmed)
+		  AND s.confirmed = true`).Scan(&s.AssetTotal)
+	config.DB.Raw(`SELECT count(*) FROM services s
+		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
+		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')
+		  AND s.confirmed = true`).Scan(&s.AssetConfirmed)
 	// 与「资产处置」页完全同源：可达 web 服务中尚未处置的（按 IP 去重）
 	// 之前用 status='pending' 会把非 web、不可达、已确认的台账资产都算进来，导致首页和列表对不上
-	config.DB.Raw(`SELECT count(DISTINCT s.ip) FROM services s
-		JOIN assets a ON a.ip = s.ip
+	config.DB.Raw(`SELECT count(*) FROM services s
 		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
 		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')
-		  AND COALESCE(a.confirmed_title,'') = ''
-		  AND COALESCE(a.confirmed_simhash,0) = 0
-		  AND a.status <> 'confirmed'`).Scan(&s.AssetPending)
-	// 导入资产 = 资产总览的总数（assets 表全部记录，含扫描发现与台账导入）
-	config.DB.Model(&model.Asset{}).Count(&s.ImportedTotal)
+		  AND s.confirmed = false`).Scan(&s.AssetPending)
+	// 导入资产 = 台账导入的数量（source='ledger'），不是 assets 全表
+	config.DB.Model(&model.Asset{}).Where("source = ?", "ledger").Count(&s.ImportedTotal)
 	// 运行中任务
 	config.DB.Model(&model.ScanTask{}).Where("status = 'running'").Count(&s.RunningTasks)
 	config.DB.Model(&model.ComplianceResult{}).Where("status = 'violation'").Count(&s.ViolationTotal)
@@ -145,7 +144,7 @@ func GetServiceTrend(limit int) []TrendPoint {
 
 	// 已登记/待确认依赖 assets 的 status，历史快照不全，用当前值填最后一点
 	var cur WebStat
-	config.DB.Raw(`SELECT count(DISTINCT s.ip) AS web_assets,
+	config.DB.Raw(`SELECT count(DISTINCT CASE WHEN a.status = 'confirmed' THEN s.ip END) AS web_assets,
 		count(DISTINCT CASE WHEN a.status = 'confirmed' THEN s.ip END) AS confirmed
 		FROM services s JOIN assets a ON a.ip = s.ip
 		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')

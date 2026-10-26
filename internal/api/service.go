@@ -35,7 +35,8 @@ func ListServices(c *gin.Context) {
 	}
 	// 只显示已完成处置（已登记资产）的 web 服务
 	if c.Query("confirmedOnly") == "true" {
-		q = q.Where("asset_id IN (SELECT id FROM assets WHERE status = 'confirmed')")
+		// 与首页「Web 资产」口径统一：按服务自身的 confirmed 标记
+		q = q.Where("confirmed = true")
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"

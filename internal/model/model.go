@@ -42,6 +42,9 @@ type ScanTask struct {
 	ExtraArgs  string     `gorm:"column:extra_args" json:"extraArgs"`
 	ReportPath string     `gorm:"column:report_path" json:"reportPath"`
 	BatchSize  int        `gorm:"column:batch_size;default:100" json:"batchSize"` // 每批下发的 IP 数
+	ProbeOffset int       `gorm:"column:probe_offset;default:0" json:"probeOffset"` // 流水线探测进度（已探测到第几个原始 IP）
+	TotalIPs    int       `gorm:"column:total_ips;default:0" json:"totalIps"`       // 目标展开后的 IP 总数（用于判断探测是否完成）
+	AliveCount  int       `gorm:"column:alive_count;default:0" json:"aliveCount"`   // 存活探测累计命中数
 	NodeIDs    string     `gorm:"column:node_ids" json:"nodeIds"` // ""=本机, "all"=全部节点, "1,2"=指定
 	CreatedAt  time.Time  `json:"createdAt"`
 	StartedAt  *time.Time `json:"startedAt"`
@@ -81,6 +84,8 @@ type Service struct {
 	Confirmed   bool       `gorm:"column:confirmed;default:false" json:"confirmed"`
 	FirstSeen   *time.Time `gorm:"column:first_seen" json:"firstSeen"`
 	LastSeen    *time.Time `gorm:"column:last_seen" json:"lastSeen"`
+	TaskID      uint       `gorm:"column:task_id;default:0;index" json:"taskId"`         // 首次发现它的任务
+	LastTaskID  uint       `gorm:"column:last_task_id;default:0;index" json:"lastTaskId"` // 最近一次扫到它的任务
 }
 
 func (Service) TableName() string { return "services" }
@@ -116,9 +121,29 @@ type ComplianceResult struct {
 	DetectedAt *time.Time `gorm:"column:detected_at" json:"detectedAt"`
 	LastSeen   *time.Time `gorm:"column:last_seen" json:"lastSeen"`
 	FixedAt    *time.Time `gorm:"column:fixed_at" json:"fixedAt"`
+	TaskID     uint       `gorm:"column:task_id;default:0;index" json:"taskId"`
+	LastTaskID uint       `gorm:"column:last_task_id;default:0;index" json:"lastTaskId"`
 }
 
 func (ComplianceResult) TableName() string { return "compliance_results" }
+
+// TaskRun 定时任务每次执行的快照（用于「详情」里看历史执行记录）
+type TaskRun struct {
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	TaskID        uint       `gorm:"column:task_id;index" json:"taskId"`
+	Status        string     `gorm:"column:status;default:running" json:"status"`
+	StartedAt     *time.Time `gorm:"column:started_at" json:"startedAt"`
+	FinishedAt    *time.Time `gorm:"column:finished_at" json:"finishedAt"`
+	DurationSec   int        `gorm:"column:duration_sec;default:0" json:"durationSec"`
+	TotalIPs      int        `gorm:"column:total_ips;default:0" json:"totalIps"`
+	AliveIPs      int        `gorm:"column:alive_ips;default:0" json:"aliveIps"`
+	AppsFound     int        `gorm:"column:apps_found;default:0" json:"appsFound"`
+	AppsNew       int        `gorm:"column:apps_new;default:0" json:"appsNew"`
+	Violations    int        `gorm:"column:violations;default:0" json:"violations"`
+	ViolationsNew int        `gorm:"column:violations_new;default:0" json:"violationsNew"`
+}
+
+func (TaskRun) TableName() string { return "task_runs" }
 
 // PageSnapshot 页面快照
 type PageSnapshot struct {

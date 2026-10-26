@@ -10,28 +10,48 @@
         <n-grid-item span="2 m:1">
           <n-card title="企业微信" size="small" class="ch">
             <n-form-item label="Webhook" label-placement="top">
-              <n-input v-model:value="form.wecomWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." />
+              <div style="display:flex;gap:8px;width:100%">
+                <div style="display:flex;gap:8px;width:100%">
+                <n-input v-model:value="form.wecomWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." />
+                <n-button size="small" :loading="testingCh === 'wecom'" @click="testOne('wecom')">测试</n-button>
+              </div>
+              </div>
             </n-form-item>
           </n-card>
         </n-grid-item>
         <n-grid-item span="2 m:1">
           <n-card title="钉钉" size="small" class="ch">
             <n-form-item label="Webhook" label-placement="top">
-              <n-input v-model:value="form.dingtalkWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
+              <div style="display:flex;gap:8px;width:100%">
+                <div style="display:flex;gap:8px;width:100%">
+                <n-input v-model:value="form.dingtalkWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
+                <n-button size="small" :loading="testingCh === 'dingtalk'" @click="testOne('dingtalk')">测试</n-button>
+              </div>
+              </div>
             </n-form-item>
           </n-card>
         </n-grid-item>
         <n-grid-item span="2 m:1">
           <n-card title="飞书" size="small" class="ch">
             <n-form-item label="Webhook" label-placement="top">
-              <n-input v-model:value="form.feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+              <div style="display:flex;gap:8px;width:100%">
+                <div style="display:flex;gap:8px;width:100%">
+                <n-input v-model:value="form.feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+                <n-button size="small" :loading="testingCh === 'feishu'" @click="testOne('feishu')">测试</n-button>
+              </div>
+              </div>
             </n-form-item>
           </n-card>
         </n-grid-item>
         <n-grid-item span="2 m:1">
           <n-card title="通用 Webhook" size="small" class="ch">
             <n-form-item label="地址（POST JSON: {title, content}）" label-placement="top">
-              <n-input v-model:value="form.genericWebhook" placeholder="https://your-system/hook" />
+              <div style="display:flex;gap:8px;width:100%">
+                <div style="display:flex;gap:8px;width:100%">
+                <n-input v-model:value="form.genericWebhook" placeholder="https://your-system/hook" />
+                <n-button size="small" :loading="testingCh === 'generic'" @click="testOne('generic')">测试</n-button>
+              </div>
+              </div>
             </n-form-item>
           </n-card>
         </n-grid-item>
@@ -41,7 +61,10 @@
         <n-grid :cols="3" :x-gap="12" item-responsive>
           <n-grid-item span="3 m:1">
             <n-form-item label="SMTP 服务器" label-placement="top">
-              <n-input v-model:value="form.emailSmtp" placeholder="smtp.exmail.qq.com" />
+              <div style="display:flex;gap:8px;width:100%">
+                <n-input v-model:value="form.emailSmtp" placeholder="smtp.exmail.qq.com" />
+                <n-button size="small" :loading="testingCh === 'email'" @click="testOne('email')">测试</n-button>
+              </div>
             </n-form-item>
           </n-grid-item>
           <n-grid-item span="3 m:1">
@@ -77,15 +100,15 @@
           <n-checkbox v-model:checked="form.onTaskDone">扫描任务结束</n-checkbox>
           <n-checkbox v-model:checked="form.onNewAsset">发现新资产</n-checkbox>
           <n-checkbox v-model:checked="form.onViolation">合规违规</n-checkbox>
+          <n-checkbox v-model:checked="form.onFault">故障告警</n-checkbox>
         </n-space>
       </n-card>
 
       <n-space justify="end" style="margin-top: 16px">
-        <n-button :loading="testing" @click="test">发送测试</n-button>
         <n-button type="primary" :loading="saving" @click="save">保存</n-button>
       </n-space>
 
-      <n-alert v-if="testResult" type="info" :bordered="false" style="margin-top: 12px" closable @close="testResult = ''">
+      <n-alert v-if="false" type="info" :bordered="false" style="margin-top: 12px">
         <div v-for="(v, k) in testResultsMap" :key="k" class="res-row">
           <b>{{ k }}</b> <span :class="v.startsWith('✗') ? 'bad' : 'ok'">{{ v }}</span>
         </div>
@@ -108,7 +131,7 @@ const testResultsMap = ref({})
 const form = ref({
   wecomWebhook: '', dingtalkWebhook: '', feishuWebhook: '', genericWebhook: '',
   emailSmtp: '', emailPort: 465, emailSsl: true, emailUser: '', emailPass: '', emailTo: '',
-  onTaskDone: true, onNewAsset: true, onViolation: true
+  onTaskDone: true, onNewAsset: true, onViolation: true, onFault: true
 })
 
 async function load() {

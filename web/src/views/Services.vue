@@ -11,8 +11,18 @@
         <n-button @click="reset">重置</n-button>
         <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" />
         <n-button @click="exportUrls">导出 URL</n-button>
+        <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
+          <template #trigger>
+            <n-button type="error" :disabled="checked.length === 0">
+              批量删除{{ checked.length ? '(' + checked.length + ')' : '' }}
+            </n-button>
+          </template>
+          确认删除选中的 {{ checked.length }} 条服务记录？
+        </n-popconfirm>
       </div>
-      <n-data-table :columns="columns" :data="items" :loading="loading" :pagination="{ ...pagination, showSizePicker: true, pageSizes: [10, 20, 50, 100], onUpdatePageSize: onPageSize }"
+      <n-data-table :columns="columns" :data="items" :loading="loading" :row-key="r => r.id"
+        :checked-row-keys="checked" @update:checked-row-keys="keys => checked = keys"
+        :pagination="{ ...pagination, showSizePicker: true, pageSizes: [10, 20, 50, 100], onUpdatePageSize: onPageSize }"
         remote @update:page="onPage" />
     </n-card>
   </div>
@@ -45,6 +55,7 @@ const exportCols = [
 ]
 
 const loading = ref(false)
+const checked = ref([])
 const items = ref([])
 const page = ref(1)
 const pageSize = ref(20)
@@ -52,6 +63,7 @@ const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const filters = ref({ ip: '', port: '', service: '', protocol: '' })
 
 const columns = [
+  { type: 'selection', width: 44, fixed: 'left' },
   { title: 'IP', key: 'ip', width: 140 },
   { title: '端口', key: 'port', width: 80 },
   { title: '协议', key: 'protocol', width: 80 },
@@ -102,6 +114,17 @@ async function load() {
 }
 
 function search() { page.value = 1; load() }
+
+async function batchDelete() {
+  if (checked.value.length === 0) { message.warning('请先选择服务'); return }
+  try {
+    await api.post('/services/batch-delete', { ids: checked.value })
+    message.success(`已删除 ${checked.value.length} 条`)
+    checked.value = []
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '删除失败') }
+}
+
 function onPage(p) { page.value = p; load() }
 function onPageSize(sz) { pageSize.value = sz; page.value = 1; load() }
 function reset() {

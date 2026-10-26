@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path"
 	"fmt"
 	"asset-platform/internal/model"
 	"log"
@@ -34,6 +35,37 @@ func main() {
 		if cfg.TscanClientPath != "" {
 			scanner.SetTscanClientPath(cfg.TscanClientPath)
 		}
+		service.CleanupStaleRuns()   // 收尾上一轮残留的执行记录
+		service.StartFaultsCleanup() // 每日清理过期故障记录（默认 30 天）
+		service.CleanupOldFaults()       // 启动时先清一次
+		service.CleanupOrphanPipelines() // 清理崩溃残留的孤儿断点
+		// 只在「有运行中任务被中断」时才记录故障，正常启动/部署重启不是故障
+		var runningCnt int64
+		config.DB.Model(&model.ScanTask{}).Where("status = ?", "running").Count(&runningCnt)
+		if runningCnt > 0 {
+			service.RecordFault("server_restart", 0, "", 0,
+				fmt.Sprintf("服务端重启，%d 个运行中任务被中断（已从断点恢复）", runningCnt))
+		}
+		// 断点续传：启动时把所有 running 任务的流水线恢复起来，
+		// 会从 data/pipeline/<id>.json 读回 offset 与待下发池，继续探测/派发
+		go func() {
+			var running []model.ScanTask
+			config.DB.Where("status = ?", "running").Find(&running)
+			for _, t := range running {
+				log.Printf("[恢复] 任务 #%d（%s）运行中，从断点恢复流水线", t.ID, t.Name)
+				service.DispatchNextBatch(t.ID)
+			}
+		}()
+		// 每 30 秒巡检：节点离线/熔断时，把它名下未完成的分片收回重新派发
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				if n := service.RescheduleOrphanShards(); n > 0 {
+					log.Printf("[巡检] 收回 %d 个孤儿分片并重新派发", n)
+				}
+			}
+		}()
 		scheduler.Start()
 	}
 
@@ -48,10 +80,20 @@ func main() {
 	// 静态文件服务（前端构建产物 web/dist 存在时，生产模式单端口部署）
 	if _, err := os.Stat("web/dist/index.html"); err == nil {
 		r.Static("/static", "web/dist/static")
-		r.StaticFile("/favicon.ico", "web/dist/favicon.ico")
-		r.StaticFile("/favicon.svg", "web/dist/favicon.svg")
+		r.Static("/fonts", "web/dist/fonts") // 自托管字体（MiSans / 霞鹜文楷）
+		for _, f := range []string{"favicon.ico", "favicon.svg", "logo-transparent.png", "logo-dark.png", "logo-256.png"} {
+			if _, err := os.Stat("web/dist/" + f); err == nil {
+				r.StaticFile("/"+f, "web/dist/"+f)
+			}
+		}
 		r.StaticFile("/", "web/dist/index.html")
 		r.NoRoute(func(c *gin.Context) {
+			// 带扩展名的资源不存在时必须 404，
+			// 否则会把 index.html 当作 css/js/woff2 返回（浏览器静默解析失败）
+			if ext := path.Ext(c.Request.URL.Path); ext != "" && ext != ".html" {
+				c.Status(http.StatusNotFound)
+				return
+			}
 			c.File("web/dist/index.html") // SPA 回退
 		})
 		log.Printf("[asset-platform] 已启用前端静态服务 (web/dist)")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"asset-platform/internal/version"
 	"path/filepath"
 	"syscall"
@@ -105,20 +106,47 @@ var logRing = &ringBuf{max: 300}
 // nodeToken 注册时由服务端下发，随每个请求带上用于认证
 var nodeToken string
 
-const nodeTokenFile = "agent.token"
+const (
+	agentStateFile  = "agent.json"  // {"id":5,"token":"..."}
+	legacyTokenFile = "agent.token" // 旧格式：仅 token
+)
 
+type agentState struct {
+	ID    uint   `json:"id"`
+	Token string `json:"token"`
+}
+
+// loadNodeToken 读取本地凭据（节点 ID + 长期令牌），
+// 有了它重启时无需再次使用一次性加入令牌
 func loadNodeToken() {
-	if b, err := os.ReadFile(nodeTokenFile); err == nil {
+	if b, err := os.ReadFile(agentStateFile); err == nil {
+		var st agentState
+		if json.Unmarshal(b, &st) == nil && st.Token != "" {
+			nodeToken = st.Token
+			if st.ID > 0 {
+				nodeID = st.ID
+			}
+			return
+		}
+	}
+	// 兼容旧版仅存 token 的文件
+	if b, err := os.ReadFile(legacyTokenFile); err == nil {
 		nodeToken = strings.TrimSpace(string(b))
 	}
 }
 
-func saveNodeToken(tk string) {
+// saveNodeToken 持久化节点 ID 与长期令牌
+func saveNodeToken(id uint, tk string) {
 	nodeToken = tk
+	if id > 0 {
+		nodeID = id
+	}
 	if tk == "" {
 		return
 	}
-	_ = os.WriteFile(nodeTokenFile, []byte(tk), 0o600)
+	if b, err := json.Marshal(agentState{ID: nodeID, Token: tk}); err == nil {
+		_ = os.WriteFile(agentStateFile, b, 0o600)
+	}
 }
 
 // agentReq 统一的 agent 请求入口（自动带 X-Node-Token）
@@ -156,12 +184,27 @@ func selfUpgrade(target string) {
 		return
 	}
 	tmp := exe + ".new"
-	resp, err := http.Get(*serverURL + "/api/nodes/agent-binary?os=linux")
+	// 用节点自身凭据下载（一次性加入令牌早已过期）；
+	// 必须带 arch，否则 ARM64 节点会拿到 amd64 二进制
+	dlURL := fmt.Sprintf("%s/api/nodes/agent-binary?os=%s&arch=%s&nodeId=%d",
+		*serverURL, runtime.GOOS, runtime.GOARCH, nodeID)
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		log.Printf("[agent] 构造下载请求失败: %v", err)
+		return
+	}
+	req.Header.Set("X-Node-Token", nodeToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("[agent] 下载新控制文件失败: %v", err)
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		log.Printf("[agent] 下载新控制文件失败: HTTP %d %s", resp.StatusCode, string(body))
+		return
+	}
 	f, err := os.Create(tmp)
 	if err != nil {
 		log.Printf("[agent] 创建临时文件失败: %v", err)
@@ -197,7 +240,25 @@ func selfUpgrade(target string) {
 	}
 }
 
+// disableProxyTransport agent 只与内网中心通信，必须直连。
+// 系统若设置了 HTTP_PROXY/HTTPS_PROXY，DefaultClient 会把内网请求也送去代理，
+// 导致心跳/任务请求静默失败（日志里看不到任何报错）。
+func disableProxyTransport() {
+	http.DefaultTransport = &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:        64,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	http.DefaultClient.Transport = http.DefaultTransport
+}
+
 func main() {
+	disableProxyTransport()
 	flag.Parse()
 	log.SetOutput(io.MultiWriter(os.Stderr, logRing))
 	myVersion = selfVersion()
@@ -243,6 +304,34 @@ func main() {
 	select {}
 }
 
+// countPortsIn 估算端口数量：空=Top100；支持 "1-65535"、"80,443"、"1-1024,3389"
+func countPortsIn(ports string) int {
+	ports = strings.TrimSpace(ports)
+	if ports == "" {
+		return 100 // 默认 Top100
+	}
+	n := 0
+	for _, seg := range strings.Split(ports, ",") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		if i := strings.Index(seg, "-"); i > 0 {
+			a, e1 := strconv.Atoi(strings.TrimSpace(seg[:i]))
+			b, e2 := strconv.Atoi(strings.TrimSpace(seg[i+1:]))
+			if e1 == nil && e2 == nil && a > 0 && b >= a {
+				n += b - a + 1
+			}
+		} else if _, err := strconv.Atoi(seg); err == nil {
+			n++
+		}
+	}
+	if n == 0 {
+		return 100
+	}
+	return n
+}
+
 func findTscanClient() string {
 	candidates := []string{
 		"./TscanClient", "./TscanClient.exe",
@@ -267,6 +356,11 @@ func localIP() string {
 }
 
 func register() error {
+	// 已在本机保存过节点 ID + 长期令牌：直接复用，跳过注册
+	// （加入令牌是一次性的，重启后不能再用）
+	if nodeID > 0 && nodeToken != "" {
+		return nil
+	}
 	body, _ := json.Marshal(map[string]string{"name": *nodeName, "ip": localIP(), "token": *token, "version": myVersion})
 	resp, err := http.Post(*serverURL+"/api/nodes/register", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -289,7 +383,7 @@ func register() error {
 	}
 	nodeID = node.ID
 	if node.Token != "" {
-		saveNodeToken(node.Token)
+		saveNodeToken(node.ID, node.Token)
 	}
 	return nil
 }
@@ -320,6 +414,15 @@ func doHeartbeat() {
 		return
 	}
 	defer resp.Body.Close()
+
+	// 节点在中心已被删除时，本地凭据即失效：
+	// 清掉凭据并退出，由 systemd / 计划任务带着 -token 重启完成重新注册。
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
+		log.Printf("[agent] 凭据已失效（HTTP %d），节点可能已在中心被删除，正在清除本地凭据并重新注册", resp.StatusCode)
+		_ = os.Remove(agentStateFile)
+		_ = os.Remove(legacyTokenFile)
+		os.Exit(2)
+	}
 	var r struct {
 		Upgrade       bool   `json:"upgrade"`
 		LatestVersion string `json:"latestVersion"`
@@ -468,7 +571,11 @@ func runAgentTask(at AgentTask) {
 	}
 
 	var mu sync.Mutex
-	scanned, total := 0, len(targets)
+	// total 的初始值＝IP 数 × 端口数。
+	// 之前直接用 IP 数，Linux 上有进度条会被覆盖成真实端口数，
+	// 但 Windows 走普通管道、拿不到进度条，total 就永远停在 IP 数，
+	// 于是「6 个 IP」被显示成「待扫描 6 个端口」，扫完还立刻判定完成。
+	scanned, total := 0, len(targets)*countPortsIn(opts.Ports)
 	doneIPs := map[string]bool{}
 	lastPct := -1
 	etaSec := 0

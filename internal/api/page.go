@@ -1,6 +1,8 @@
 package api
 
 import (
+	"path/filepath"
+	"strings"
 	"net/http"
 	"strconv"
 
@@ -58,7 +60,15 @@ func SnapshotImage(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	c.File(s.ImagePath)
+	// 防路径遍历：只允许访问 SnapshotDir 下的文件
+	absPath := filepath.Clean(s.ImagePath)
+	absSnap, _ := filepath.Abs(service.SnapshotDir)
+	absFile, _ := filepath.Abs(absPath)
+	if !strings.HasPrefix(absFile, absSnap) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "非法文件路径"})
+		return
+	}
+	c.File(absPath)
 }
 
 // DeleteSnapshots 删除截图（支持批量 ids）

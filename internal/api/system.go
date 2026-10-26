@@ -9,6 +9,7 @@ import (
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
 	"asset-platform/internal/service"
+	"asset-platform/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -92,6 +93,15 @@ func RollbackUpdate(c *gin.Context) {
 }
 
 // SystemStats 系统资源占用（CPU/内存/磁盘）
+// SystemVersion 当前系统版本信息
+func SystemVersion(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"version":   version.Version,
+		"buildTime": version.BuildTime,
+		"commit":    version.Commit,
+	})
+}
+
 func SystemStats(c *gin.Context) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)

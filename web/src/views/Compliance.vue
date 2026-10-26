@@ -165,6 +165,7 @@ async function loadResults() {
   }
 }
 function onResultPage(p) { resultPage.value = p; loadResults() }
+function onResultSize(s) { resultSize.value = s; resultPage.value = 1; loadResults() }
 
 async function runCheck() {
   checking.value = true

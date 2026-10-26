@@ -41,18 +41,16 @@
       </template>
     </n-modal>
 </template>
-      <div class="toolbar">
-        <n-button type="primary" @click="genToken">生成一次性加入令牌</n-button>
-        <span class="tip">令牌 5 分钟内有效，仅可使用一次</span>
-      </div>
       <n-data-table :columns="columns" :data="nodes" :loading="loading" size="small" />
     </n-card>
 
     <n-card title="一键加入集群">
       <div class="addr-row">
-        <span class="addr-label">本平台地址</span>
-        <n-input v-model:value="serverAddr" placeholder="如 http://10.1.1.1:8080" style="width: 300px" />
-        <n-button size="small" @click="fillCurrentAddr">填入当前访问地址</n-button>
+        <span class="addr-label">服务器 IP</span>
+        <n-input v-model:value="serverIP" placeholder="如 10.1.1.1" style="width: 180px" />
+        <span class="addr-label" style="margin-left: 8px">端口</span>
+        <n-input-number v-model:value="serverPort" :min="1" :max="65535" style="width: 100px" />
+        <n-button size="small" @click="fillCurrentAddr" style="margin-left: 8px">填入当前访问</n-button>
         <span class="muted">用于拼接加入命令；内网部署请填真实可达 IP</span>
       </div>
       <div class="toolbar" style="margin-top: 14px">
@@ -63,15 +61,19 @@
       <n-tabs type="segment" animated>
         <n-tab-pane name="linux" tab="Linux">
           <div v-if="linuxCmd" class="cmd-box">
+            <div class="cmd-bar">
+              <n-button size="small" type="primary" @click="copyCmd(linuxCmd)">一键复制</n-button>
+            </div>
             <n-code :code="linuxCmd" language="bash" word-wrap />
-            <n-button size="small" type="primary" class="copy-btn" @click="copyCmd(linuxCmd)">一键复制</n-button>
           </div>
           <p v-else class="muted">先点「生成一次性加入令牌」。</p>
         </n-tab-pane>
         <n-tab-pane name="windows" tab="Windows">
           <div v-if="winCmd" class="cmd-box">
+            <div class="cmd-bar">
+              <n-button size="small" type="primary" @click="copyCmd(winCmd)">一键复制</n-button>
+            </div>
             <n-code :code="winCmd" language="powershell" word-wrap />
-            <n-button size="small" type="primary" class="copy-btn" @click="copyCmd(winCmd)">一键复制</n-button>
           </div>
           <p v-else class="muted">先点「生成一次性加入令牌」。</p>
         </n-tab-pane>
@@ -79,6 +81,22 @@
       <p class="muted">
         说明：脚本会从本平台下载 <code>scope-agent</code> 与 <code>TscanClient</code>，用一次性令牌注册后常驻，
         之后由服务端唤醒下发任务，执行期间实时回报进度。
+      </p>
+    </n-card>
+
+    <n-card title="熔断规则" style="margin-top: 16px">
+      <div class="addr-row">
+        <span class="addr-label">连续失败阈值</span>
+        <n-input-number v-model:value="fuseFailThreshold" :min="1" :max="100" style="width: 140px" />
+        <span class="addr-label" style="margin-left: 16px">熔断时长（分钟）</span>
+        <n-input-number v-model:value="fuseDurationMin" :min="1" :max="1440" style="width: 140px" />
+        <span class="addr-label" style="margin-left: 16px">心跳超时（秒）</span>
+        <n-input-number v-model:value="heartbeatTimeoutSec" :min="10" :max="3600" style="width: 140px" />
+        <n-button type="primary" style="margin-left: 16px" :loading="savingFuse" @click="saveFuse">保存规则</n-button>
+      </div>
+      <p class="muted" style="margin-top: 8px">
+        节点分片连续失败达到阈值后熔断该节点，熔断期内不再派发，分片自动收回重派给其他节点；
+        成功一次即清零连续失败计数。熔断事件记录在「故障和日志」，可配通知。
       </p>
     </n-card>
 
@@ -216,11 +234,16 @@ const winCmd = ref('')
 const expireAt = ref('')
 
 // 本平台地址（用于拼接命令，持久化）
-const serverAddr = ref(localStorage.getItem('serverAddr') || window.location.origin)
-watch(serverAddr, v => localStorage.setItem('serverAddr', v))
+const serverIP = ref(localStorage.getItem('serverIP') || window.location.hostname)
+const serverPort = ref(parseInt(localStorage.getItem('serverPort')) || 18888)
+watch([serverIP, serverPort], () => {
+  localStorage.setItem('serverIP', serverIP.value)
+  localStorage.setItem('serverPort', serverPort.value)
+})
 
 function fillCurrentAddr() {
-  serverAddr.value = window.location.origin
+  serverIP.value = window.location.hostname
+  serverPort.value = parseInt(window.location.port) || 18888
   message.success('已填入当前访问地址')
 }
 
@@ -302,9 +325,13 @@ async function load() {
 
 async function genToken() {
   const res = await api.post('/nodes/join-token')
-  const base = (serverAddr.value || window.location.origin).replace(/\/+$/, '')
-  linuxCmd.value = `curl -fsSL "${base}/api/nodes/install.sh?token=${res.token}" | bash`
-  winCmd.value = `powershell -ExecutionPolicy Bypass -c "iwr -useb '${base}/api/nodes/install.ps1?token=${res.token}' | iex"`
+  const base = serverIP.value
+    ? `http://${serverIP.value}:${serverPort.value}`
+    : window.location.origin
+  // Linux：sudo 安装 systemd 服务（开机自启 + 崩溃自动重启）
+  linuxCmd.value = `curl -fsSL "${base}/api/nodes/install.sh?token=${res.token}" | sudo bash`
+  // Windows：脚本内部自动申请一次 UAC，之后计划任务常驻 + 看门狗自愈
+  winCmd.value = `powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -useb '${base}/api/nodes/install.ps1?token=${res.token}' | iex"`
   expireAt.value = new Date(Date.now() + res.expiresIn * 1000).toLocaleTimeString('zh-CN')
   message.success('令牌已生成，请在 5 分钟内使用')
 }
@@ -358,7 +385,41 @@ async function health(row) {
   } catch (e) { message.error('健康检查失败') }
 }
 
-onMounted(load)
+const fuseFailThreshold = ref(5)
+const fuseDurationMin = ref(5)
+const heartbeatTimeoutSec = ref(90)
+const savingFuse = ref(false)
+
+async function loadFuse() {
+  try {
+    const r = await api.get('/system/fuse')
+    fuseFailThreshold.value = r.fuseFailThreshold || 5
+    fuseDurationMin.value = r.fuseDurationMin || 5
+    heartbeatTimeoutSec.value = r.nodeHeartbeatTimeoutSec || 90
+    heartbeatTimeoutSec.value = r.nodeHeartbeatTimeoutSec || 90
+  } catch (e) { /* 忽略，用默认值 */ }
+}
+
+async function saveFuse() {
+  savingFuse.value = true
+  try {
+    await api.post('/system/fuse', {
+      fuseFailThreshold: fuseFailThreshold.value,
+      fuseDurationMin: fuseDurationMin.value,
+      nodeHeartbeatTimeoutSec: heartbeatTimeoutSec.value
+    })
+    message.success('熔断规则已保存')
+  } catch (e) {
+    message.error(e.response?.data?.error || '保存失败')
+  } finally {
+    savingFuse.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  loadFuse()
+})
 </script>
 
 <style scoped>
@@ -366,7 +427,11 @@ onMounted(load)
 .addr-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .addr-label { font-size: 13px; color: var(--text-main); font-weight: 500; }
 .cmd-box { position: relative; }
-.copy-btn { position: absolute; top: 10px; right: 10px; z-index: 3; }
+.cmd-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
 .desc { font-size: 14px; margin: 8px 0; }
 .muted { color: var(--text-muted); font-size: 12px; margin-top: 10px; }
 </style>
