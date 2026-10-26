@@ -81,8 +81,12 @@ func AgentProgress(c *gin.Context) {
 	if res := config.DB.Model(&model.AgentTask{}).
 		Where("id = ? AND status = 'pending'", id).
 		Updates(map[string]interface{}{"status": "running", "started_at": now}); res.RowsAffected > 0 {
+		ipCount := 0
+		if at.IPRanges != "" {
+			ipCount = len(strings.Split(at.IPRanges, ","))
+		}
 		tasklog.AppendTS(at.TaskID, "[节点 %s] 收到任务并开始执行（分片 #%d，%d 个 IP）",
-			at.NodeName, at.ID, at.Total)
+			at.NodeName, at.ID, ipCount)
 	}
 	// 兜底：老数据可能没有 started_at
 	config.DB.Model(&model.AgentTask{}).

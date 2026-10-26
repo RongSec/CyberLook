@@ -43,6 +43,13 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.GET("/auth/me", Me)
 		auth.POST("/auth/password", ChangePassword)
 		auth.GET("/system/stats", SystemStats)
+		auth.GET("/faults", ListFaults)
+		auth.GET("/faults/retention", GetFaultsRetention)
+		auth.POST("/faults/retention", SaveFaultsRetention)
+		auth.GET("/system/fuse", GetFuseConfig)
+		auth.POST("/system/fuse", SaveFuseConfig)
+		auth.GET("/system/logs", SystemLogs)
+		auth.GET("/system/version", SystemVersion)
 
 		// 资产
 		auth.GET("/assets", ListAssets)
@@ -63,10 +70,15 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.DELETE("/disposal/:ip", DeleteDisposal)
 		auth.POST("/disposal/batch-delete", BatchDeleteDisposal)
 		auth.POST("/disposal/confirm-ledger", ConfirmByLedger)
+		auth.POST("/disposal/confirm", ConfirmDisposal)
 
 		// 组织结构（部门）
 		auth.GET("/departments", ListDepartments)
+		auth.POST("/departments/sync", SyncDepartmentsFromAssets)
+		auth.POST("/departments/merge", MergeDepartments)
+		auth.POST("/departments/split", SplitDepartment)
 		auth.POST("/departments", CreateDepartment)
+		auth.PUT("/departments/:id", UpdateDepartment)
 		auth.DELETE("/departments/:id", DeleteDepartment)
 
 		// 服务
@@ -78,7 +90,13 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/tasks", CreateTask)
 		auth.PUT("/tasks/:id", UpdateTask)
 		auth.GET("/tasks", ListTasks)
+		auth.GET("/tasks/scheduled", ListScheduledTasks)
+		auth.GET("/tasks/:id/overview", TaskOverview)
+		auth.GET("/tasks/:id/runs", ListTaskRuns)
 		auth.POST("/tasks/:id/run", RunTask)
+		auth.POST("/tasks/:id/pause", PauseTask)
+		auth.POST("/tasks/:id/resume", ResumeTask)
+		auth.POST("/tasks/:id/restart", RestartTask)
 		auth.POST("/tasks/:id/stop", StopTask)
 		auth.DELETE("/tasks/:id", DeleteTask)
 		auth.POST("/tasks/batch-delete", BatchDeleteTasks)

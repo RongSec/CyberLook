@@ -64,6 +64,7 @@ func CheckUpdate() (*UpdateInfo, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "weijian-asset-platform-updater")
 	if s.GithubToken != "" {
 		req.Header.Set("Authorization", "Bearer "+s.GithubToken)
 	}
@@ -73,7 +74,18 @@ func CheckUpdate() (*UpdateInfo, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GitHub 返回 %d", resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		msg := strings.TrimSpace(string(b))
+		if msg == "" {
+			msg = resp.Status
+		}
+		if resp.StatusCode == 403 {
+			return nil, fmt.Errorf("GitHub 拒绝访问(403)：%s\n提示：未登录调用限 60 次/小时，建议在下方填写 GitHub Token（仅需 public_repo 读权限）", msg)
+		}
+		if resp.StatusCode == 404 {
+			return nil, fmt.Errorf("仓库或 Release 不存在(404)：请确认仓库为 %s 且已发布 Release", s.GithubRepo)
+		}
+		return nil, fmt.Errorf("GitHub 返回 %d：%s", resp.StatusCode, msg)
 	}
 
 	var rel struct {

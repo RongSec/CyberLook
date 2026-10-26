@@ -17,6 +17,7 @@ const routes = [
       { path: 'nodes', component: () => import('../views/Nodes.vue'), meta: { title: '节点' } },
       { path: 'network', component: () => import('../views/Network.vue'), meta: { title: 'IP 规划' } },
       { path: 'departments', component: () => import('../views/Departments.vue'), meta: { title: '组织结构' } },
+      { path: 'faults', component: () => import('../views/Faults.vue'), meta: { title: '故障和日志' } },
       { path: 'notify', component: () => import('../views/Notify.vue'), meta: { title: '通知设置' } },
       { path: 'api-docs', component: () => import('../views/ApiDocs.vue'), meta: { title: 'API 文档' } },
       { path: 'settings', component: () => import('../views/Settings.vue'), meta: { title: '系统配置' } }
