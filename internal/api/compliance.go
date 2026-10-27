@@ -77,7 +77,8 @@ func ListComplianceResults(c *gin.Context) {
 	status := c.Query("status")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
-	results, total := service.ListComplianceResults(status, page, size)
+	keyword := c.Query("keyword")
+	results, total := service.ListComplianceResults(status, keyword, page, size)
 
 	// 补服务名（合规结果只存了 ip+port，展示时需要知道是什么服务）
 	type row struct {

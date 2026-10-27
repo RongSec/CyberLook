@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"fmt"
 	"net/http"
 	"time"
@@ -142,6 +143,24 @@ func ConfirmByLedger(c *gin.Context) {
 // ListDisposal 资产处置列表
 func ListDisposal(c *gin.Context) {
 	items := listDisposalItems()
+	// 响应码过滤（逗号分隔），后端过滤避免前端漏判
+	if sc := c.Query("statusCodes"); sc != "" {
+		want := map[string]bool{}
+		for _, x := range strings.Split(sc, ",") {
+			if t := strings.TrimSpace(x); t != "" {
+				want[t] = true
+			}
+		}
+		if len(want) > 0 {
+			filtered := items[:0]
+			for _, it := range items {
+				if want[it.StatusCode] {
+					filtered = append(filtered, it)
+				}
+			}
+			items = filtered
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
 }
 

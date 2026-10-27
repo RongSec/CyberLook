@@ -553,6 +553,10 @@ func CheckTaskAllDone(taskID uint) {
 	if shardCount == 0 {
 		return // 一个分片都没有：要么还没开始，要么全部不可达（由调度侧单独处理）
 	}
+	// 池子里待派的 IP 不做超时判失败：多节点环境下节点会陆续恢复，
+	// 只要任务还在 running，调度会一直重试派发。
+	// 池子里待派的 IP 不做超时判失败：多节点环境下节点会陆续恢复，
+	// 只要任务还在 running，调度会一直重试派发。
 	config.DB.Model(&model.AgentTask{}).
 		Where("task_id = ? AND status IN ?", taskID, []string{"pending", "running"}).Count(&pending)
 	if pending > 0 {
@@ -564,11 +568,10 @@ func CheckTaskAllDone(taskID uint) {
 	config.DB.Model(&model.AgentTask{}).Where("task_id = ? AND status = 'cancelled'", taskID).Count(&cancelled)
 
 	status := "done"
-	switch {
-	case failed > 0:
+	// 只有真正 failed 的分片才判任务失败；
+	// cancelled（故障回收/人工取消）不算失败——IP 已回池子，任务继续推进。
+	if failed > 0 {
 		status = "failed"
-	case cancelled > 0:
-		status = "interrupted"
 	}
 	config.DB.Model(&model.ScanTask{}).Where("id = ?", taskID).
 		Updates(map[string]interface{}{"status": status, "finished_at": time.Now()})
@@ -682,6 +685,7 @@ func FinishAgentTask(id uint, ok bool) error {
 	// agent 收到取消指令会 kill 扫描进程，退出码非 0，agent 会报「失败」，
 	// 若直接覆盖，用户「手动停止」会被显示成「执行失败」。
 	var cur model.AgentTask
+	retryScheduled := false
 	if err := config.DB.First(&cur, id).Error; err == nil {
 		if cur.Status == "cancelled" {
 			return config.DB.Model(&model.AgentTask{}).Where("id = ?", id).
@@ -693,11 +697,44 @@ func FinishAgentTask(id uint, ok bool) error {
 		} else if st == "failed" {
 			RecordNodeFailure(cur.NodeID, cur.NodeName, cur.TaskID,
 				"分片 #"+strconv.Itoa(int(id))+" 执行失败")
+
+			// ---- 故障回收 ----
+			// 分片失败/节点故障：IP 全部收回待扫池，分片标 cancelled（不算任务失败）。
+			// 调度会持续把池子里的 IP 重新派发（原节点恢复就继续用，熔断则等恢复）。
+			// 不做「重试 N 次判 failed」：多节点环境下单点波动不该导致整任务失败。
+			ips := splitIPs(cur.IPRanges)
+			if len(ips) > 0 {
+				if v, ok := pipelines.Load(cur.TaskID); ok {
+					p := v.(*taskPipeline)
+					p.mu.Lock()
+					p.alivePool = append(p.alivePool, ips...)
+					snapOffset := p.offset
+					snapPool := append([]string(nil), p.alivePool...)
+					p.mu.Unlock()
+					_ = savePipelineFile(cur.TaskID, snapOffset, snapPool)
+				}
+			}
+			st = "cancelled" // 已回收，不计入失败
+			retryScheduled = true
+			log.Printf("[故障回收] 分片 #%d 执行失败，%d 个 IP 已收回待扫池，节点=%s",
+				id, len(ips), cur.NodeName)
 		}
 	}
 
-	return config.DB.Model(&model.AgentTask{}).Where("id = ?", id).
-		Updates(map[string]interface{}{"status": st, "progress": pr, "finished_at": now}).Error
+	updates := map[string]interface{}{
+		"status": st, "progress": pr, "finished_at": now,
+	}
+	if retryScheduled {
+		updates["retry_count"] = gorm.Expr("retry_count + 1")
+	}
+	if err := config.DB.Model(&model.AgentTask{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		return err
+	}
+	// 重试时触发调度，把回收的 IP 重新发出去
+	if retryScheduled {
+		go DispatchNextBatch(cur.TaskID)
+	}
+	return nil
 }
 
 // NodeHealth 节点健康检查（心跳时间 + 在线状态）

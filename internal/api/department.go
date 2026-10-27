@@ -143,17 +143,44 @@ func MergeDepartments(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
-	// 目标部门不存在则创建
-	var cnt int64
-	config.DB.Model(&model.Department{}).Where("name = ?", req.TargetName).Count(&cnt)
-	if cnt == 0 {
-		config.DB.Create(&model.Department{Name: req.TargetName})
+	// 汇总源部门的负责人（去重）
+	ownerSet := map[string]bool{}
+	var srcDepts []model.Department
+	config.DB.Where("name IN ?", req.SourceNames).Find(&srcDepts)
+	for _, d := range srcDepts {
+		for _, o := range strings.Split(d.Owners, ",") {
+			if t := strings.TrimSpace(o); t != "" {
+				ownerSet[t] = true
+			}
+		}
+	}
+	// 目标部门自身的负责人也要保留
+	var target model.Department
+	targetExists := config.DB.Where("name = ?", req.TargetName).First(&target).Error == nil
+	if targetExists {
+		for _, o := range strings.Split(target.Owners, ",") {
+			if t := strings.TrimSpace(o); t != "" {
+				ownerSet[t] = true
+			}
+		}
+	}
+	mergedOwners := make([]string, 0, len(ownerSet))
+	for o := range ownerSet {
+		mergedOwners = append(mergedOwners, o)
+	}
+	sort.Strings(mergedOwners)
+	ownersStr := strings.Join(mergedOwners, ",")
+
+	if !targetExists {
+		config.DB.Create(&model.Department{Name: req.TargetName, Owners: ownersStr})
+	} else {
+		config.DB.Model(&model.Department{}).Where("name = ?", req.TargetName).Update("owners", ownersStr)
 	}
 	// 资产的 department 一起改
 	config.DB.Model(&model.Asset{}).Where("department IN ?", req.SourceNames).
 		Update("department", req.TargetName)
-	// 删除源部门
-	config.DB.Where("name IN ?", req.SourceNames).Delete(&model.Department{})
+	// 删除源部门（排除目标名：合并 A、B 到 A 时不能把 A 删掉）
+	config.DB.Where("name IN ? AND name <> ?", req.SourceNames, req.TargetName).Delete(&model.Department{})
 	c.JSON(http.StatusOK, gin.H{"message": "已合并"})
 }
 
@@ -174,8 +201,11 @@ func SplitDepartment(c *gin.Context) {
 		// 创建新部门
 		var cnt int64
 		config.DB.Model(&model.Department{}).Where("name = ?", t.Name).Count(&cnt)
+		ownersStr := strings.Join(t.Owners, ",")
 		if cnt == 0 {
-			config.DB.Create(&model.Department{Name: t.Name})
+			config.DB.Create(&model.Department{Name: t.Name, Owners: ownersStr})
+		} else {
+			config.DB.Model(&model.Department{}).Where("name = ?", t.Name).Update("owners", ownersStr)
 		}
 		// 把这些负责人的资产改到新部门
 		if len(t.Owners) > 0 {
