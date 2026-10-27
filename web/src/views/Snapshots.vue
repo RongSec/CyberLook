@@ -14,15 +14,21 @@
         <n-input-number v-model:value="settings.retentionDays" :min="1" :max="365" style="width: 100px" />
         <span class="label">天</span>
         <n-button type="primary" @click="saveSettings">保存设置</n-button>
-        <n-button type="success" :loading="capturing" @click="captureNow">立刻截取全部 Web 服务</n-button>
+        <n-button type="success" :loading="capturing" @click="captureNow">立刻截取已确认 Web 资产</n-button>
       </div>
-      <p class="tip">立刻截图会对当前库内所有 web 服务逐一截图；定期截图按设定天数自动执行；超期快照自动删除。</p>
+      <div v-if="capturing || shotTotal > 0" style="margin-top: 12px">
+        <n-progress type="line" :percentage="shotPct" :status="shotStatus" :height="18">
+          {{ shotDone }} / {{ shotTotal }}（成功 {{ shotOK }}，失败 {{ shotFail }}）
+        </n-progress>
+      </div>
+      <p class="tip">立刻截图只针对「已确认」的 Web 资产（资产处置确认过的），避免给待处置目标发请求；定期截图按设定天数自动执行；超期快照自动删除。</p>
     </n-card>
 
     <!-- 快照列表 -->
     <n-card title="页面快照">
       <div class="toolbar">
-        <n-tag round>{{ snapshots.length }} 张</n-tag>
+        <n-input v-model:value="keyword" placeholder="搜索 IP / 端口" clearable style="width: 220px" />
+        <n-tag round>{{ groupedSnapshots.length }} 个 URL / {{ filteredSnapshots.length }} 张</n-tag>
         <ExportButton type="snapshots" title="页面快照" :columns="exportCols" />
         <n-button @click="toggleAll">
           {{ allChecked ? '取消全选' : '全选' }}
@@ -34,22 +40,52 @@
       </div>
       <n-empty v-if="snapshots.length === 0" description="暂无快照，点上方「立刻截取全部 Web 服务」" />
       <n-grid v-else :cols="4" :x-gap="14" :y-gap="14" responsive="screen" item-responsive>
-        <n-grid-item v-for="s in snapshots" :key="s.id" span="4 m:1 s:2">
-          <div class="shot-card" :class="{ picked: checked.includes(s.id) }">
-            <n-checkbox class="shot-check" :checked="checked.includes(s.id)"
-              @update:checked="v => toggle(s.id, v)" />
-            <div class="shot-img" @click="preview = s; showPreview = true">
-              <img :src="`/api/snapshots/${s.id}/image?token=${token}`" :alt="s.title" loading="lazy" />
+        <n-grid-item v-for="g in groupedSnapshots" :key="g.url" span="4 m:1 s:2">
+          <div class="shot-card" :class="{ picked: checked.includes(g.latest.id) }">
+            <n-checkbox class="shot-check" :checked="checked.includes(g.latest.id)"
+              @update:checked="v => toggle(g.latest.id, v)" />
+            <div class="shot-img" @click="preview = g.latest; showPreview = true">
+              <img :src="`/api/snapshots/${g.latest.id}/image?token=${token}`" :alt="g.latest.title" loading="lazy" />
             </div>
             <div class="shot-meta">
-              <div class="shot-title">{{ s.title || s.url }}</div>
-              <div class="shot-url">{{ s.url }}</div>
-              <div class="shot-time">{{ fmt(s.capturedAt) }}</div>
+              <div class="shot-title">{{ g.latest.title || g.url }}</div>
+              <div class="shot-url">{{ g.url }}</div>
+              <div class="shot-time">
+                {{ fmt(g.latest.capturedAt) }}
+                <n-tag v-if="g.count > 1" size="tiny" type="info" round style="margin-left:6px">
+                  {{ g.count }} 张
+                </n-tag>
+              </div>
             </div>
-            <n-button size="tiny" text type="error" class="shot-del" @click="delOne(s)">删除</n-button>
+            <div class="shot-actions">
+              <n-button size="tiny" type="primary" secondary @click="openTimeline(g.url)">查看态势</n-button>
+              <n-button size="tiny" text type="error" @click="delOne(g.latest)">删除</n-button>
+            </div>
           </div>
         </n-grid-item>
       </n-grid>
+
+      <!-- 查看态势：同一 URL 的历史截图（按时间倒序） -->
+      <n-modal v-model:show="showTimeline" preset="card" :title="'查看态势 — ' + timelineUrl" style="width: 1100px">
+        <p class="tip">同一 URL 的历史截图，按时间倒序（最新在前）</p>
+        <n-empty v-if="timelineList.length === 0" description="暂无历史截图" />
+        <div v-else style="max-height: 65vh; overflow-y: auto">
+          <div v-for="(s, idx) in timelineList" :key="s.id"
+            style="display:flex;gap:14px;align-items:flex-start;padding:12px 0;border-bottom:1px solid #f1f5f9">
+            <div style="width:46px;text-align:center;color:#94a3b8;font-size:12px;padding-top:4px">
+              #{{ timelineList.length - idx }}
+            </div>
+            <img :src="`/api/snapshots/${s.id}/image?token=${token}`" :alt="s.title"
+              style="width:280px;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer"
+              @click="preview = s; showPreview = true" />
+            <div style="flex:1">
+              <div style="font-weight:600">{{ s.title || '(无标题)' }}</div>
+              <div style="color:#64748b;font-size:12px;margin-top:4px">{{ fmt(s.capturedAt) }}</div>
+              <n-button size="tiny" text type="error" style="margin-top:8px" @click="delOne(s)">删除这张</n-button>
+            </div>
+          </div>
+        </div>
+      </n-modal>
     </n-card>
 
     <n-modal v-model:show="showPreview" preset="card" :title="preview?.title || preview?.url" style="width: 1100px">
@@ -77,6 +113,53 @@ const snapshots = ref([])
 const checked = ref([])
 const settings = ref({ enabled: false, intervalDays: 7, retentionDays: 30 })
 const capturing = ref(false)
+const keyword = ref('')
+const showTimeline = ref(false)
+const timelineUrl = ref('')
+const shotTotal = ref(0)
+const shotDone = ref(0)
+const shotOK = ref(0)
+const shotFail = ref(0)
+const filteredSnapshots = computed(() => {
+  const k = keyword.value.trim().toLowerCase()
+  if (!k) return snapshots.value
+  return snapshots.value.filter(s => (s.url || '').toLowerCase().includes(k))
+})
+
+const groupedSnapshots = computed(() => {
+  const m = new Map()
+  for (const s of filteredSnapshots.value) {
+    if (!m.has(s.url)) m.set(s.url, [])
+    m.get(s.url).push(s)
+  }
+  const out = []
+  for (const [url, list] of m) {
+    list.sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))
+    out.push({ url, latest: list[0], count: list.length, list })
+  }
+  // 最新截图时间靠前的排前面
+  out.sort((a, b) => new Date(b.latest.capturedAt) - new Date(a.latest.capturedAt))
+  return out
+})
+
+const timelineList = computed(() => {
+  if (!timelineUrl.value) return []
+  return snapshots.value
+    .filter(s => s.url === timelineUrl.value)
+    .sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))
+})
+
+function openTimeline(url) {
+  timelineUrl.value = url
+  showTimeline.value = true
+}
+
+const shotPct = computed(() => shotTotal.value > 0 ? Math.round(shotDone.value * 100 / shotTotal.value) : 0)
+const shotStatus = computed(() => {
+  if (shotTotal.value === 0) return 'default'
+  if (shotDone.value < shotTotal.value) return 'default'
+  return shotFail.value > 0 ? 'warning' : 'success'
+})
 const showPreview = ref(false)
 const preview = ref(null)
 const token = localStorage.getItem('token') || ''
@@ -94,8 +177,33 @@ async function saveSettings() {
   message.success('设置已保存')
 }
 
+let shotTimer = null
+async function pollProgress() {
+  try {
+    const p = await api.get('/snapshots/progress')
+    shotTotal.value = p.total || 0
+    shotDone.value = p.done || 0
+    shotOK.value = p.ok || 0
+    shotFail.value = p.fail || 0
+    if (p.running) {
+      // 后台正在截图：刷新/切换页面回来后也要恢复进度条
+      capturing.value = true
+      if (!shotTimer) shotTimer = setInterval(pollProgress, 1200)
+    } else if (capturing.value) {
+      // 截图结束
+      clearInterval(shotTimer)
+      shotTimer = null
+      capturing.value = false
+      load()
+    }
+  } catch (e) { /* 忽略轮询错误 */ }
+}
+
 async function captureNow() {
   capturing.value = true
+  shotTotal.value = 0; shotDone.value = 0; shotOK.value = 0; shotFail.value = 0
+  if (shotTimer) clearInterval(shotTimer)
+  shotTimer = setInterval(pollProgress, 1200)
   try {
     const res = await api.post('/snapshots/capture')
     message.success(`截图完成：成功 ${res.success}，失败 ${res.failed}`)
@@ -132,7 +240,12 @@ async function batchDelete() {
   load()
 }
 
-onMounted(() => { load(); loadSettings() })
+onMounted(() => {
+  load()
+  loadSettings()
+  // 页面刷新/切回时立即同步一次截图进度（后台可能还在跑）
+  pollProgress()
+})
 </script>
 
 <style scoped>

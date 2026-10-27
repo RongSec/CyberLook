@@ -89,3 +89,8 @@ func DeleteSnapshots(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "已删除", "count": len(req.IDs)})
 }
+
+// GetSnapshotProgress 截图进度（前端轮询显示进度条）
+func GetSnapshotProgress(c *gin.Context) {
+	c.JSON(http.StatusOK, service.GetSnapshotProgress())
+}

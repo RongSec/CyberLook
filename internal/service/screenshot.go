@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"sync"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,10 +18,42 @@ import (
 const SnapshotDir = "data/snapshots"
 
 // CaptureWebServices 对当前库内所有 web 服务截图
+// SnapshotProgress 截图进度（供前端轮询）
+type SnapshotProgress struct {
+	Running bool `json:"running"`
+	Total   int  `json:"total"`
+	Done    int  `json:"done"`
+	OK      int  `json:"ok"`
+	Fail    int  `json:"fail"`
+}
+
+var (
+	snapMu   sync.Mutex
+	snapProg = SnapshotProgress{}
+)
+
+// GetSnapshotProgress 读取当前截图进度
+func GetSnapshotProgress() SnapshotProgress {
+	snapMu.Lock()
+	defer snapMu.Unlock()
+	return snapProg
+}
+
 func CaptureWebServices() (int, int, error) {
+	// 只对「已确认」的资产截图：待处置的不该被扫页面
 	var svcs []model.Service
-	config.DB.Where("(protocol ILIKE '%http%' OR service ILIKE '%http%' OR title <> '' OR status_code <> '')").
+	config.DB.Where("confirmed = true").
+		Where("(protocol ILIKE '%http%' OR service ILIKE '%http%' OR title <> '' OR status_code <> '')").
 		Where("ip::text NOT LIKE '127.%'").Find(&svcs)
+
+	snapMu.Lock()
+	snapProg = SnapshotProgress{Running: true, Total: len(svcs), Done: 0, OK: 0, Fail: 0}
+	snapMu.Unlock()
+	defer func() {
+		snapMu.Lock()
+		snapProg.Running = false
+		snapMu.Unlock()
+	}()
 
 	_ = os.MkdirAll(SnapshotDir, 0o755)
 	ok, fail := 0, 0
@@ -30,6 +64,11 @@ func CaptureWebServices() (int, int, error) {
 		} else {
 			fail++
 		}
+		snapMu.Lock()
+		snapProg.Done++
+		snapProg.OK = ok
+		snapProg.Fail = fail
+		snapMu.Unlock()
 	}
 	return ok, fail, nil
 }
@@ -47,7 +86,10 @@ func captureOne(url string, svc model.Service) error {
 	name := fmt.Sprintf("%s_%d_%d.png", safeIP, svc.Port, now.Unix())
 	path := filepath.Join(SnapshotDir, name)
 
-	cmd := exec.Command("chromium",
+	// 超时保护：目标不响应/页面挂起时必须 kill，否则整个截图任务卡死
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "chromium",
 		"--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
 		// 跳过自签/过期证书的拦截页（否则截到 "Your connection is not private"）
 		"--ignore-certificate-errors",
@@ -62,6 +104,9 @@ func captureOne(url string, svc model.Service) error {
 		"--screenshot="+path, url)
 	cmd.Env = append(os.Environ(), "HOME=/tmp")
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("截图超时（25s 未完成）")
+		}
 		return err
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() == 0 {

@@ -84,7 +84,7 @@ const departments = ref([])
 const page = ref(1)
 const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
-const filters = ref({ ip: '', systemName: '', owner: '', department: null, source: null, status: 'confirmed', hasWeb: null })
+const filters = ref({ ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null })
 const checkedRows = ref([])
 
 const showPorts = ref(false)
@@ -217,7 +217,7 @@ function search() { page.value = 1; load() }
 function onPage(p) { page.value = p; load() }
 function onPageSize(sz) { pageSize.value = sz; page.value = 1; load() }
 function reset() {
-  filters.value = { ip: '', systemName: '', owner: '', department: null, source: null, status: 'confirmed', hasWeb: null }
+  filters.value = { ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null }
   load()
 }
 function onChecked(keys) { checkedRows.value = keys }

@@ -10,7 +10,8 @@
               <n-radio-button value="violation">违规</n-radio-button>
               <n-radio-button value="fixed">已整改</n-radio-button>
             </n-radio-group>
-            <ExportButton type="compliance" title="合规检测" :columns="exportCols" :filters="{ status: resultStatus }" />
+            <n-input v-model:value="resultKeyword" placeholder="搜索 IP/规则/详情" clearable style="width: 240px" @keyup.enter="loadResults" />
+            <ExportButton type="compliance" title="合规检测" :columns="exportCols" :filters="{ status: resultStatus, keyword: resultKeyword }" />
             <n-button @click="checkAllResults">全选本页</n-button>
             <n-button quaternary :disabled="checked.length === 0" @click="checked = []">清空</n-button>
             <n-button type="error" :disabled="checked.length === 0" @click="batchDeleteResults">
@@ -61,6 +62,7 @@ const message = useMessage()
 const loading = ref(false)
 const checking = ref(false)
 const resultStatus = ref('')
+const resultKeyword = ref('')
 const results = ref([])
 const checked = ref([])
 const resultPagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
@@ -157,7 +159,7 @@ async function batchDeleteResults() {
 async function loadResults() {
   loading.value = true
   try {
-    const res = await api.get('/compliance/results', { params: { page: resultPage.value, size: resultSize.value, status: resultStatus.value } })
+    const res = await api.get('/compliance/results', { params: { page: resultPage.value, size: resultSize.value, status: resultStatus.value, keyword: resultKeyword.value } })
     results.value = res.items
     resultPagination.value = { page: resultPage.value, pageSize: resultSize.value, itemCount: res.total }
   } finally {
