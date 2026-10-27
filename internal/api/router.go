@@ -139,6 +139,7 @@ func RegisterRoutes(r *gin.Engine) {
 		// 页面快照
 		auth.GET("/snapshots", ListPageSnapshots)
 		auth.POST("/snapshots/capture", CaptureSnapshots)
+		auth.GET("/snapshots/progress", GetSnapshotProgress)
 		auth.GET("/snapshots/settings", GetSnapshotSettings)
 		auth.POST("/snapshots/settings", SaveSnapshotSettings)
 		auth.GET("/notify/settings", GetNotifySettings)

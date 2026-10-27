@@ -9,9 +9,11 @@
         <n-button type="primary" @click="add">添加部门</n-button>
         <n-button secondary :disabled="checked.length < 2" @click="openMerge">合并部门</n-button>
         <n-button secondary :disabled="checked.length !== 1" @click="openSplit">拆分部门</n-button>
+        <n-input v-model:value="keyword" placeholder="搜索部门/负责人" clearable style="width: 200px" />
+        <n-input v-model:value="keyword" placeholder="搜索部门/负责人" clearable style="width: 200px" />
         <ExportButton type="departments" title="组织结构" :columns="exportCols" />
       </div>
-      <n-data-table :columns="columns" :data="rows" size="small" :row-key="r => r.id" :checked-row-keys="checked" @update:checked-row-keys="keys => checked = keys" />
+      <n-data-table :columns="columns" :data="filteredRows" size="small" :row-key="r => r.id" :checked-row-keys="checked" @update:checked-row-keys="keys => checked = keys" />
     </n-card>
 
     <!-- 编辑部门 -->
@@ -30,6 +32,52 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- 负责人编辑抽屉 -->
+    <n-drawer v-model:show="showOwners" :width="440" placement="right">
+      <n-drawer-content :title="'负责人 — ' + ownerDeptName" closable>
+        <p class="tip" style="margin-bottom:12px">点击输入框直接改名，点「删除」移除；底部新增后点保存。</p>
+        <div v-for="(o, idx) in ownerList" :key="idx"
+          style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+          <n-input v-model:value="o.name" size="small" placeholder="负责人姓名" />
+          <n-button size="small" text type="error" @click="ownerList.splice(idx, 1)">删除</n-button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px dashed #e5e7eb">
+          <n-input v-model:value="newOwner" size="small" placeholder="新增负责人，回车或点添加"
+            @keyup.enter="addOwner" />
+          <n-button size="small" @click="addOwner">添加</n-button>
+        </div>
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="showOwners = false">取消</n-button>
+            <n-button type="primary" @click="saveOwners">保存</n-button>
+          </n-space>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
+
+    <!-- 负责人编辑抽屉 -->
+    <n-drawer v-model:show="showOwners" :width="440" placement="right">
+      <n-drawer-content :title="'负责人 — ' + ownerDeptName" closable>
+        <p class="tip" style="margin-bottom:12px">点击输入框直接改名，点「删除」移除；底部新增后点保存。</p>
+        <div v-for="(o, idx) in ownerList" :key="idx"
+          style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+          <n-input v-model:value="o.name" size="small" placeholder="负责人姓名" />
+          <n-button size="small" text type="error" @click="ownerList.splice(idx, 1)">删除</n-button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px dashed #e5e7eb">
+          <n-input v-model:value="newOwner" size="small" placeholder="新增负责人，回车或点添加"
+            @keyup.enter="addOwner" />
+          <n-button size="small" @click="addOwner">添加</n-button>
+        </div>
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="showOwners = false">取消</n-button>
+            <n-button type="primary" @click="saveOwners">保存</n-button>
+          </n-space>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
 
     <!-- 合并 -->
     <n-modal v-model:show="showMerge" preset="card" title="合并部门" style="width: 420px">
@@ -76,6 +124,51 @@ const exportCols = [
 const message = useMessage()
 const departments = ref([])
 const checked = ref([])
+const keyword = ref('')
+const showOwners = ref(false)
+const ownerDeptId = ref(null)
+const ownerDeptName = ref('')
+const ownerParentId = ref(null)
+const ownerList = ref([])
+const newOwner = ref('')
+
+const filteredRows = computed(() => {
+  const k = keyword.value.trim().toLowerCase()
+  if (!k) return rows.value
+  return rows.value.filter(r =>
+    (r.name || '').toLowerCase().includes(k) || (r.owners || '').toLowerCase().includes(k))
+})
+
+function openOwners(row) {
+  ownerDeptId.value = row.id
+  ownerDeptName.value = row.name
+  ownerParentId.value = row.parentId || null
+  ownerList.value = (row.owners || '').split(',').map(o => o.trim()).filter(Boolean).map(o => ({ name: o }))
+  newOwner.value = ''
+  showOwners.value = true
+}
+
+function addOwner() {
+  const n = newOwner.value.trim()
+  if (!n) return
+  if (ownerList.value.some(o => o.name === n)) { message.warning('该负责人已存在'); return }
+  ownerList.value.push({ name: n })
+  newOwner.value = ''
+}
+
+async function saveOwners() {
+  const names = ownerList.value.map(o => (o.name || '').trim()).filter(Boolean)
+  try {
+    await api.put(`/departments/${ownerDeptId.value}`, {
+      name: ownerDeptName.value,
+      owners: names.join(','),
+      parentId: ownerParentId.value
+    })
+    message.success('负责人已保存')
+    showOwners.value = false
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '保存失败') }
+}
 const showMerge = ref(false)
 const mergeTarget = ref('')
 const showEdit = ref(false)
@@ -104,11 +197,11 @@ const columns = [
   { type: 'selection', width: 44, fixed: 'left' },
   { title: '部门名称', key: 'name' },
   {
-    title: '预设负责人', key: 'owners', width: 260,
+    title: '负责人', key: 'owners', width: 130,
     render: r => {
-      if (!r.owners) return '—'
-      return h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
-        r.owners.split(',').filter(Boolean).map(o => h(NTag, { size: 'small', type: 'info' }, { default: () => o.trim() })))
+      const n = (r.owners || '').split(',').filter(Boolean).length
+      return h(NButton, { size: 'small', secondary: true, onClick: () => openOwners(r) },
+        { default: () => '负责人' + (n > 0 ? ' (' + n + ')' : '') })
     }
   },
   { title: '上级部门', key: 'parentName', width: 180, render: r => r.parentId ? h(NTag, { size: 'small' }, { default: () => r.parentName }) : '—' },
@@ -177,12 +270,11 @@ async function openSplit() {
   splitName2.value = splitSource.value + '2'
   splitOwners1.value = []
   splitOwners2.value = []
-  // 加载该部门下的负责人（从资产提取）
-  try {
-    const assets = await api.get('/assets', { params: { page: 1, size: 5000, status: 'confirmed' } })
-    const owners = [...new Set((assets.items || []).filter(a => a.department === splitSource.value && a.owner).map(a => a.owner))]
-    ownerOpts.value = owners.map(o => ({ label: o, value: o }))
-  } catch (e) { ownerOpts.value = [] }
+  // 负责人直接取部门自己的 owners（不再查资产，避免分页/过滤导致为空）
+  const dept = departments.value.find(d => d.name === splitSource.value)
+  const owners = (dept && dept.owners ? dept.owners.split(',') : [])
+    .map(o => o.trim()).filter(Boolean)
+  ownerOpts.value = owners.map(o => ({ label: o, value: o }))
   showSplit.value = true
 }
 

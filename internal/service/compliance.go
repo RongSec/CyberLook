@@ -107,7 +107,7 @@ func DeleteWhitelist(id uint) error {
 }
 
 // ListComplianceResults 合规结果列表
-func ListComplianceResults(status string, page, size int) ([]model.ComplianceResult, int64) {
+func ListComplianceResults(status, keyword string, page, size int) ([]model.ComplianceResult, int64) {
 	if page < 1 {
 		page = 1
 	}
@@ -117,6 +117,13 @@ func ListComplianceResults(status string, page, size int) ([]model.ComplianceRes
 	q := config.DB.Model(&model.ComplianceResult{})
 	if status != "" {
 		q = q.Where("status = ?", status)
+	}
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		// 覆盖可见列：IP / 规则名 / 端口 / 协议 / 详情
+		q = q.Where(`ip::text LIKE ? OR rule_name ILIKE ? OR port::text LIKE ?
+			OR protocol ILIKE ? OR detail ILIKE ?`,
+			like, like, like, like, like)
 	}
 	var total int64
 	q.Count(&total)

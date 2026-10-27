@@ -185,6 +185,7 @@ type AgentTask struct {
 	IPRanges   string     `gorm:"column:ip_ranges" json:"ipRanges"`
 	BatchNo    int        `gorm:"column:batch_no;default:0" json:"batchNo"`
 	BatchTotal int        `gorm:"column:batch_total;default:0" json:"batchTotal"`
+	RetryCount int        `gorm:"column:retry_count;default:0" json:"retryCount"`
 	Status     string     `gorm:"column:status;default:pending" json:"status"`
 	Total      int        `gorm:"column:total;default:0" json:"total"`
 	Scanned    int        `gorm:"column:scanned;default:0" json:"scanned"`

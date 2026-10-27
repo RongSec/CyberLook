@@ -7,6 +7,7 @@
         <n-input v-model:value="filters.title" placeholder="网站标题" clearable style="width:170px" @keyup.enter="search" />
         <n-input v-model:value="filters.ledger" placeholder="台账系统名/负责人" clearable style="width:190px" @keyup.enter="search" />
         <n-input v-model:value="filters.port" placeholder="端口" clearable style="width:100px" @keyup.enter="search" />
+        <n-select v-model:value="filters.statusCodes" multiple :options="statusCodeOptions" placeholder="响应码（可多选）" clearable style="width:200px" />
         <n-button type="primary" @click="search">查询</n-button>
         <n-button @click="resetFilters">重置</n-button>
       </div>
@@ -24,8 +25,8 @@
           删除选中{{ checked.length ? `(${checked.length})` : '' }}
         </n-button>
         <ExportButton type="disposal" title="资产处置" :columns="exportCols" />
-        <n-tag type="warning" round>{{ items.length }} 项待处理</n-tag>
-        <span class="tip">红=台账没有 · 绿=台账有 · 黄=确认过但标题变了</span>
+        <n-tag type="warning" round>{{ filteredItems.length }} 项待处理（共 {{ items.length }}）</n-tag>
+        <span class="tip">红=台账没有 · 绿=台账有 · 黄=确认过但页面相似度变更</span>
       </div>
       <n-data-table :columns="columns" :data="filteredItems" :loading="loading" size="small"
         :row-key="r => r.ip" v-model:checked-row-keys="checked"
@@ -102,7 +103,14 @@ const exportCols = [
 const message = useMessage()
 const items = ref([])
 const checked = ref([])
-const filters = ref({ ip: '', category: null, title: '', ledger: '', port: '' })
+const filters = ref({ ip: '', category: null, title: '', ledger: '', port: '', statusCodes: [] })
+const statusCodeOptions = [
+  { label: '200 正常', value: '200' }, { label: '301 永久跳转', value: '301' },
+  { label: '302 临时跳转', value: '302' }, { label: '401 未授权', value: '401' },
+  { label: '403 禁止访问', value: '403' }, { label: '404 不存在', value: '404' },
+  { label: '500 服务器错误', value: '500' }, { label: '502 网关错误', value: '502' },
+  { label: '503 服务不可用', value: '503' }
+]
 const page = ref(1)
 const pageSize = ref(20)
 
@@ -123,6 +131,9 @@ const filteredItems = computed(() => {
       if (!hay.includes(f.ledger.trim())) return false
     }
     if (f.port && String(i.webPort) !== String(f.port).trim()) return false
+    if (f.statusCodes && f.statusCodes.length > 0) {
+      if (!f.statusCodes.includes(String(i.statusCode || ''))) return false
+    }
     return true
   })
 })
@@ -136,7 +147,7 @@ const pager = computed(() => ({
 
 function search() { page.value = 1 }
 function resetFilters() {
-  filters.value = { ip: '', category: null, title: '', ledger: '', port: '' }
+  filters.value = { ip: '', category: null, title: '', ledger: '', port: '', statusCodes: [] }
   page.value = 1
 }
 const departments = ref([])
@@ -309,12 +320,31 @@ function openNewOwner() {
   showNewOwner.value = true
 }
 
-function saveNewOwner() {
+async function saveNewOwner() {
   const name = (newOwnerName.value || '').trim()
   if (!name) { message.warning('请输入负责人姓名'); return }
+  if (!form.value.department) { message.warning('请先选择部门，负责人需要归属到部门'); return }
   form.value.owner = name
+  // 把新负责人追加到当前部门，保证后续选这个部门时能带出来
+  const dept = departments.value.find(d => d.name === form.value.department)
+  if (dept) {
+    const owners = (dept.owners || '').split(',').map(o => o.trim()).filter(Boolean)
+    if (!owners.includes(name)) {
+      owners.push(name)
+      try {
+        await api.put(`/departments/${dept.id}`, {
+          name: dept.name, owners: owners.join(','), parentId: dept.parentId || null
+        })
+        await loadDepartments()
+        message.success(`负责人「${name}」已创建并绑定到「${dept.name}」`)
+      } catch (e) {
+        message.warning(`负责人已填入，但绑定部门失败：${e.response?.data?.error || e.message}`)
+      }
+    } else {
+      message.success(`负责人「${name}」已存在并填入`)
+    }
+  }
   showNewOwner.value = false
-  message.success(`负责人「${name}」已填入`)
 }
 
 function openConfirm(row) {

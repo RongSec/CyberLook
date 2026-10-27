@@ -1,14 +1,17 @@
 <template>
   <div>
     <n-card title="应用服务">
-      <p class="tip">仅显示已完成处置（已登记资产）的 Web 服务；待处置的请到「资产处置」处理。</p>
+      <p class="tip">本页只展示<b>已确认</b>的 Web 资产（在「资产处置」确认过的）；待处置的请到「资产处置」处理。</p>
       <div class="filters">
-        <n-input v-model:value="filters.ip" placeholder="IP" clearable style="width: 150px" @keyup.enter="search" />
-        <n-input v-model:value="filters.port" placeholder="端口" clearable style="width: 110px" @keyup.enter="search" />
-        <n-input v-model:value="filters.service" placeholder="服务名" clearable style="width: 130px" @keyup.enter="search" />
-        <n-input v-model:value="filters.protocol" placeholder="协议" clearable style="width: 110px" @keyup.enter="search" />
+        <n-input v-model:value="filters.keyword" placeholder="搜索全部字段（IP/端口/服务/标题/响应码）" clearable style="width: 320px" @keyup.enter="search" />
+        <n-select v-model:value="filters.statusCodes" multiple :options="statusCodeOptions" placeholder="响应码（可多选）" clearable style="width: 220px" />
+        <n-input v-model:value="filters.ip" placeholder="IP" clearable style="width: 130px" @keyup.enter="search" />
+        <n-input v-model:value="filters.port" placeholder="端口" clearable style="width: 90px" @keyup.enter="search" />
+        <n-input v-model:value="filters.service" placeholder="服务名" clearable style="width: 110px" @keyup.enter="search" />
         <n-button type="primary" @click="search">查询</n-button>
         <n-button @click="reset">重置</n-button>
+        <n-tag round>{{ pagination.itemCount }} 条</n-tag>
+        <n-tag round>{{ pagination.itemCount }} 条</n-tag>
         <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" />
         <n-button @click="exportUrls">导出 URL</n-button>
         <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
@@ -60,11 +63,20 @@ const items = ref([])
 const page = ref(1)
 const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
-const filters = ref({ ip: '', port: '', service: '', protocol: '' })
+const filters = ref({ keyword: '', statusCodes: [], ip: '', port: '', service: '', protocol: '' })
+const statusCodeOptions = [
+  { label: '200 正常', value: '200' }, { label: '301 永久跳转', value: '301' },
+  { label: '302 临时跳转', value: '302' }, { label: '401 未授权', value: '401' },
+  { label: '403 禁止访问', value: '403' }, { label: '404 不存在', value: '404' },
+  { label: '500 服务器错误', value: '500' }, { label: '502 网关错误', value: '502' },
+  { label: '503 服务不可用', value: '503' }
+]
 
 const columns = [
   { type: 'selection', width: 44, fixed: 'left' },
   { title: 'IP', key: 'ip', width: 140 },
+  { title: '部门', key: 'department', width: 130, ellipsis: { tooltip: true }, render: r => r.department || '—' },
+  { title: '负责人', key: 'owner', width: 110, ellipsis: { tooltip: true }, render: r => r.owner || '—' },
   { title: '端口', key: 'port', width: 80 },
   { title: '协议', key: 'protocol', width: 80 },
   {
@@ -83,10 +95,13 @@ const columns = [
   { title: 'Banner', key: 'banner', ellipsis: { tooltip: true } },
   { title: '最近发现', key: 'lastSeen', width: 160, render: r => fmt(r.lastSeen) },
   {
-    title: '操作', key: 'actions', width: 90,
-    render: row => h(NPopconfirm, { onPositiveClick: () => del(row) },
-      { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
-        default: () => `确认删除 ${row.ip}:${row.port} ？` })
+    title: '操作', key: 'actions', width: 170,
+    render: row => h('div', { style: 'display:flex;gap:6px' }, [
+      h(NButton, { size: 'small', text: true, type: 'primary', onClick: () => copyUrl(row) }, { default: () => '复制URL' }),
+      h(NPopconfirm, { onPositiveClick: () => del(row) },
+        { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
+          default: () => `确认删除 ${row.ip}:${row.port} ？` })
+    ])
   }
 ]
 
@@ -104,13 +119,28 @@ async function load() {
   loading.value = true
   try {
     const res = await api.get('/services', {
-      params: { page: page.value, size: pageSize.value, webOnly: 'true', confirmedOnly: 'true', ...filters.value }
+      params: {
+        page: page.value, size: pageSize.value, webOnly: 'true',
+        ...filters.value,
+        statusCodes: (filters.value.statusCodes || []).join(','),
+        confirmedOnly: 'true', // 应用服务只展示已确认资产
+
+      }
     })
     items.value = res.items
     pagination.value = { page: res.page, pageSize: res.size, itemCount: res.total }
   } finally {
     loading.value = false
   }
+}
+
+function copyUrl(row) {
+  const proto = (row.protocol || '').toLowerCase().includes('https') ? 'https' : 'http'
+  const url = proto + '://' + row.ip + (row.port && row.port !== 80 && row.port !== 443 ? ':' + row.port : '')
+  navigator.clipboard.writeText(url).then(
+    () => message.success('已复制：' + url),
+    () => message.warning('复制失败，请手动复制：' + url)
+  )
 }
 
 function search() { page.value = 1; load() }
@@ -128,7 +158,7 @@ async function batchDelete() {
 function onPage(p) { page.value = p; load() }
 function onPageSize(sz) { pageSize.value = sz; page.value = 1; load() }
 function reset() {
-  filters.value = { ip: '', port: '', service: '', protocol: '' }
+  filters.value = { keyword: '', statusCodes: [], ip: '', port: '', service: '', protocol: '' }
   load()
 }
 
