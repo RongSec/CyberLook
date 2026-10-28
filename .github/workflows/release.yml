@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +49,19 @@ jobs:
             ghcr.io/${{ steps.img.outputs.name }}-updater:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            镜像已发布：
+            - `ghcr.io/${{ steps.img.outputs.name }}:${{ github.ref_name }}`
+            - `ghcr.io/${{ steps.img.outputs.name }}-updater:${{ github.ref_name }}`
+
+            更新方式：系统配置 → 检查更新 → 更新
 
       - name: 输出镜像地址
         run: |
