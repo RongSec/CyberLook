@@ -239,6 +239,69 @@ docker cp asset-server-linux asset-server:/app/asset-server
 docker compose restart server        # 不要用 up -d
 ```
 
+## 版本更新
+
+### 发布（维护者）
+
+打 tag 即可，GitHub Actions 会自动构建并推送镜像：
+
+```bash
+git tag v0.0.4
+git push origin v0.0.4
+```
+
+产出：
+```
+ghcr.io/rongsec/cyberlook:v0.0.4         主镜像（后端 + 前端 + agent + TscanClient）
+ghcr.io/rongsec/cyberlook-updater:v0.0.4 更新边车镜像
+```
+
+> 首次发布需在 GitHub → Settings → Actions → General 里允许 workflow 写入 packages（默认已允许）。
+
+### 在线更新（使用者）
+
+**方式一：页面点更新**
+
+```
+系统配置 → 系统更新 → 检查更新 → 更新
+```
+
+背后流程：
+```
+page 调 /api/system/update/apply {version}
+  → 主应用转发给 updater 边车（http://updater:9999/update）
+  → updater: pg_dump 备份 → 改 .env 的 APP_VERSION → docker compose pull server
+             → docker compose up -d --no-deps server → 健康检查
+             → 失败自动回滚到旧版本
+```
+
+**updater 边车**是唯一挂载 `/var/run/docker.sock` 的容器，主应用不碰 docker 权限。
+
+**方式二：命令行兜底**
+
+```bash
+bash update.sh v0.0.4
+```
+
+脚本做同样的事（备份 → 改版本 → pull → 重启 → 健康检查 → 失败回滚）。
+
+### 回滚
+
+```bash
+# 改回旧版本号，重新拉取
+bash update.sh v0.0.3
+```
+
+数据库备份在 `data/backup/pre-update-<时间戳>.sql`。
+
+### 部署形态说明
+
+| 组件 | 更新方式 |
+|---|---|
+| 后端 + 前端 + agent | **镜像更新**（`docker compose pull`） |
+| 数据库 schema | 启动时自动执行 `migrations/*.sql`（向前兼容） |
+| 业务数据 | 挂载卷，不随镜像变化 |
+
 ## 版本记录
 
 ### v0.0.2（2026-10-26）
