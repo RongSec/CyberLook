@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -28,9 +29,18 @@ type updateResp struct {
 var mu sync.Mutex
 
 func run(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	return runTimeout(3*time.Minute, name, args...)
+}
+
+func runTimeout(d time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = "/project"
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("命令超时（%v）: %s %s", d, name, strings.Join(args, " "))
+	}
 	return string(out), err
 }
 
@@ -97,20 +107,24 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0o644)
 	logs = append(logs, "APP_VERSION="+req.Version)
 
-	// 3) 拉镜像
+	// 3) 拉镜像（本地已有则跳过，避免每次更新都卡在 registry 查询上）
 	logs = append(logs, "== 拉取镜像 ==")
-	if out, err := run("docker", "compose", "pull", "server"); err != nil {
+	img := "ghcr.io/rongsec/cyberlook:" + req.Version
+	if q, err := run("docker", "images", "-q", img); err == nil && strings.TrimSpace(q) != "" {
+		logs = append(logs, "本地已有镜像 "+img+"，跳过拉取")
+	} else if out, err := runTimeout(8*time.Minute, "docker", "compose", "-p", "asset-platform", "pull", "server"); err != nil {
 		logs = append(logs, "拉取失败: "+err.Error()+"\n"+out)
 		// 回滚 .env
 		rollbackEnv(req.OldVersion)
 		writeJSON(w, http.StatusInternalServerError, updateResp{Message: "拉取镜像失败", Output: strings.Join(logs, "\n")})
 		return
+	} else {
+		logs = append(logs, "拉取完成")
 	}
-	logs = append(logs, "拉取完成")
 
 	// 4) 重启 server（不动 pg/redis）
 	logs = append(logs, "== 重启服务 ==")
-	if out, err := run("docker", "compose", "up", "-d", "--no-deps", "server"); err != nil {
+	if out, err := runTimeout(4*time.Minute, "docker", "compose", "-p", "asset-platform", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server"); err != nil {
 		logs = append(logs, "重启失败: "+err.Error()+"\n"+out)
 		rollbackAll(req.OldVersion)
 		writeJSON(w, http.StatusInternalServerError, updateResp{Message: "重启失败，已回滚", Output: strings.Join(logs, "\n")})
@@ -144,7 +158,7 @@ func rollbackEnv(v string) {
 
 func rollbackAll(v string) {
 	rollbackEnv(v)
-	run("docker", "compose", "up", "-d", "--no-deps", "server")
+	runTimeout(4*time.Minute, "docker", "compose", "-p", "asset-platform", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v updateResp) {
