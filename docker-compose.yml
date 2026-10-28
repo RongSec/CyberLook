@@ -29,6 +29,7 @@ services:
       retries: 10
 
   server:
+    image: ghcr.io/rongsec/cyberlook:${APP_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -54,6 +55,23 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # 更新边车：只有它能碰 docker.sock，主应用通过 HTTP 调它
+  updater:
+    image: ghcr.io/rongsec/cyberlook-updater:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.updater
+    container_name: asset-updater
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/project
+    working_dir: /project
+    environment:
+      TZ: Asia/Shanghai
+    depends_on:
+      - server
 
   # 扫描节点：默认走内部网络。若要扫描宿主机所在内网，放开 network_mode: host 并改 -server 为 http://127.0.0.1:8080
   agent:

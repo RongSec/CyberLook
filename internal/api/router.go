@@ -1,6 +1,8 @@
 package api
 
 import (
+	"asset-platform/internal/version"
+	"net/http"
 	"asset-platform/internal/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -37,6 +39,11 @@ func RegisterRoutes(r *gin.Engine) {
 	r.POST("/api/agent/tasks/:id/finish", AgentTaskAuth(), AgentFinish)
 
 	// 需登录的接口
+	// 健康检查（updater 边车调用，无需认证）
+	r.GET("/api/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true, "version": version.Version})
+	})
+
 	auth := r.Group("/api")
 	auth.Use(middleware.Auth())
 	{

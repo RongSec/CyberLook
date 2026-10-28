@@ -263,7 +263,7 @@ func (Department) TableName() string { return "departments" }
 type SystemSettings struct {
 	ID         uint   `gorm:"primaryKey;column:id" json:"-"`
 	GithubRepo string `gorm:"column:github_repo" json:"githubRepo"` // 形如 owner/repo
-	GithubToken string `gorm:"column:github_token" json:"-"`
+	GithubToken string `gorm:"column:github_token" json:"githubToken"`
 	Proxy      string `gorm:"column:proxy" json:"proxy"` // HTTP 代理，仅用于 GitHub 请求
 	Port       int    `gorm:"column:port;default:18888" json:"port"` // 服务端监听端口
 }
