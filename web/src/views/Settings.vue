@@ -162,10 +162,10 @@ async function checkUpdate() {
 }
 
 async function applyUpdate() {
-  if (!updateInfo.value.downloadUrl) { message.warning('请先检查更新'); return }
+  if (!updateInfo.value.version) { message.warning('请先检查更新'); return }
   applying.value = true
   try {
-    await api.post('/system/update/apply', { downloadUrl: updateInfo.value.downloadUrl })
+    await api.post('/system/update/apply', { version: updateInfo.value.version })
     message.success('已更新，系统正在重启')
   } catch (e) {
     message.error(e.response?.data?.error || '更新失败')

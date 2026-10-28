@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"bytes"
 	"os"
 	"runtime"
 	"net/http"
@@ -57,25 +59,48 @@ func CheckUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, info)
 }
 
-// ApplyUpdate 应用更新（下载 + 备份 + 替换 + 重启）
+// ApplyUpdate 应用更新：交给 updater 边车执行（pull 镜像 + 重启 + 健康检查 + 回滚）
 func ApplyUpdate(c *gin.Context) {
 	var req struct {
-		DownloadURL string `json:"downloadUrl"`
+		Version string `json:"version"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.DownloadURL == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少下载地址"})
+	if err := c.ShouldBindJSON(&req); err != nil || req.Version == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少目标版本号"})
 		return
 	}
-	if err := service.ApplyUpdate(req.DownloadURL); err != nil {
+
+	updaterURL := os.Getenv("UPDATER_URL")
+	if updaterURL == "" {
+		updaterURL = "http://updater:9999"
+	}
+	body, _ := json.Marshal(map[string]string{
+		"version":    req.Version,
+		"oldVersion": version.Version,
+	})
+	httpReq, err := http.NewRequest("POST", updaterURL+"/update", bytes.NewReader(body))
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// 异步重启（让响应先返回），由 Docker restart:always 自动拉起
-	go func() {
-		time.Sleep(1 * time.Second)
-		os.Exit(0)
-	}()
-	c.JSON(http.StatusOK, gin.H{"message": "已更新，正在重启"})
+	httpReq.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "更新服务不可达: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	var out struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+		Output  string `json:"output"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != 200 || !out.OK {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": out.Message, "log": out.Output})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": out.Message, "log": out.Output})
 }
 
 // RollbackUpdate 回滚到最近备份
