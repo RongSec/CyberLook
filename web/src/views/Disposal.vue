@@ -1,30 +1,28 @@
 <template>
   <div>
     <n-card title="资产处置（待确认 Web 资产）">
-      <div class="filters" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-        <n-input v-model:value="filters.ip" placeholder="IP" clearable style="width:150px" @keyup.enter="search" />
-        <n-select v-model:value="filters.category" :options="categoryOptions" placeholder="类别" clearable style="width:120px" />
-        <n-input v-model:value="filters.title" placeholder="网站标题" clearable style="width:170px" @keyup.enter="search" />
-        <n-input v-model:value="filters.ledger" placeholder="台账系统名/负责人" clearable style="width:190px" @keyup.enter="search" />
-        <n-input v-model:value="filters.port" placeholder="端口" clearable style="width:100px" @keyup.enter="search" />
-        <n-select v-model:value="filters.statusCodes" multiple :options="statusCodeOptions" placeholder="响应码（可多选）" clearable style="width:200px" />
-        <n-button type="primary" @click="search">查询</n-button>
-        <n-button @click="resetFilters">重置</n-button>
-      </div>
+      <SearchBar :fields="splFields" @search="onSplSearch" @reset="onSplReset" />
 
       <div class="toolbar" style="flex-wrap:wrap">
         <n-button type="success" :disabled="ledgerChecked.length === 0" @click="batchConfirmLedger">
           按台账确认{{ ledgerChecked.length ? `(${ledgerChecked.length})` : '' }}
         </n-button>
-        <n-button @click="checkAllLedger">全选台账有的</n-button>
-        <n-button @click="checkAllFiltered">全选当前筛选</n-button>
+        <n-button @click="checkAllLedger">{{ allLedgerSelected ? '取消选中台账有的' : '全选台账有的' }}</n-button>
+        <n-button @click="checkAllFiltered">{{ allFilteredSelected ? '取消全选当前筛选' : '全选当前筛选' }}</n-button>
+        <n-tooltip trigger="hover" placement="bottom">
+          <template #trigger>
+            <n-button type="primary" ghost @click="openBatchConfirm">批量处置</n-button>
+          </template>
+          选中资产后点击，会自动把 IP 填入处置框（可编辑）；
+          未选中时打开空白处置框，手动填写 IP 后同样可提交。
+        </n-tooltip>
         <n-button type="info" :disabled="checked.length === 0" @click="copyUrls">
           复制 URL{{ checked.length ? `(${checked.length})` : '' }}
         </n-button>
         <n-button type="error" :disabled="checked.length === 0" @click="batchDelete">
           删除选中{{ checked.length ? `(${checked.length})` : '' }}
         </n-button>
-        <ExportButton type="disposal" title="资产处置" :columns="exportCols" />
+        <ExportButton type="disposal" title="资产处置" :columns="exportCols" :conds="splConds" />
         <n-tag type="warning" round>{{ filteredItems.length }} 项待处理（共 {{ items.length }}）</n-tag>
         <span class="tip">红=台账没有 · 绿=台账有 · 黄=确认过但页面相似度变更</span>
       </div>
@@ -33,9 +31,12 @@
         :pagination="pager" />
     </n-card>
 
-    <n-modal v-model:show="showConfirm" preset="card" title="确认资产归属" style="width: 520px">
+    <n-modal v-model:show="showConfirm" preset="card" :title="batchMode ? '批量处置' : '确认资产归属'" style="width: 520px">
       <n-form label-placement="left" label-width="90">
-        <n-form-item label="IP"><n-input :value="form.ip" disabled /></n-form-item>
+        <n-form-item label="IP">
+          <n-input v-model:value="form.ip" type="textarea" :rows="3" :disabled="!batchMode"
+            placeholder="多个 IP 用换行或逗号分隔" />
+        </n-form-item>
         <n-form-item label="网站标题"><n-input :value="form.title || '-'" disabled /></n-form-item>
         <n-form-item label="指纹"><n-input :value="form.fingerprint || '-'" disabled /></n-form-item>
         <n-form-item label="部门">
@@ -88,21 +89,60 @@
 import { ref, h, computed, onMounted } from 'vue'
 import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
+import SearchBar from '../components/SearchBar.vue'
 import ExportButton from '../components/ExportButton.vue'
 
 // 导出列
-const exportCols = [
-  { key: 'ip', label: 'IP' },
-  { key: 'webPort', label: 'Web端口' },
-  { key: 'statusCode', label: '响应码' },
-  { key: 'title', label: '网站标题' },
-  { key: 'fingerprint', label: '指纹' },
-  { key: 'createdAt', label: '发现时间' }
-]
 
 const message = useMessage()
 const items = ref([])
 const checked = ref([])
+
+// SPL 条件 → 原有 filters（处置页是前端过滤，直接映射）
+// 条件直接存下来，由 filteredItems 里的通用匹配器处理（覆盖页面所有列）
+const splConds = ref([])
+
+function onSplSearch({ conditions }) {
+  splConds.value = (conditions || []).filter(c => {
+    const v = c.value
+    if (Array.isArray(v)) return v.length > 0
+    return v !== '' && v !== null && v !== undefined
+  })
+}
+
+// 单行数据取列值（处理布尔/空/时间）
+function cellValue(it, field) {
+  if (field === 'inLedger') return it.inLedger ? '是' : '否'
+  const v = it[field]
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  return String(v)
+}
+
+// 通用条件匹配
+function matchCond(it, c) {
+  const s = cellValue(it, c.field)
+  // 多选：值可能是数组，命中任一即可
+  if (Array.isArray(c.value)) {
+    if (c.value.length === 0) return true
+    return c.value.some(x => s === String(x) || s.toLowerCase() === String(x).toLowerCase())
+  }
+  const v = String(c.value).trim()
+  const sl = s.toLowerCase()
+  const vl = v.toLowerCase()
+  switch (c.op) {
+    case 'eq': return sl === vl
+    case 'neq': return sl !== vl
+    case 'gt': { const a = parseFloat(s), b = parseFloat(v); return !isNaN(a) && !isNaN(b) && a > b }
+    case 'lt': { const a = parseFloat(s), b = parseFloat(v); return !isNaN(a) && !isNaN(b) && a < b }
+    case 'prefix': return sl.startsWith(vl)
+    default: return sl.includes(vl)
+  }
+}
+function onSplReset() {
+  splConds.value = []
+}
+
 const filters = ref({ ip: '', category: null, title: '', ledger: '', port: '', statusCodes: [] })
 const statusCodeOptions = [
   { label: '200 正常', value: '200' }, { label: '301 永久跳转', value: '301' },
@@ -123,6 +163,10 @@ const categoryOptions = [
 const filteredItems = computed(() => {
   const f = filters.value
   return items.value.filter(i => {
+    // SPL 条件（覆盖所有列）
+    for (const c of splConds.value) {
+      if (!matchCond(i, c)) return false
+    }
     if (f.ip && !i.ip.includes(f.ip.trim())) return false
     if (f.category && i.category !== f.category) return false
     if (f.title && !(i.title || '').toLowerCase().includes(f.title.trim().toLowerCase())) return false
@@ -158,6 +202,7 @@ const showNewOwner = ref(false)
 const newDeptName = ref('')
 const newOwnerName = ref('')
 const form = ref({ id: 0, ip: '', title: '', fingerprint: '', department: null, owner: null, systemName: '' })
+const batchMode = ref(false)
 
 const deptOptions = computed(() => departments.value.map(d => ({ label: d.name, value: d.name })))
 const ownerOptions = computed(() => {
@@ -211,6 +256,42 @@ const columns = [
   }
 ]
 
+// 检索字段 = 表格所有列（排除操作列），新增列时自动多一项
+// 固定选项字段（不给手输）
+const SPL_FIXED_OPTIONS = {
+  category: [{ label: '新出现', value: 'new' }, { label: '台账有', value: 'in_ledger' }, { label: '新变更', value: 'changed' }],
+  inLedger: [{ label: '是', value: '是' }, { label: '否', value: '否' }],
+  statusCode: {
+    multiple: true, filterable: true,
+    options: [
+      { label: '200', value: '200' }, { label: '201', value: '201' }, { label: '204', value: '204' },
+      { label: '301', value: '301' }, { label: '302', value: '302' }, { label: '304', value: '304' },
+      { label: '400', value: '400' }, { label: '401', value: '401' }, { label: '403', value: '403' },
+      { label: '404', value: '404' }, { label: '405', value: '405' }, { label: '429', value: '429' },
+      { label: '500', value: '500' }, { label: '502', value: '502' }, { label: '503', value: '503' }
+    ]
+  }
+}
+
+// 导出列 = 表格所有列（排除操作列），与页面显示保持一致
+const exportCols = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
+
+const splFields = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+    .map(c => {
+      const f = SPL_FIXED_OPTIONS[c.key]
+      if (!f) return { key: c.key, label: c.title }
+      // 简单选项数组，或 { options, multiple, filterable } 对象
+      if (Array.isArray(f)) return { key: c.key, label: c.title, options: f }
+      return { key: c.key, label: c.title, options: f.options, multiple: !!f.multiple, filterable: !!f.filterable }
+    })
+)
+
 function fmt(t) { return t ? new Date(t).toLocaleString('zh-CN') : '-' }
 
 async function delDisposal(row) {
@@ -236,8 +317,25 @@ async function confirmLedger(ips) {
 const ledgerChecked = computed(() =>
   checked.value.filter(ip => items.value.find(i => i.ip === ip && i.inLedger)))
 
+const allLedgerSelected = computed(() => {
+  const ledgerIps = items.value.filter(i => i.inLedger).map(i => i.ip)
+  return ledgerIps.length > 0 && ledgerIps.every(ip => checked.value.includes(ip))
+})
+const allFilteredSelected = computed(() => {
+  const ips = filteredItems.value.map(i => i.ip)
+  return ips.length > 0 && ips.every(ip => checked.value.includes(ip))
+})
+
+// 切换：已全选则取消，否则全选
 function checkAllLedger() {
-  checked.value = items.value.filter(i => i.inLedger).map(i => i.ip)
+  const ledgerIps = items.value.filter(i => i.inLedger).map(i => i.ip)
+  if (allLedgerSelected.value) {
+    checked.value = checked.value.filter(ip => !ledgerIps.includes(ip))
+  } else {
+    const set = new Set(checked.value)
+    ledgerIps.forEach(ip => set.add(ip))
+    checked.value = [...set]
+  }
 }
 
 async function copyUrls() {
@@ -266,7 +364,14 @@ async function copyUrls() {
 }
 
 function checkAllFiltered() {
-  checked.value = filteredItems.value.map(i => i.ip)
+  const ips = filteredItems.value.map(i => i.ip)
+  if (allFilteredSelected.value) {
+    checked.value = checked.value.filter(ip => !ips.includes(ip))
+  } else {
+    const set = new Set(checked.value)
+    ips.forEach(ip => set.add(ip))
+    checked.value = [...set]
+  }
 }
 
 async function batchDelete() {
@@ -348,7 +453,16 @@ async function saveNewOwner() {
 }
 
 function openConfirm(row) {
+  batchMode.value = false
   form.value = { id: row.id, ip: row.ip, title: row.title, fingerprint: row.fingerprint, department: null, owner: null, systemName: '' }
+  showConfirm.value = true
+}
+
+// 批量处置：选中则填 IP，未选中则空白
+function openBatchConfirm() {
+  batchMode.value = true
+  const ips = checked.value.length > 0 ? checked.value.slice() : []
+  form.value = { id: 0, ip: ips.join('\n'), title: '', fingerprint: '', department: null, owner: null, systemName: '' }
   showConfirm.value = true
 }
 
@@ -362,14 +476,28 @@ async function doConfirm() {
   if (!form.value.department) { message.warning('请选择部门'); return }
   if (!form.value.owner) { message.warning('请选择负责人'); return }
   try {
-    await api.post('/disposal/confirm', {
-      ip: form.value.ip,
-      systemName: form.value.systemName,
-      owner: form.value.owner,
-      department: form.value.department
-    })
-    message.success('已确认入库')
+    if (batchMode.value) {
+      const ips = form.value.ip.split(/[\s,，;；]+/).map(x => x.trim()).filter(Boolean)
+      if (ips.length === 0) { message.warning('请填写至少一个 IP'); return }
+      const r = await api.post('/disposal/confirm', {
+        ips,
+        systemName: form.value.systemName,
+        owner: form.value.owner,
+        department: form.value.department
+      })
+      message.success(`已确认 ${r.ok || ips.length} 个资产` + (r.skip ? `，跳过 ${r.skip}` : ''))
+    } else {
+      if (!form.value.ip) { message.warning('缺少 IP'); return }
+      await api.post('/disposal/confirm', {
+        ip: form.value.ip,
+        systemName: form.value.systemName,
+        owner: form.value.owner,
+        department: form.value.department
+      })
+      message.success('已确认入库')
+    }
     showConfirm.value = false
+    checked.value = []
     load()
   } catch (e) { message.error(e.response?.data?.error || '确认失败') }
 }

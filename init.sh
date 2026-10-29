@@ -23,10 +23,31 @@ else
     echo "⏭️  .env 已存在，跳过生成"
 fi
 
-# 2. 启动服务（多阶段构建会自动编译前后端）
+# 1.5 决定用远程镜像还是本地构建
+# 优先拉 ghcr.io 上的官方镜像（免编译、版本可控）；拉不到再退回本地构建
+if [ -z "$(grep '^APP_VERSION=' .env 2>/dev/null)" ]; then
+    LATEST=$(curl -sf --max-time 8 https://api.github.com/repos/RongSec/CyberLook/releases/latest 2>/dev/null         | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    if [ -n "$LATEST" ]; then
+        echo "APP_VERSION=$LATEST" >> .env
+        echo "🔖 最新版本: $LATEST"
+    else
+        echo "APP_VERSION=latest" >> .env
+        echo "🔖 无法查询最新版本，使用 latest"
+    fi
+fi
 
-echo "🚀 启动服务..."
-docker compose up -d
+# 2. 启动服务
+
+echo "🚀 拉取镜像..."
+if docker compose pull server updater 2>/dev/null; then
+    echo "✅ 镜像已就绪（官方镜像，无需编译）"
+    echo "🚀 启动服务..."
+    docker compose up -d --pull never
+else
+    echo "⚠️  镜像拉取失败（离线或私有），改用本地构建（需要 Go/Node 环境，约 5-10 分钟）"
+    echo "🚀 构建并启动服务..."
+    docker compose up -d --build
+fi
 
 echo ""
 echo "=== 部署完成 ==="

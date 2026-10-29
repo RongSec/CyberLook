@@ -47,6 +47,7 @@ RUN mkdir -p /app/tscan && \
     fi && \
     chmod +x /app/agent/scope-agent-linux /app/agent/scope-agent-linux-arm64 2>/dev/null; \
     chmod +x /app/tscan/TscanClient_Linux 2>/dev/null; \
+        chmod +x /app/third_party/tscanclient_linux/TscanClient 2>/dev/null; \
     true
 
 EXPOSE 8080

@@ -13,6 +13,7 @@ scope-agent-windows.exe
 # 前端
 web/node_modules/
 web/dist/
+web/dist_*/
 
 # 运行时数据（不要提交到 git）
 data/

@@ -109,6 +109,22 @@
         <n-form-item label="超时 -time (ms)">
           <n-input-number v-model:value="cfgForm.timeout" :min="100" :max="60000" :step="500" style="width: 180px" />
         </n-form-item>
+        <n-form-item label="Tscan License">
+          <div style="width: 100%">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+              <input ref="licFileInput" type="file" accept=".lic,.txt" style="display:none" @change="onLicFile" />
+              <n-button size="small" @click="$refs.licFileInput.click()">选择 License.lic 文件</n-button>
+              <n-tag v-if="cfgForm.license" type="success" size="small">已载入 {{ cfgForm.license.length }} 字符</n-tag>
+              <n-tag v-else type="warning" size="small">未配置（Free 模式）</n-tag>
+              <n-button v-if="cfgForm.license" size="small" text type="error" @click="cfgForm.license = ''">清除</n-button>
+            </div>
+            <n-input v-model:value="cfgForm.license" type="textarea" :rows="3"
+              placeholder="选择文件后自动填入，也可直接粘贴 License 内容" />
+            <div class="muted" style="margin-top:6px">
+              保存后节点下次心跳（约 30 秒内）会自动写入 <code>config/License.lic</code>
+            </div>
+          </div>
+        </n-form-item>
       </n-form>
       <p class="muted">并发越高，服务端分配给它 IP 越多（按并发加权，尽量让所有节点同时完成）。</p>
       <template #footer>
@@ -354,10 +370,10 @@ async function del(id) {
 
 // ===== 节点配置 / 健康检查 =====
 const showCfg = ref(false)
-const cfgForm = ref({ id: 0, name: '', concurrency: 1000, timeout: 3000 })
+const cfgForm = ref({ id: 0, name: '', concurrency: 1000, timeout: 3000, license: '' })
 
 function openCfg(row) {
-  cfgForm.value = { id: row.id, name: row.name, concurrency: row.concurrency || 1000, timeout: row.timeout || 3000 }
+  cfgForm.value = { id: row.id, name: row.name, concurrency: row.concurrency || 1000, timeout: row.timeout || 3000, license: '' }
   showCfg.value = true
 }
 async function saveCfg() {
@@ -366,10 +382,22 @@ async function saveCfg() {
       timeout: cfgForm.value.timeout,
       concurrency: cfgForm.value.concurrency
     })
-    message.success('已保存')
+    if (cfgForm.value.license && cfgForm.value.license.trim()) {
+      await api.put(`/nodes/${cfgForm.value.id}/license`, { content: cfgForm.value.license })
+    }
+    message.success('已保存' + (cfgForm.value.license ? '，License 将在节点下次心跳写入' : ''))
     showCfg.value = false
     load()
   } catch (e) { message.error(e.response?.data?.error || '保存失败') }
+}
+
+function onLicFile(ev) {
+  const f = ev.target.files && ev.target.files[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = () => { cfgForm.value.license = String(reader.result || '') }
+  reader.readAsText(f)
+  ev.target.value = ''
 }
 
 async function health(row) {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"net/http"
 	"strconv"
@@ -28,6 +29,37 @@ func ListServices(c *gin.Context) {
 	protocol := c.Query("protocol")
 
 	q := config.DB.Model(&model.Service{})
+
+	// SPL 检索条件（SearchBar 生成）
+	if cs := c.Query("conds"); cs != "" {
+		var conds []SearchCond
+		if json.Unmarshal([]byte(cs), &conds) == nil {
+			rest := make([]SearchCond, 0, len(conds))
+			for _, c := range conds {
+				vals := c.values()
+				if len(vals) == 0 {
+					continue
+				}
+				v := vals[0]
+				// 部门/负责人来自 assets 表，services 无此列 → 用 EXISTS 关联
+				switch c.Field {
+				case "department":
+					q = q.Where("EXISTS (SELECT 1 FROM assets a WHERE a.ip = services.ip AND a.department::text ILIKE ?)", "%"+v+"%")
+					continue
+				case "owner":
+					q = q.Where("EXISTS (SELECT 1 FROM assets a WHERE a.ip = services.ip AND a.owner::text ILIKE ?)", "%"+v+"%")
+					continue
+				}
+				rest = append(rest, c)
+			}
+			q = ApplySearchConds(q, rest, map[string]string{
+				"ip": "ip", "port": "port", "service": "service", "protocol": "protocol",
+				"title": "title", "statusCode": "status_code", "banner": "banner",
+				"contentLength": "content_length", "finger": "fingerprint",
+				"lastSeen": "last_seen", "firstSeen": "first_seen",
+			})
+		}
+	}
 	// 只显示 web 服务（严格：协议为 http/https）
 	if c.Query("webOnly") == "true" {
 		// 只算真正能访问的 web 服务（有响应码或有标题）

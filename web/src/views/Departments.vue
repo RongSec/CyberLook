@@ -115,11 +115,7 @@ import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 
 // 导出列
-const exportCols = [
-  { key: 'name', label: '部门' },
-  { key: 'owners', label: '预设负责人' },
-  { key: 'parentName', label: '上级部门' }
-]
+
 
 const message = useMessage()
 const departments = ref([])
@@ -212,6 +208,13 @@ const columns = [
         default: () => '确认删除？子部门会提升到根级' })
   ]) }
 ]
+
+// 导出列 = 表格所有列（排除操作列）
+const exportCols = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op', 'a'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
 
 async function load() { departments.value = await api.get('/departments') }
 

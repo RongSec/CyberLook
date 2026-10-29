@@ -27,7 +27,8 @@ const props = defineProps({
   type: { type: String, required: true },
   title: { type: String, default: '' },
   columns: { type: Array, required: true },
-  filters: { type: Object, default: () => ({}) }
+  filters: { type: Object, default: () => ({}) },
+  conds: { type: Array, default: () => [] }   // 当前 SPL 筛选条件
 })
 
 const message = useMessage()
@@ -52,6 +53,7 @@ async function doExport() {
       type: props.type,
       columns: selected.value,
       filters: props.filters,
+      conds: props.conds,
       title: props.title
     }, { responseType: 'blob' })
     const url = URL.createObjectURL(res)
