@@ -396,6 +396,37 @@ func heartbeatLoop() {
 }
 
 // doHeartbeat 心跳上报版本，并按服务端指令自更新
+// syncLicense 拉取分配给本节点的 Tscan License 并写入 config/License.lic
+func syncLicense() {
+	if tscanPath == nil || *tscanPath == "" {
+		return
+	}
+	url := fmt.Sprintf("%s/api/agent/nodes/%d/license", *serverURL, nodeID)
+	resp, err := agentReq("GET", url, nil)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var d struct {
+		Content string `json:"content"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&d) != nil || strings.TrimSpace(d.Content) == "" {
+		return
+	}
+	dir := filepath.Join(filepath.Dir(*tscanPath), "config")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	target := filepath.Join(dir, "License.lic")
+	// 内容相同就不重写，避免每次心跳都落盘
+	if cur, err := os.ReadFile(target); err == nil && string(cur) == d.Content {
+		return
+	}
+	if err := os.WriteFile(target, []byte(d.Content), 0o644); err == nil {
+		log.Printf("[license] 已写入 %s（%d 字节）", target, len(d.Content))
+	}
+}
+
 func doHeartbeat() {
 	// 心跳顺便带上 config.db 的 project 列表（节点「数据库管理」用）
 	var projects []string
@@ -433,6 +464,7 @@ func doHeartbeat() {
 		log.Printf("[agent] 收到升级指令 -> %s（当前 %s）", r.LatestVersion, myVersion)
 		selfUpgrade(r.LatestVersion)
 	}
+	syncLicense()
 }
 
 // streamLoop SSE 长连接：服务端有任务时唤醒，避免空轮询

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"strings"
+	"fmt"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -54,6 +57,32 @@ func ListAssets(c *gin.Context) {
 	// 只在显式传入 status 时过滤；未传则返回全部，不做任何隐式筛选
 	if status != "" {
 		q = q.Where("status = ?", status)
+	}
+
+	// SPL 检索条件（前端 SearchBar 生成，JSON 数组）
+	if cs := c.Query("conds"); cs != "" {
+		var conds []SearchCond
+		if json.Unmarshal([]byte(cs), &conds) == nil {
+			rest := make([]SearchCond, 0, len(conds))
+			for _, c := range conds {
+				// hasWeb 是计算列（是否存在 web 服务），需转 EXISTS
+				if c.Field == "hasWeb" {
+					v := strings.ToLower(c.Str())
+					yes := v == "true" || v == "1" || v == "是" || v == "有"
+					ex := "EXISTS (SELECT 1 FROM services s WHERE s.ip = assets.ip AND (s.protocol ILIKE 'http%' OR COALESCE(s.title,'') <> ''))"
+					if !yes {
+						ex = "NOT " + ex
+					}
+					q = q.Where(ex)
+					continue
+				}
+				rest = append(rest, c)
+			}
+			q = ApplySearchConds(q, rest, map[string]string{
+				"ip": "ip", "port": "port", "owner": "owner", "department": "department",
+				"systemName": "system_name", "status": "status", "source": "source",
+			})
+		}
 	}
 	if source != "" {
 		q = q.Where("source = ?", source)
@@ -111,17 +140,13 @@ func UpdateAssetOwner(c *gin.Context) {
 		"owner":       req.Owner,
 		"department":  req.Department,
 	}
-	// 该 IP 有 web 服务则自动确认（标注即确认）
-	var webCnt int64
-	config.DB.Model(&model.Service{}).Where("ip = ? AND protocol ILIKE 'http%'", asset.IP).Count(&webCnt)
-	if webCnt > 0 {
-		updates["status"] = "confirmed"
-	}
+	// 标注即确认：无论该 IP 是否有 web 服务，标注了归属就算人工确认
+	updates["status"] = "confirmed"
 	if err := config.DB.Model(&model.Asset{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "已更新", "confirmed": webCnt > 0})
+	c.JSON(http.StatusOK, gin.H{"message": "已更新", "confirmed": true})
 }
 
 // BatchDeleteAssets 批量删除资产
@@ -189,12 +214,132 @@ func ImportLedger(c *gin.Context) {
 		return
 	}
 
-	imported, updated, failed, errs := service.ImportLedger(rows)
+	imported, updated, conflict, failed, errs := service.ImportLedger(rows)
 	c.JSON(http.StatusOK, gin.H{
 		"total":    len(rows),
 		"imported": imported,
 		"updated":  updated,
+		"conflict": conflict,
 		"failed":   failed,
 		"errors":   errs,
+		"message": fmt.Sprintf("新增 %d、更新 %d、冲突待处理 %d、失败 %d",
+			imported, updated, conflict, failed),
 	})
+}
+
+// BatchUpdateAssets 批量修改负责人 / 部门（字段为空则不改）
+func BatchUpdateAssets(c *gin.Context) {
+	var req struct {
+		IDs        []uint `json:"ids"`
+		Owner      string `json:"owner"`
+		Department string `json:"department"`
+		SystemName string `json:"systemName"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择资产"})
+		return
+	}
+	updates := map[string]interface{}{}
+	if req.Owner != "" {
+		updates["owner"] = req.Owner
+	}
+	if req.Department != "" {
+		updates["department"] = req.Department
+	}
+	if req.SystemName != "" {
+		updates["system_name"] = req.SystemName
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "没有要修改的字段"})
+		return
+	}
+	if err := config.DB.Model(&model.Asset{}).Where("id IN ?", req.IDs).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已更新", "count": len(req.IDs)})
+}
+
+// ListImportConflicts 列出待处理的重复导入冲突
+func ListImportConflicts(c *gin.Context) {
+	var list []model.ImportConflict
+	config.DB.Order("created_at desc").Find(&list)
+	c.JSON(http.StatusOK, gin.H{"items": list, "total": len(list)})
+}
+
+// ResolveImportConflict 按旧/按新处理单条冲突
+func ResolveImportConflict(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		Choice  string `json:"choice"`  // old / new
+		System  string `json:"system"`  // 可选：编辑后的系统名
+		Owner   string `json:"owner"`   // 可选：编辑后的责任人
+		Dept    string `json:"department"` // 可选：编辑后的部门
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || (req.Choice != "old" && req.Choice != "new") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "choice 必须是 old 或 new"})
+		return
+	}
+	var cf model.ImportConflict
+	if err := config.DB.First(&cf, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "冲突记录不存在"})
+		return
+	}
+	if req.Choice == "new" {
+		// 优先用前端编辑后的值，没传则用冲突记录里的新值
+		sys, own, dept := cf.NewSystem, cf.NewOwner, cf.NewDept
+		if req.System != "" {
+			sys = req.System
+		}
+		if req.Owner != "" {
+			own = service.NormalizeOwners(req.Owner)
+		}
+		if req.Dept != "" {
+			dept = req.Dept
+		}
+		if own != "" {
+			service.RegisterOwners(dept, own)
+		}
+		// 应用归属：状态回到 pending，等重新确认
+		config.DB.Model(&model.Asset{}).Where("id = ?", cf.AssetID).Updates(map[string]interface{}{
+			"system_name": sys,
+			"owner":       own,
+			"department":  dept,
+			"source":      "ledger",
+			"status":      "pending",
+		})
+	}
+	// choice=old：什么都不做，已确认的旧值保留
+	config.DB.Delete(&cf)
+	c.JSON(http.StatusOK, gin.H{"message": "已处理", "choice": req.Choice})
+}
+
+// ResolveAllImportConflicts 批量处理（全部按旧 / 全部按新）
+func ResolveAllImportConflicts(c *gin.Context) {
+	var req struct {
+		Choice string `json:"choice"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || (req.Choice != "old" && req.Choice != "new") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "choice 必须是 old 或 new"})
+		return
+	}
+	var list []model.ImportConflict
+	config.DB.Find(&list)
+	if len(list) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "没有待处理冲突", "count": 0})
+		return
+	}
+	if req.Choice == "new" {
+		for _, cf := range list {
+			config.DB.Model(&model.Asset{}).Where("id = ?", cf.AssetID).Updates(map[string]interface{}{
+				"system_name": cf.NewSystem,
+				"owner":       cf.NewOwner,
+				"department":  cf.NewDept,
+				"source":      "ledger",
+				"status":      "pending",
+			})
+		}
+	}
+	config.DB.Where("1 = 1").Delete(&model.ImportConflict{})
+	c.JSON(http.StatusOK, gin.H{"message": "已批量处理", "count": len(list), "choice": req.Choice})
 }

@@ -34,6 +34,7 @@ func RegisterRoutes(r *gin.Engine) {
 	// agent 长连接（SSE 唤醒）与子任务上报（agent 调用，不依赖 JWT）
 	r.GET("/api/agent/stream/:id", AgentAuth(), AgentStream)
 	r.GET("/api/agent/nodes/:id/tasks", AgentAuth(), AgentTasks)
+	r.GET("/api/agent/nodes/:id/license", AgentAuth(), GetNodeLicense)
 	r.GET("/api/agent/tasks/:id", AgentTaskAuth(), AgentTaskDetail)
 	r.POST("/api/agent/tasks/:id/progress", AgentTaskAuth(), AgentProgress)
 	r.POST("/api/agent/tasks/:id/finish", AgentTaskAuth(), AgentFinish)
@@ -70,6 +71,10 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/export/excel", ExportExcel)
 		auth.PUT("/assets/:id/confirm", ConfirmAsset)
 		auth.POST("/assets/batch-delete", BatchDeleteAssets)
+		auth.POST("/assets/batch-update", BatchUpdateAssets)
+		auth.GET("/assets/import-conflicts", ListImportConflicts)
+		auth.POST("/assets/import-conflicts/:id/resolve", ResolveImportConflict)
+		auth.POST("/assets/import-conflicts/resolve-all", ResolveAllImportConflicts)
 
 		// 资产处置（待确认 web 资产）
 		auth.GET("/disposal", ListDisposal)
@@ -132,6 +137,8 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.DELETE("/nodes/:id", DeleteNode)
 		auth.POST("/nodes/join-token", CreateJoinToken)
 		auth.PUT("/nodes/:id/config", UpdateNodeConfig)
+		auth.PUT("/nodes/:id/license", UploadNodeLicense)
+		auth.GET("/nodes/license/status", GetNodeLicenseStatus)
 		auth.POST("/nodes/:id/upgrade", UpgradeNode)
 		auth.GET("/nodes/agent-version", AgentVersionInfo)
 		auth.POST("/nodes/:id/health", NodeHealthCheck)

@@ -254,3 +254,57 @@ func StopAgentTask(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "已停止"})
 }
+
+// UploadNodeLicense 上传节点 Tscan License（内容写入 config/License.lic）
+func UploadNodeLicense(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		Content string `json:"content"` // License 文件全文
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	if len(req.Content) < 10 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "License 内容过短，请检查文件"})
+		return
+	}
+	var n model.Node
+	if err := config.DB.First(&n, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	if err := config.DB.Model(&model.Node{}).Where("id = ?", id).
+		Update("license", req.Content).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "License 已保存，节点下次心跳自动写入"})
+}
+
+// GetNodeLicense 节点拉取自己的 License（agent 心跳后调用）
+func GetNodeLicense(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var n model.Node
+	if err := config.DB.First(&n, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": n.License})
+}
+
+// GetNodeLicenseStatus 查询各节点 License 是否已配置（不返回内容）
+func GetNodeLicenseStatus(c *gin.Context) {
+	type row struct {
+		ID      uint   `json:"id"`
+		Name    string `json:"name"`
+		HasLic  bool   `json:"hasLicense"`
+	}
+	var nodes []model.Node
+	config.DB.Select("id", "name", "license").Find(&nodes)
+	out := make([]row, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, row{ID: n.ID, Name: n.Name, HasLic: n.License != ""})
+	}
+	c.JSON(http.StatusOK, out)
+}

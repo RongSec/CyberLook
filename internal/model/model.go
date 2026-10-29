@@ -171,6 +171,7 @@ type Node struct {
 	AgentVersion  string     `gorm:"column:agent_version" json:"agentVersion"`
 	Projects      string     `gorm:"column:projects;type:text" json:"projects"` // config.db 里的 project 列表（JSON 数组）
 	UpgradeReq    bool       `gorm:"column:upgrade_requested;default:false" json:"upgradeRequested"`
+	License       string     `gorm:"column:license;type:text" json:"-"` // Tscan License 内容（不下发到前端）
 	CreatedAt     time.Time  `json:"createdAt"`
 }
 
@@ -269,3 +270,19 @@ type SystemSettings struct {
 }
 
 func (SystemSettings) TableName() string { return "system_settings" }
+
+// ImportConflict 台账重复导入冲突（已确认资产不被覆盖，等人工选择按旧还是按新）
+type ImportConflict struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	AssetID   uint      `gorm:"column:asset_id;index" json:"assetId"`
+	IP        string    `gorm:"column:ip;index" json:"ip"`
+	OldSystem string    `gorm:"column:old_system_name" json:"oldSystemName"`
+	OldOwner  string    `gorm:"column:old_owner" json:"oldOwner"`
+	OldDept   string    `gorm:"column:old_department" json:"oldDepartment"`
+	NewSystem string    `gorm:"column:new_system_name" json:"newSystemName"`
+	NewOwner  string    `gorm:"column:new_owner" json:"newOwner"`
+	NewDept   string    `gorm:"column:new_department" json:"newDepartment"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+func (ImportConflict) TableName() string { return "import_conflicts" }

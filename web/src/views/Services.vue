@@ -2,17 +2,11 @@
   <div>
     <n-card title="应用服务">
       <p class="tip">本页只展示<b>已确认</b>的 Web 资产（在「资产处置」确认过的）；待处置的请到「资产处置」处理。</p>
-      <div class="filters">
-        <n-input v-model:value="filters.keyword" placeholder="搜索全部字段（IP/端口/服务/标题/响应码）" clearable style="width: 320px" @keyup.enter="search" />
-        <n-select v-model:value="filters.statusCodes" multiple :options="statusCodeOptions" placeholder="响应码（可多选）" clearable style="width: 220px" />
-        <n-input v-model:value="filters.ip" placeholder="IP" clearable style="width: 130px" @keyup.enter="search" />
-        <n-input v-model:value="filters.port" placeholder="端口" clearable style="width: 90px" @keyup.enter="search" />
-        <n-input v-model:value="filters.service" placeholder="服务名" clearable style="width: 110px" @keyup.enter="search" />
-        <n-button type="primary" @click="search">查询</n-button>
-        <n-button @click="reset">重置</n-button>
+      <SearchBar :fields="splFields" @search="onSplSearch" @reset="onSplReset" />
+      <div class="filters" style="margin-top:12px">
         <n-tag round>{{ pagination.itemCount }} 条</n-tag>
         <n-tag round>{{ pagination.itemCount }} 条</n-tag>
-        <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" />
+        <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" :conds="splConds" />
         <n-button @click="exportUrls">导出 URL</n-button>
         <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
           <template #trigger>
@@ -32,11 +26,19 @@
 </template>
 
 <script setup>
-import { ref, h, onMounted } from 'vue'
+import { ref, computed, h, onMounted } from 'vue'
 import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
+import SearchBar from '../components/SearchBar.vue'
 
 const message = useMessage()
+
+function renderOwners(raw) {
+  const list = String(raw || '').split(',').map(x => x.trim()).filter(Boolean)
+  if (list.length === 0) return '—'
+  return h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px' },
+    list.map(n => h(NTag, { size: 'small', bordered: false, round: true }, { default: () => n })))
+}
 import ExportButton from '../components/ExportButton.vue'
 
 // 导出列
@@ -45,17 +47,6 @@ function fmtLen(n) {
   return n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B'
 }
 
-const exportCols = [
-  { key: 'ip', label: 'IP' },
-  { key: 'port', label: '端口' },
-  { key: 'protocol', label: '协议' },
-  { key: 'service', label: '服务' },
-  { key: 'statusCode', label: '响应码' },
-  { key: 'contentLength', label: '响应长度' },
-  { key: 'title', label: '网站标题' },
-  { key: 'fingerprint', label: '指纹' },
-  { key: 'lastSeen', label: '最近发现' }
-]
 
 const loading = ref(false)
 const checked = ref([])
@@ -63,6 +54,20 @@ const items = ref([])
 const page = ref(1)
 const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
+const splConds = ref([])
+
+function onSplSearch({ conditions }) {
+  splConds.value = conditions || []
+  page.value = 1
+  load()
+}
+function onSplReset() {
+  splConds.value = []
+  filters.value = { keyword: '', statusCodes: [], ip: '', port: '', service: '' }
+  page.value = 1
+  load()
+}
+
 const filters = ref({ keyword: '', statusCodes: [], ip: '', port: '', service: '', protocol: '' })
 const statusCodeOptions = [
   { label: '200 正常', value: '200' }, { label: '301 永久跳转', value: '301' },
@@ -76,7 +81,7 @@ const columns = [
   { type: 'selection', width: 44, fixed: 'left' },
   { title: 'IP', key: 'ip', width: 140 },
   { title: '部门', key: 'department', width: 130, ellipsis: { tooltip: true }, render: r => r.department || '—' },
-  { title: '负责人', key: 'owner', width: 110, ellipsis: { tooltip: true }, render: r => r.owner || '—' },
+  { title: '负责人', key: 'owner', width: 150, render: r => renderOwners(r.owner) },
   { title: '端口', key: 'port', width: 80 },
   { title: '协议', key: 'protocol', width: 80 },
   {
@@ -105,6 +110,41 @@ const columns = [
   }
 ]
 
+// 检索字段 = 表格所有列（排除操作列），新增列时自动多一项
+// 固定选项字段（不给手输）
+const SPL_FIXED_OPTIONS = {
+  protocol: [{ label: 'https', value: 'https' }, { label: 'http', value: 'http' }],
+  statusCode: {
+    multiple: true, filterable: true,
+    options: [
+      { label: '200', value: '200' }, { label: '201', value: '201' }, { label: '204', value: '204' },
+      { label: '301', value: '301' }, { label: '302', value: '302' }, { label: '304', value: '304' },
+      { label: '400', value: '400' }, { label: '401', value: '401' }, { label: '403', value: '403' },
+      { label: '404', value: '404' }, { label: '405', value: '405' }, { label: '429', value: '429' },
+      { label: '500', value: '500' }, { label: '502', value: '502' }, { label: '503', value: '503' }
+    ]
+  }
+}
+
+// 导出列 = 表格所有列（排除操作列），与页面显示保持一致
+const exportCols = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
+
+const splFields = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+    .map(c => {
+      const f = SPL_FIXED_OPTIONS[c.key]
+      if (!f) return { key: c.key, label: c.title }
+      // 简单选项数组，或 { options, multiple, filterable } 对象
+      if (Array.isArray(f)) return { key: c.key, label: c.title, options: f }
+      return { key: c.key, label: c.title, options: f.options, multiple: !!f.multiple, filterable: !!f.filterable }
+    })
+)
+
 function fmt(t) { return t ? new Date(t).toLocaleString('zh-CN') : '-' }
 
 async function del(row) {
@@ -124,6 +164,7 @@ async function load() {
         ...filters.value,
         statusCodes: (filters.value.statusCodes || []).join(','),
         confirmedOnly: 'true', // 应用服务只展示已确认资产
+        conds: JSON.stringify(splConds.value)
 
       }
     })

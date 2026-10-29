@@ -53,7 +53,7 @@
 </template>
 
 <script setup>
-import { ref, h, onMounted } from 'vue'
+import { ref, h, computed, onMounted } from 'vue'
 import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
@@ -74,20 +74,8 @@ const showRuleModal = ref(false)
 const ruleForm = ref({ name: '', port: 80, protocol: 'tcp' })
 
 // 导出列
-const exportCols = [
-  { key: 'ip', label: 'IP' },
-  { key: 'port', label: '端口' },
-  { key: 'status', label: '状态' },
-  { key: 'ruleId', label: '规则ID' },
-  { key: 'detectedAt', label: '首次发现' },
-  { key: 'lastSeen', label: '最近发现' }
-]
-const ruleExportCols = [
-  { key: 'name', label: '名称' },
-  { key: 'port', label: '端口' },
-  { key: 'protocol', label: '协议' },
-  { key: 'enabled', label: '启用' }
-]
+
+
 
 const resultColumns = [
   { type: 'selection', width: 40, fixed: 'left' },
@@ -110,6 +98,13 @@ const resultColumns = [
   }
 ]
 
+// 导出列 = 表格所有列（排除操作列）
+const exportCols = computed(() =>
+  resultColumns
+    .filter(c => c.key && !['actions', 'op', 'a'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
+
 const ruleColumns = [
   { title: '端口', key: 'port', width: 100 },
   { title: '名称', key: 'name' },
@@ -125,6 +120,13 @@ const ruleColumns = [
       { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }), default: () => '确认删除该规则？' })
   }
 ]
+
+// 导出列 = 表格所有列（排除操作列）
+const ruleExportCols = computed(() =>
+  ruleColumns
+    .filter(c => c.key && !['actions', 'op', 'a'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
 
 function fmt(t) { return t ? new Date(t).toLocaleString('zh-CN') : '-' }
 

@@ -110,6 +110,53 @@ asset-platform/
 └── README.md
 ```
 
+## 资产从发现到标记的完整流程
+
+> GitHub 原生支持 mermaid，仓库首页可直接渲染下面的图。
+
+```mermaid
+flowchart TD
+    A["输入 IP / IP 段"] --> B["创建扫描任务<br/>（可设 cron 定期执行）"]
+    B --> C{"调度器分配节点"}
+    C -->|"节点空闲且未熔断"| D["端口探测"]
+    C -->|"全节点熔断/离线"| C1["IP 回待扫池<br/>等待节点恢复"] --> D
+
+    D --> E["服务 / 指纹识别"]
+    E --> F{"存在 Web 服务?"}
+    F -->|"是"| G["HTTP 探测<br/>标题 + 响应码 + Banner"]
+    F -->|"否"| H["仅记录端口"]
+
+    G --> I[("assets 表<br/>status = pending")]
+    H --> I
+
+    I --> J["资产处置页<br/>待确认池"]
+    J --> K{"人工判断"}
+    K -->|"确认归属"| L["填 部门 / 负责人 / 系统名<br/>（支持批量）"]
+    K -->|"误报或无关"| M["批量删除"]
+
+    L --> N[("status = confirmed")]
+    M --> Z["流程结束"]
+
+    N --> O["资产总览<br/>全量可检索"]
+    N --> P["应用服务<br/>仅已确认的 Web 资产"]
+    N --> Q["页面快照<br/>按间隔定期截图"]
+
+    O --> R["台账比对<br/>红=台账无 绿=台账有 黄=页面变更"]
+
+    style I fill:#FAEEDA,stroke:#BA7517
+    style N fill:#EAF3DE,stroke:#639922
+    style J fill:#E6F1FB,stroke:#378ADD
+    style R fill:#FBEAF0,stroke:#D4537E
+```
+
+**几个关键状态说明**：
+
+| 状态 | 位置 | 含义 |
+|---|---|---|
+| `pending` | 资产处置 | 扫描发现但未确认归属 |
+| `confirmed` | 资产总览 / 应用服务 | 已人工标注部门与负责人 |
+| 台账红/绿/黄 | 资产总览 | 与台账比对结果（无/有/页面变更） |
+
 ## 架构说明
 
 ```
@@ -142,33 +189,33 @@ asset-platform/
 ## 所有功能介绍
 
 ### 首页
-![alt text](image.png)
+![alt text](docs/images/image.png)
 首页主要是对各种数据进行汇总展示，并绘制趋势图。除此之外没有别的功能。
 
 ### 资产总览
-![alt text](image-1.png)
+![alt text](docs/images/image-1.png)
 1. 根据可下载的模板导入现有台账，其中的组织和各组织负责人会被自动添加在组织结构页面。
 2. 根据每一次扫描的结果查看态势，连续三次扫描均不存活的资产会被剔除。
 3. 可以再次对资产进行标注。
 
 ### 资产处置
-![alt text](image-2.png)
+![alt text](docs/images/image-2.png)
 1. 对扫描到的web服务均放置于此处，即便是导入的台账的资产依旧会需要再次处置。
 2. 有三种标签，新出现，台账有，新变更。新出现指的是不在台账中的新被发现的web服务；台账有指台账中的被扫描到的资产；新变更指的是以前处置过的但是服务产生变更的。
 3. 判断旧服务是否变更使用的技术是simhash,类似于yakit的页面相似度。
 
 ### 应用服务
-![alt text](image-3.png)
+![alt text](docs/images/image-3.png)
 1. 对已处置的web服务进行展示和编辑操作。
 
 ### 合规检测
-![alt text](image-4.png)
+![alt text](docs/images/image-4.png)
 1. 对扫描中发现的可直连的数据库，ssh等进行展示，同时可以一键复测。
 2. 可以自定义规则。
 
 ### 扫描
-![alt text](image-5.png)
-![alt text](image-6.png)
+![alt text](docs/images/image-5.png)
+![alt text](docs/images/image-6.png)
 1. 下发任务，可以选择节点和配置各项参数，任务成果会在最右侧显示，显示结果随每次任务刷新。
 2. 鉴于目前tscanclient的存活探测功能失效，服务端采用了icmp+tcp的方式先判定存活探测，在探测过程中，依据设定的分片数动态给子节点下发任务，如果暂停再继续，存活探测可以断点续传，下发的没有完成的分片会重新下发。
 3. 可以编辑扫描策略模板。
@@ -176,31 +223,31 @@ asset-platform/
 5. 扫描任务中可以便捷的设置各类参数。
 
 ### 节点
-![alt text](image-7.png)
+![alt text](docs/images/image-7.png)
 1. 一键加入集群，兼容linux和windows，可以选择单独下载控制文件或者完整下载（包含引擎），仅有控制文件无法完成扫描。
 2. 根据节点性能可以设置每一个节点的并发。
 3. 可以对子节点数据库进行管理，节约存储。
 4. 可以设置熔断规则，对于连续失败的节点会熔断，规定时间内不再下发任务。
 ### IP规划
-![alt text](image-8.png)
-![alt text](image-9.png)
+![alt text](docs/images/image-8.png)
+![alt text](docs/images/image-9.png)
 1. 预先导入一些内网段，扫描时一键选中。
 2. 预先设置一些免扫描范围，扫描时自动排除。
 
 ### 组织结构
-![alt text](image-10.png)
+![alt text](docs/images/image-10.png)
 1. 可以合并拆分组织，可以编辑组室内负责人。
 
 ### 故障和日志
-![alt text](image-11.png)
+![alt text](docs/images/image-11.png)
 1. 显示故障和日志。
 
 ### 通知
-![alt text](image-12.png)
+![alt text](docs/images/image-12.png)
 1. 可以通知，支持大多数常用的软件。
 
 ### 系统配置
-![alt text](image-13.png)
+![alt text](docs/images/image-13.png)
 1. 一键升级，支持回滚。
 2. 可以修改密码。
 

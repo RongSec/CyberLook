@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strconv"
 	"strings"
 	"fmt"
 	"net/http"
@@ -223,12 +224,38 @@ func BatchDeleteDisposal(c *gin.Context) {
 // ConfirmDisposal 确认处置（按 IP，带部门/负责人/系统名）
 func ConfirmDisposal(c *gin.Context) {
 	var req struct {
-		IP         string `json:"ip"`
-		SystemName string `json:"systemName"`
-		Owner      string `json:"owner"`
-		Department string `json:"department"`
+		IP         string   `json:"ip"`
+		IPs        []string `json:"ips"` // 批量处置（与 ip 二选一）
+		SystemName string   `json:"systemName"`
+		Owner      string   `json:"owner"`
+		Department string   `json:"department"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	// 批量：逐条复用单条逻辑
+	if len(req.IPs) > 0 {
+		if req.Owner == "" || req.Department == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "必须选择部门和负责人"})
+			return
+		}
+		ok, skip := 0, 0
+		for _, one := range req.IPs {
+			ip := strings.TrimSpace(one)
+			if ip == "" {
+				continue
+			}
+			if err := confirmOneIP(ip, req.SystemName, req.Owner, req.Department); err != nil {
+				skip++
+				continue
+			}
+			ok++
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "已确认 " + strconv.Itoa(ok) + " 个资产", "ok": ok, "skip": skip})
+		return
+	}
+	if req.IP == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
@@ -269,4 +296,20 @@ func ConfirmDisposal(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "已确认入库"})
+}
+
+// confirmOneIP 确认单个 IP 的归属（批量处置复用）
+func confirmOneIP(ip, systemName, owner, department string) error {
+	var asset model.Asset
+	if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
+		a := model.Asset{
+			IP: ip, Source: "scan", Status: "confirmed",
+			SystemName: systemName, Owner: owner, Department: department,
+		}
+		return config.DB.Create(&a).Error
+	}
+	return config.DB.Model(&model.Asset{}).Where("ip = ?", ip).Updates(map[string]interface{}{
+		"status": "confirmed", "system_name": systemName,
+		"owner": owner, "department": department,
+	}).Error
 }
