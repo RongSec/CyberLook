@@ -9,6 +9,29 @@
 
 ---
 
+## [0.0.7] - 2026-10-29
+
+### 修复
+
+- **检查更新后按钮仍显示「已是最新」**：`HasUpdate` 原判断依赖 Release 里的二进制附件，
+  而 0.0.4 起改为镜像发布后不再产出附件，导致版本检测成功但无法点更新。
+  改为按语义化版本号比较（`v0.0.7` vs `当前版本`）。
+- **「当前版本」显示的是二进制哈希**：改为真实版本号。
+- **镜像内版本号与 tag 无关**：Dockerfile 之前只有 `-ldflags="-s -w"`，
+  版本号永远等于 `version.go` 里的字面值。现改为构建参数注入：
+  `-X asset-platform/internal/version.Version=${VERSION#v}`，
+  CI 传 `github.ref_name`，本地构建传 `APP_VERSION`。
+- **镜像只有 amd64，Apple Silicon 无法拉取**：
+  `release.yml` 增加 `platforms: linux/amd64,linux/arm64`。
+  之前 `docker compose pull` 在 arm64 上报 `no matching manifest`，
+  compose 回退到本地构建，把旧二进制打上新 tag，造成「标签是新的、版本是旧的」。
+
+### 优化
+
+- `version.go` 默认值改为 `dev`，由构建注入真实版本，避免手改漏改。
+
+---
+
 ## [0.0.6] - 2026-10-29
 
 ### 新增

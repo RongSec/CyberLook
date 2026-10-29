@@ -22,8 +22,10 @@ type UpdateInfo struct {
 	DownloadURL string `json:"downloadUrl"` // 服务端二进制的下载地址
 	Notes       string `json:"notes"`       // release body
 	PublishedAt string `json:"publishedAt"`
-	Current     string `json:"current"`     // 当前二进制哈希
+	Current     string `json:"current"`     // 当前版本号（如 0.0.6）
 	HasUpdate   bool   `json:"hasUpdate"`
+	// 发布方式：image=只有容器镜像（走 updater 边车）/ binary=带二进制附件（下载替换）
+	ReleaseKind string `json:"releaseKind"`
 }
 
 // getHTTPClient 带代理的 HTTP 客户端（代理仅用于获取更新）
@@ -121,10 +123,16 @@ func CheckUpdate() (*UpdateInfo, error) {
 		DownloadURL: downloadURL,
 		Notes:       rel.Body,
 		PublishedAt: rel.PublishedAt,
-		Current:     CurrentServerHash(),
+		Current:     version.Version,
 	}
-	// 与当前二进制比对（用 tag_name 与当前哈希比对，或 HasUpdate 由前端展示）
-	info.HasUpdate = downloadURL != ""
+	// 有二进制附件 → 老式二进制更新；否则走 updater 边车拉镜像
+	if downloadURL != "" {
+		info.ReleaseKind = "binary"
+	} else {
+		info.ReleaseKind = "image"
+	}
+	// 是否可更新：按版本号比较（镜像发布没有附件，不能再用 downloadURL 判断）
+	info.HasUpdate = CompareVersion(strings.TrimPrefix(rel.TagName, "v"), version.Version) > 0
 	return info, nil
 }
 
@@ -210,4 +218,41 @@ func Rollback() (string, error) {
 		return "", err
 	}
 	return filepath.Base(latest), nil
+}
+
+// CompareVersion 比较语义化版本（忽略 v 前缀与预发布后缀）
+// 返回 1 表示 a 比 b 新，0 相同，-1 比 b 旧
+func CompareVersion(a, b string) int {
+	norm := func(v string) []int {
+		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+		// 去掉 -rc1 / +build 之类后缀
+		if i := strings.IndexAny(v, "-+"); i >= 0 {
+			v = v[:i]
+		}
+		parts := strings.Split(v, ".")
+		out := make([]int, 0, len(parts))
+		for _, p := range parts {
+			n := 0
+			fmt.Sscanf(p, "%d", &n)
+			out = append(out, n)
+		}
+		return out
+	}
+	x, y := norm(a), norm(b)
+	for i := 0; i < len(x) || i < len(y); i++ {
+		var xi, yi int
+		if i < len(x) {
+			xi = x[i]
+		}
+		if i < len(y) {
+			yi = y[i]
+		}
+		if xi > yi {
+			return 1
+		}
+		if xi < yi {
+			return -1
+		}
+	}
+	return 0
 }

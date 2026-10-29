@@ -8,13 +8,15 @@ RUN npm run build
 
 # ---------- 后端构建 ----------
 FROM golang:1.26-alpine AS go-builder
+# 版本号由构建参数注入（CI 传 tag，本地构建传 APP_VERSION）
+ARG VERSION=dev
 ENV GOPROXY=https://goproxy.cn,direct
 ENV CGO_ENABLED=0
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /out/asset-server ./cmd/server && \
+RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/asset-server ./cmd/server && \
     GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux ./cmd/agent && \
     GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
     GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-windows.exe ./cmd/agent
