@@ -32,6 +32,9 @@ jobs:
           context: .
           file: Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/${{ steps.img.outputs.name }}:${{ github.ref_name }}
             ghcr.io/${{ steps.img.outputs.name }}:latest
@@ -44,6 +47,9 @@ jobs:
           context: .
           file: Dockerfile.updater
           push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/${{ steps.img.outputs.name }}-updater:${{ github.ref_name }}
             ghcr.io/${{ steps.img.outputs.name }}-updater:latest

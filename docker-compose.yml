@@ -33,6 +33,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VERSION: ${APP_VERSION:-dev}
     container_name: asset-server
     restart: always
     ports:
@@ -62,6 +64,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.updater
+      args:
+        VERSION: ${APP_VERSION:-dev}
     container_name: asset-updater
     restart: always
     volumes:
