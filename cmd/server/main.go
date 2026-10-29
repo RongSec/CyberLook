@@ -113,7 +113,14 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(6 * time.Hour)
 		defer ticker.Stop()
+		// 从数据库取最后一张快照的时间，避免服务重启后计时器重置导致永远不触发
 		lastCapture := time.Now()
+		if config.DB != nil {
+			var last model.PageSnapshot
+			if err := config.DB.Order("captured_at desc").First(&last).Error; err == nil && !last.CapturedAt.IsZero() {
+				lastCapture = last.CapturedAt
+			}
+		}
 		for range ticker.C {
 			s := service.GetSnapshotSettings()
 			if s.Enabled && time.Since(lastCapture) >= time.Duration(s.IntervalDays)*24*time.Hour {

@@ -291,14 +291,7 @@ import ExportButton from '../components/ExportButton.vue'
 import ScheduledTasks from './ScheduledTasks.vue'
 
 // 导出列
-const exportCols = [
-  { key: 'id', label: 'ID' },
-  { key: 'name', label: '名称' },
-  { key: 'status', label: '状态' },
-  { key: 'cron', label: '定时' },
-  { key: 'createdAt', label: '创建时间' },
-  { key: 'reportPath', label: '报告文件' }
-]
+
 
 const message = useMessage()
 const loading = ref(false)
@@ -474,6 +467,13 @@ const columns = [
     }
   }
 ]
+
+// 导出列 = 表格所有列（排除操作列）
+const exportCols = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op', 'a'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
 
 // cron 转人类可读
 function cronText(cron) {

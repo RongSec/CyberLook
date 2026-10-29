@@ -37,7 +37,8 @@ func GetDashboardSummary() DashboardSummary {
 		  AND s.confirmed = true`).Scan(&s.AssetConfirmed)
 	// 与「资产处置」页完全同源：可达 web 服务中尚未处置的（按 IP 去重）
 	// 之前用 status='pending' 会把非 web、不可达、已确认的台账资产都算进来，导致首页和列表对不上
-	config.DB.Raw(`SELECT count(*) FROM services s
+	// 待确认资产：按 IP 计（有 Web 响应但尚未确认的 IP 数），与处置页口径一致
+	config.DB.Raw(`SELECT count(DISTINCT s.ip) FROM services s
 		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
 		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')
 		  AND s.confirmed = false`).Scan(&s.AssetPending)

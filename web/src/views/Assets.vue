@@ -1,21 +1,22 @@
 <template>
   <div>
     <n-card title="主机资产">
-      <div class="filters">
-        <n-input v-model:value="filters.ip" placeholder="IP" clearable style="width: 140px" @keyup.enter="search" />
-        <n-input v-model:value="filters.systemName" placeholder="关联业务" clearable style="width: 140px" @keyup.enter="search" />
-        <n-input v-model:value="filters.owner" placeholder="负责人" clearable style="width: 110px" @keyup.enter="search" />
-        <n-select v-model:value="filters.department" :options="deptOptions" placeholder="部门" clearable style="width: 140px" />
-        <n-select v-model:value="filters.source" :options="sourceOptions" placeholder="来源" clearable style="width: 110px" />
-        <n-select v-model:value="filters.status" :options="statusOptions" placeholder="状态" clearable style="width: 110px" />
-        <n-select v-model:value="filters.hasWeb" :options="hasWebOptions" placeholder="是否有WEB" clearable style="width: 130px" />
-        <n-button type="primary" @click="search">查询</n-button>
-        <n-button @click="reset">重置</n-button>
-        <n-button secondary @click="selectAllFiltered">全选当前筛选</n-button>
+
+      <SearchBar ref="searchBar" :fields="splFields" :status-options="statusOptions"
+        @search="onSplSearch" @reset="onSplReset" />
+
+      <div class="filters" style="margin-top:12px">
+        <n-button secondary @click="toggleSelectAll">{{ allSelected ? '全不选' : '全选当前筛选' }}</n-button>
+        <n-button type="primary" ghost :disabled="checkedRows.length === 0" @click="openBatchEdit">
+          批量编辑{{ checkedRows.length ? `(${checkedRows.length})` : '' }}
+        </n-button>
         <n-button type="error" :disabled="checkedRows.length === 0" @click="batchDelete">
           批量删除{{ checkedRows.length ? `(${checkedRows.length})` : '' }}
         </n-button>
-        <ExportButton type="assets" title="主机资产" :columns="exportCols" :filters="exportFilters" />
+        <ExportButton type="assets" title="主机资产" :columns="exportCols" :filters="exportFilters" :conds="splConds" />
+        <n-badge :value="conflicts.length" :max="99" :show="conflicts.length > 0" type="warning">
+          <n-button @click="openConflicts">重复资产处理</n-button>
+        </n-badge>
         <n-space style="margin-left: auto">
           <div v-if="importing" style="display:flex;align-items:center;gap:8px;min-width:200px">
             <n-progress type="line" :percentage="Math.round(importProgress)" :height="10"
@@ -32,6 +33,62 @@
       <n-data-table :columns="columns" :data="items" :loading="loading" :pagination="{ ...pagination, showSizePicker: true, pageSizes: [10, 20, 50, 100], onUpdatePageSize: onPageSize }"
         :row-key="rowKey" checkable @update:checked-row-keys="onChecked" remote @update:page="onPage" />
     </n-card>
+
+    <!-- 重复资产处理（右侧抽屉） -->
+    <n-drawer v-model:show="showConflicts" :width="720" placement="right">
+      <n-drawer-content title="重复资产处理" closable>
+        <template #header>
+          <div style="display:flex;align-items:center;gap:12px;width:100%">
+            <span style="font-size:16px;font-weight:600">重复资产处理</span>
+            <n-tag :type="conflicts.length ? 'warning' : 'success'" round size="small">
+              {{ conflicts.length }} 条待处理
+            </n-tag>
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <n-button size="small" :disabled="conflicts.length === 0" @click="resolveAll('old')">全部按旧</n-button>
+              <n-button size="small" type="primary" :disabled="conflicts.length === 0" @click="resolveAll('new')">全部按新</n-button>
+            </div>
+          </div>
+        </template>
+
+        <p class="muted" style="margin:0 0 12px">
+          这些 IP 已人工确认过归属，重新导入的台账不会自动覆盖。
+          <b>按旧</b> = 保留你确认过的归属；<b>按新</b> = 改用新台账的归属（状态回到待确认）。
+        </p>
+
+        <n-empty v-if="conflicts.length === 0" description="没有待处理的重复资产" style="margin-top:60px" />
+
+        <div v-for="c in conflicts" :key="c.id" class="cf-card">
+          <div class="cf-head">
+            <span class="cf-ip">{{ c.ip }}</span>
+            <n-button size="tiny" @click="resolveOne(c, 'old')">按旧</n-button>
+            <n-button size="tiny" type="primary" @click="resolveOne(c, 'new')">应用修改</n-button>
+          </div>
+          <div class="cf-body">
+            <div class="cf-col">
+              <div class="cf-label">旧（已确认）</div>
+              <div class="cf-row"><span>系统</span><b>{{ c.oldSystemName || '—' }}</b></div>
+              <div class="cf-row"><span>负责人</span><b>{{ c.oldOwner || '—' }}</b></div>
+              <div class="cf-row"><span>部门</span><b>{{ c.oldDepartment || '—' }}</b></div>
+            </div>
+            <div class="cf-arrow">→</div>
+            <div class="cf-col new">
+              <div class="cf-label">新（可编辑）</div>
+              <div class="cf-row"><span>系统</span>
+                <n-input v-model:value="c.editSystem" size="tiny" placeholder="系统名" style="flex:1" />
+              </div>
+              <div class="cf-row"><span>负责人</span>
+                <n-select v-model:value="c.editOwnerList" :options="cfOwnerOptions(c)" multiple filterable tag
+                  size="tiny" placeholder="责任人（可多选）" style="flex:1" />
+              </div>
+              <div class="cf-row"><span>部门</span>
+                <n-select v-model:value="c.editDept" :options="deptOptions" filterable tag
+                  size="tiny" placeholder="部门" style="flex:1" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </n-drawer-content>
+    </n-drawer>
 
     <!-- 标注归属 -->
     <n-modal v-model:show="showEdit" preset="card" title="标注归属" style="width: 500px">
@@ -53,6 +110,27 @@
         </n-space>
       </template>
     </n-modal>
+    <!-- 批量编辑负责人/部门 -->
+    <n-modal v-model:show="showBatchEdit" preset="card"
+      :title="`批量编辑 · 已选 ${checkedRows.length} 个资产`" style="width: 480px">
+      <n-form label-placement="left" label-width="90">
+        <n-form-item label="负责人">
+          <n-select v-model:value="batchEdit.owner" :options="batchOwnerOptions" tag filterable
+            clearable placeholder="留空则不修改" style="width: 100%" />
+        </n-form-item>
+        <n-form-item label="隶属部门">
+          <n-select v-model:value="batchEdit.department" :options="deptOptions" clearable
+            placeholder="留空则不修改" style="width: 100%" @update:value="onBatchDeptChange" />
+        </n-form-item>
+      </n-form>
+      <p class="tip">只填一项也可以，未填的字段保持不变。</p>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showBatchEdit = false">取消</n-button>
+          <n-button type="primary" @click="doBatchEdit">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
 
     <!-- 右侧端口抽屉 -->
     <n-drawer v-model:show="showPorts" :width="520" placement="right">
@@ -70,12 +148,21 @@
 </template>
 
 <script setup>
-import { ref, h, computed, onMounted } from 'vue'
+import { ref, computed, h, onMounted } from 'vue'
 import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
+import SearchBar from '../components/SearchBar.vue'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 
 const message = useMessage()
+
+// 责任人可能多个（逗号分隔），渲染成多个小标签
+function renderOwners(raw) {
+  const list = String(raw || '').split(',').map(x => x.trim()).filter(Boolean)
+  if (list.length === 0) return '—'
+  return h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px' },
+    list.map(n => h(NTag, { size: 'small', bordered: false, round: true }, { default: () => n })))
+}
 const loading = ref(false)
 const importing = ref(false)
 const importProgress = ref(0)
@@ -86,6 +173,103 @@ const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const filters = ref({ ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null })
 const checkedRows = ref([])
+const searchBar = ref(null)
+const splConds = ref([])
+
+function onSplSearch({ conditions }) {
+  splConds.value = conditions || []
+  page.value = 1
+  load()
+}
+function onSplReset() {
+  splConds.value = []
+  filters.value = { ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null }
+  page.value = 1
+  load()
+}
+const showBatchEdit = ref(false)
+const showConflicts = ref(false)
+const conflicts = ref([])
+
+async function loadConflicts() {
+  try {
+    const r = await api.get('/assets/import-conflicts')
+    conflicts.value = (r.items || []).map(x => ({
+      ...x,
+      editSystem: x.newSystemName || '',
+      editOwnerList: String(x.newOwner || '').split(',').map(v => v.trim()).filter(Boolean),
+      editDept: x.newDepartment || ''
+    }))
+  } catch (e) { conflicts.value = [] }
+}
+function openConflicts() {
+  loadConflicts()
+  showConflicts.value = true
+}
+// 冲突卡片里负责人选项：跟随所选部门
+function cfOwnerOptions(c) {
+  const d = departments.value.find(x => x.name === c.editDept)
+  const owners = d && d.owners ? d.owners.split(',').map(o => o.trim()).filter(Boolean) : []
+  const merged = new Set([...owners, ...(c.editOwnerList || [])])
+  return [...merged].map(o => ({ label: o, value: o }))
+}
+
+async function resolveOne(c, choice) {
+  try {
+    const body = { choice }
+    if (choice === 'new') {
+      body.system = c.editSystem
+      body.owner = (c.editOwnerList || []).join(',')
+      body.department = c.editDept
+    }
+    await api.post(`/assets/import-conflicts/${c.id}/resolve`, body)
+    message.success(choice === 'old' ? '已保留旧归属' : '已改用新归属')
+    await loadConflicts()
+    if (choice === 'new') load()
+  } catch (e) { message.error(e.response?.data?.error || '处理失败') }
+}
+async function resolveAll(choice) {
+  try {
+    const r = await api.post('/assets/import-conflicts/resolve-all', { choice })
+    message.success(`已处理 ${r.count} 条（${choice === 'old' ? '按旧' : '按新'}）`)
+    await loadConflicts()
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '处理失败') }
+}
+const batchEdit = ref({ owner: '', department: '' })
+const batchOwnerOptions = ref([])
+
+function openBatchEdit() {
+  batchEdit.value = { owner: '', department: '' }
+  batchOwnerOptions.value = []
+  showBatchEdit.value = true
+}
+
+function onBatchDeptChange(name) {
+  const d = departments.value.find(x => x.name === name)
+  const owners = (d && d.owners ? d.owners.split(',') : []).map(o => o.trim()).filter(Boolean)
+  batchOwnerOptions.value = owners.map(o => ({ label: o, value: o }))
+  if (batchEdit.value.owner && !owners.includes(batchEdit.value.owner)) {
+    batchEdit.value.owner = ''
+  }
+}
+
+async function doBatchEdit() {
+  if (!batchEdit.value.owner && !batchEdit.value.department) {
+    message.warning('请至少填写一项')
+    return
+  }
+  try {
+    const r = await api.post('/assets/batch-update', {
+      ids: checkedRows.value,
+      owner: batchEdit.value.owner || '',
+      department: batchEdit.value.department || ''
+    })
+    message.success(`已更新 ${r.count || checkedRows.value.length} 个资产`)
+    showBatchEdit.value = false
+    load()
+  } catch (e) { message.error(e.response?.data?.error || '批量编辑失败') }
+}
 
 const showPorts = ref(false)
 const portIP = ref('')
@@ -119,16 +303,6 @@ const hasWebOptions = [
 ]
 
 // 导出列（与表格列一一对应）
-const exportCols = [
-  { key: 'ip', label: 'IP' },
-  { key: 'hasWeb', label: '是否有WEB' },
-  { key: 'systemName', label: '关联业务' },
-  { key: 'owner', label: '负责人' },
-  { key: 'department', label: '隶属部门' },
-  { key: 'source', label: '来源' },
-  { key: 'status', label: '状态' },
-  { key: 'createdAt', label: '创建时间' }
-]
 const exportFilters = computed(() => ({
   ip: filters.value.ip, systemName: filters.value.systemName, owner: filters.value.owner,
   department: filters.value.department, source: filters.value.source, status: filters.value.status,
@@ -146,7 +320,7 @@ const columns = [
     render: row => h(NTag, { size: 'small', type: row.hasWeb ? 'success' : 'default' }, { default: () => row.hasWeb ? '有' : '无' })
   },
   { title: '关联业务', key: 'systemName' },
-  { title: '负责人', key: 'owner', width: 100 },
+  { title: '负责人', key: 'owner', width: 150, render: r => renderOwners(r.owner) },
   { title: '隶属部门', key: 'department', width: 130 },
   {
     title: '来源', key: 'source', width: 90,
@@ -174,6 +348,33 @@ const columns = [
     ])
   }
 ]
+
+// 检索字段 = 表格所有列（排除操作列），新增列时自动多一项
+// 固定选项字段（不给手输）
+const SPL_FIXED_OPTIONS = {
+  hasWeb: [{ label: '有', value: 'true' }, { label: '无', value: 'false' }],
+  source: [{ label: '台账导入', value: 'ledger' }, { label: '扫描发现', value: 'scan' }],
+  status: [{ label: '待确认', value: 'pending' }, { label: '已登记', value: 'confirmed' }]
+}
+
+// 导出列 = 表格所有列（排除操作列），与页面显示保持一致
+const exportCols = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+    .map(c => ({ key: c.key, label: c.title }))
+)
+
+const splFields = computed(() =>
+  columns
+    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+    .map(c => {
+      const f = SPL_FIXED_OPTIONS[c.key]
+      if (!f) return { key: c.key, label: c.title }
+      // 简单选项数组，或 { options, multiple, filterable } 对象
+      if (Array.isArray(f)) return { key: c.key, label: c.title, options: f }
+      return { key: c.key, label: c.title, options: f.options, multiple: !!f.multiple, filterable: !!f.filterable }
+    })
+)
 
 const portColumns = [
   { title: '端口', key: 'port', width: 80 },
@@ -203,8 +404,7 @@ async function load() {
         page: page.value, size: pageSize.value,
         ip: filters.value.ip, systemName: filters.value.systemName, owner: filters.value.owner,
         department: filters.value.department, source: filters.value.source, status: filters.value.status,
-        hasWeb: filters.value.hasWeb
-      }
+        hasWeb: filters.value.hasWeb, conds: JSON.stringify(splConds.value) }
     })
     items.value = res.items
     pagination.value = { page: res.page, pageSize: res.size, itemCount: res.total }
@@ -220,7 +420,17 @@ function reset() {
   filters.value = { ip: '', systemName: '', owner: '', department: null, source: null, status: null, hasWeb: null }
   load()
 }
+const allSelected = computed(() => items.value.length > 0 && checkedRows.value.length === items.value.length)
+
 function onChecked(keys) { checkedRows.value = keys }
+
+function toggleSelectAll() {
+  if (allSelected.value) {
+    checkedRows.value = []
+  } else {
+    checkedRows.value = items.value.map(a => a.id)
+  }
+}
 
 async function selectAllFiltered() {
   const res = await api.get('/assets', {
@@ -342,6 +552,22 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.cf-card {
+  border: 1px solid var(--n-border-color, rgba(128,128,128,.25));
+  border-radius: 8px; padding: 12px 14px; margin-bottom: 12px;
+}
+.cf-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cf-ip { font-weight: 600; font-family: ui-monospace, monospace; font-size: 14px; margin-right: auto; }
+.cf-body { display: flex; gap: 12px; align-items: stretch; }
+.cf-col { flex: 1; min-width: 0; }
+.cf-col.new .cf-row span { flex: 0 0 48px; }
+.cf-col.new { opacity: .95; }
+.cf-label { font-size: 12px; opacity: .55; margin-bottom: 6px; }
+.cf-row { display: flex; gap: 8px; font-size: 13px; line-height: 1.9; }
+.cf-row span { width: 48px; opacity: .55; }
+.cf-row b { font-weight: 500; }
+.cf-arrow { display: flex; align-items: center; opacity: .35; font-size: 16px; }
+
 .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .history-ip { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
 .edit-tip { color: var(--text-muted); font-size: 12px; margin: 0 0 4px; }
