@@ -9,6 +9,20 @@
 
 ---
 
+## [0.0.10] - 2026-10-30
+
+### 修复
+
+- **updater 硬编码项目名导致容器冲突**：compose 命令写死 `-p asset-platform`，
+  当 `.env` 里 `COMPOSE_PROJECT_NAME` 不是 `asset-platform` 时，`up -d --force-recreate`
+  会创建属于 `asset-platform` 项目的容器，与现有容器名冲突。
+  去掉 `-p`，让 compose 自动读 `.env` 里的 `COMPOSE_PROJECT_NAME`。
+- **rollbackEnv 写坏 .env 版本号**：`version.Version` 不带 `v` 前缀（如 `0.0.8`），
+  回滚时直接写入 `APP_VERSION=0.0.8`，而 GHCR tag 是 `v0.0.8`，导致下次 compose 找不到镜像
+  会回退本地构建（版本变 dev）。现在统一补 `v` 前缀。
+
+---
+
 ## [0.0.9] - 2026-10-30
 
 ### 优化
