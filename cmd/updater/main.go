@@ -102,20 +102,24 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 		emit(w, "备份失败（继续更新）: "+err.Error())
 	}
 
-	// 2) 改 .env 版本号
+	// 2) 改 .env 版本号（统一加 v 前缀）
 	emit(w, "== 切换版本 ==")
 	envPath := "/project/.env"
 	content, _ := os.ReadFile(envPath)
+	ver := req.Version
+	if ver != "" && !strings.HasPrefix(ver, "v") {
+		ver = "v" + ver
+	}
 	lines := strings.Split(string(content), "\n")
 	found := false
 	for i, ln := range lines {
 		if strings.HasPrefix(ln, "APP_VERSION=") {
-			lines[i] = "APP_VERSION=" + req.Version
+			lines[i] = "APP_VERSION=" + ver
 			found = true
 		}
 	}
 	if !found {
-		lines = append(lines, "APP_VERSION="+req.Version)
+		lines = append(lines, "APP_VERSION="+ver)
 	}
 	os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0o644)
 	emit(w, "APP_VERSION="+req.Version)
@@ -125,7 +129,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	img := "ghcr.io/rongsec/cyberlook:" + req.Version
 	if q, err := run("docker", "images", "-q", img); err == nil && strings.TrimSpace(q) != "" {
 		emit(w, "本地已有镜像 "+img+"，跳过拉取")
-	} else if _, err := runTimeout(8*time.Minute, "docker", "compose", "-p", "asset-platform", "pull", "server"); err != nil {
+	} else if _, err := runTimeout(8*time.Minute, "docker", "compose", "pull", "server"); err != nil {
 		emit(w, "拉取失败: "+err.Error())
 		rollbackEnv(req.OldVersion)
 		emit(w, "ERROR 拉取镜像失败，已回滚 .env")
@@ -136,7 +140,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// 4) 重启 server（不动 pg/redis）
 	emit(w, "== 重启服务 ==")
-	if _, err := runTimeout(4*time.Minute, "docker", "compose", "-p", "asset-platform", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server"); err != nil {
+	if _, err := runTimeout(4*time.Minute, "docker", "compose", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server"); err != nil {
 		emit(w, "重启失败: "+err.Error())
 		rollbackAll(req.OldVersion)
 		emit(w, "ERROR 重启失败，已回滚")
@@ -158,6 +162,10 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func rollbackEnv(v string) {
+	// GHCR 的 tag 都带 v 前缀，version.Version 不带，统一补上
+	if v != "" && !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
 	content, _ := os.ReadFile("/project/.env")
 	lines := strings.Split(string(content), "\n")
 	for i, ln := range lines {
@@ -170,7 +178,7 @@ func rollbackEnv(v string) {
 
 func rollbackAll(v string) {
 	rollbackEnv(v)
-	runTimeout(4*time.Minute, "docker", "compose", "-p", "asset-platform", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server")
+	runTimeout(4*time.Minute, "docker", "compose", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v updateResp) {
