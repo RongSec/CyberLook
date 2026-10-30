@@ -9,6 +9,17 @@
 
 ---
 
+## [0.0.13] - 2026-10-31
+
+### 修复
+
+- **updater 内 compose 项目名不一致导致容器冲突**：updater 容器内 `docker compose` 从目录名 `/project`
+  推导项目名为 `project`，与宿主机的 `asset-platform` 不一致，导致 `up -d --force-recreate` 时
+  容器名冲突。现在 `.env` 显式指定 `COMPOSE_PROJECT_NAME=asset-platform`，
+  `init.sh`/`init.ps1`/`.env.example` 都已包含此配置。
+
+---
+
 ## [0.0.12] - 2026-10-31
 
 ### 测试版
