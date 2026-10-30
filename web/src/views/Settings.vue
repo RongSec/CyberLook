@@ -177,13 +177,41 @@ async function applyUpdate() {
   applying.value = true
   updateLog.value = []
   try {
-    const res = await api.post('/system/update/apply', { version: updateInfo.value.version }, { timeout: 600000 })
-    message.success(res.message || '已更新，系统正在重启')
-    if (res.log) updateLog.value = res.log.split('\\n').filter(Boolean)
+    const token = localStorage.getItem('token')
+    const resp = await fetch('/api/system/update/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ version: updateInfo.value.version })
+    })
+    if (!resp.ok && !resp.body) {
+      const data = await resp.json().catch(() => ({}))
+      message.error(data.error || '更新失败')
+      return
+    }
+    // 流式读取日志
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let done = false
+    while (!done) {
+      const { value, done: d } = await reader.read()
+      done = d
+      if (value) {
+        const text = decoder.decode(value, { stream: true })
+        const lines = text.split('\n').filter(Boolean)
+        for (const line of lines) {
+          updateLog.value.push(line)
+        }
+      }
+    }
+    // 判断结果
+    const last = updateLog.value[updateLog.value.length - 1] || ''
+    if (last.startsWith('SUCCESS')) {
+      message.success(last.replace('SUCCESS ', ''))
+    } else if (last.startsWith('ERROR')) {
+      message.error(last.replace('ERROR ', ''))
+    }
   } catch (e) {
-    const data = e.response?.data
-    message.error(data?.error || '更新失败')
-    if (data?.log) updateLog.value = data.log.split('\\n').filter(Boolean)
+    message.error('更新失败: ' + (e.message || '网络错误'))
   } finally {
     applying.value = false
   }

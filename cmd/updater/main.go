@@ -58,6 +58,14 @@ func healthCheck(stopAt time.Time) bool {
 	return false
 }
 
+// emit 流式输出一行日志（每行立即 flush，前端实时可见）
+func emit(w http.ResponseWriter, line string) {
+	fmt.Fprintf(w, "%s\n", line)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -68,29 +76,34 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var req updateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Version == "" {
-		writeJSON(w, http.StatusBadRequest, updateResp{Message: "参数错误：缺少 version"})
+		http.Error(w, "参数错误：缺少 version", http.StatusBadRequest)
 		return
 	}
 
+	// 流式响应：text/plain + 立即 flush
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Stream", "true")
+	w.WriteHeader(http.StatusOK)
+
 	log.Printf("[update] 开始更新 -> %s（当前 %s）", req.Version, req.OldVersion)
-	var logs []string
+	emit(w, "START "+req.Version)
 
 	// 1) 备份数据库（失败不阻断，但记录）
-	logs = append(logs, "== 备份数据库 ==")
+	emit(w, "== 备份数据库 ==")
 	ts := time.Now().Format("20060102-150405")
 	dumpPath := fmt.Sprintf("/project/data/backup/pre-update-%s.sql", ts)
 	if out, err := run("docker", "exec", "asset-postgres", "pg_dump", "-U", "asset", "asset_platform"); err == nil {
 		if err := os.WriteFile(dumpPath, []byte(out), 0o644); err != nil {
-			logs = append(logs, "备份写入失败: "+err.Error())
+			emit(w, "备份写入失败: "+err.Error())
 		} else {
-			logs = append(logs, "备份完成: "+dumpPath)
+			emit(w, "备份完成: "+dumpPath)
 		}
 	} else {
-		logs = append(logs, "备份失败（继续更新）: "+err.Error())
+		emit(w, "备份失败（继续更新）: "+err.Error())
 	}
 
 	// 2) 改 .env 版本号
-	logs = append(logs, "== 切换版本 ==")
+	emit(w, "== 切换版本 ==")
 	envPath := "/project/.env"
 	content, _ := os.ReadFile(envPath)
 	lines := strings.Split(string(content), "\n")
@@ -105,44 +118,43 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 		lines = append(lines, "APP_VERSION="+req.Version)
 	}
 	os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0o644)
-	logs = append(logs, "APP_VERSION="+req.Version)
+	emit(w, "APP_VERSION="+req.Version)
 
-	// 3) 拉镜像（本地已有则跳过，避免每次更新都卡在 registry 查询上）
-	logs = append(logs, "== 拉取镜像 ==")
+	// 3) 拉镜像（本地已有则跳过）
+	emit(w, "== 拉取镜像 ==")
 	img := "ghcr.io/rongsec/cyberlook:" + req.Version
 	if q, err := run("docker", "images", "-q", img); err == nil && strings.TrimSpace(q) != "" {
-		logs = append(logs, "本地已有镜像 "+img+"，跳过拉取")
-	} else if out, err := runTimeout(8*time.Minute, "docker", "compose", "-p", "asset-platform", "pull", "server"); err != nil {
-		logs = append(logs, "拉取失败: "+err.Error()+"\n"+out)
-		// 回滚 .env
+		emit(w, "本地已有镜像 "+img+"，跳过拉取")
+	} else if _, err := runTimeout(8*time.Minute, "docker", "compose", "-p", "asset-platform", "pull", "server"); err != nil {
+		emit(w, "拉取失败: "+err.Error())
 		rollbackEnv(req.OldVersion)
-		writeJSON(w, http.StatusInternalServerError, updateResp{Message: "拉取镜像失败", Output: strings.Join(logs, "\n")})
+		emit(w, "ERROR 拉取镜像失败，已回滚 .env")
 		return
 	} else {
-		logs = append(logs, "拉取完成")
+		emit(w, "拉取完成")
 	}
 
 	// 4) 重启 server（不动 pg/redis）
-	logs = append(logs, "== 重启服务 ==")
-	if out, err := runTimeout(4*time.Minute, "docker", "compose", "-p", "asset-platform", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server"); err != nil {
-		logs = append(logs, "重启失败: "+err.Error()+"\n"+out)
+	emit(w, "== 重启服务 ==")
+	if _, err := runTimeout(4*time.Minute, "docker", "compose", "-p", "asset-platform", "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "server"); err != nil {
+		emit(w, "重启失败: "+err.Error())
 		rollbackAll(req.OldVersion)
-		writeJSON(w, http.StatusInternalServerError, updateResp{Message: "重启失败，已回滚", Output: strings.Join(logs, "\n")})
+		emit(w, "ERROR 重启失败，已回滚")
 		return
 	}
+	emit(w, "服务已重启")
 
 	// 5) 健康检查（最多 90 秒）
-	logs = append(logs, "== 健康检查 ==")
+	emit(w, "== 健康检查 ==")
 	if !healthCheck(time.Now().Add(90 * time.Second)) {
-		logs = append(logs, "健康检查失败，回滚到 "+req.OldVersion)
 		rollbackAll(req.OldVersion)
-		writeJSON(w, http.StatusInternalServerError, updateResp{Message: "健康检查失败，已回滚", Output: strings.Join(logs, "\n")})
+		emit(w, "ERROR 健康检查失败，已回滚到 "+req.OldVersion)
 		return
 	}
-	logs = append(logs, "健康检查通过")
+	emit(w, "健康检查通过")
 
 	log.Printf("[update] 更新完成 -> %s", req.Version)
-	writeJSON(w, http.StatusOK, updateResp{OK: true, Message: "已更新到 " + req.Version, Output: strings.Join(logs, "\n")})
+	emit(w, "SUCCESS 已更新到 "+req.Version)
 }
 
 func rollbackEnv(v string) {
