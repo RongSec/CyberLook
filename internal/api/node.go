@@ -80,10 +80,17 @@ func Heartbeat(c *gin.Context) {
 	// 这样即使节点上报的版本号有误（曾被降级过），也能强制拉回最新二进制
 	var node model.Node
 	needUpgrade := false
-	if err := config.DB.First(&node, id).Error; err == nil && node.UpgradeReq {
-		needUpgrade = true
-		// 立即清除升级标记，避免每次心跳都重复下发升级指令
-		config.DB.Model(&node).Update("upgrade_requested", false)
+	if err := config.DB.First(&node, id).Error; err == nil {
+		latest := config.ComputeAgentVersion()
+		// 自动比对版本：上报版本与服务端内置版本不一致就自动下发升级
+		if req.Version != "" && req.Version != latest {
+			needUpgrade = true
+		}
+		// 手动标记升级也触发
+		if node.UpgradeReq {
+			needUpgrade = true
+			config.DB.Model(&node).Update("upgrade_requested", false)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"message":       "ok",

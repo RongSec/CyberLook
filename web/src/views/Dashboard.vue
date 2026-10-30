@@ -96,10 +96,10 @@ const trend = ref([])
 const trendRange = ref('7d')
 
 const cards = computed(() => [
-  { label: 'Web 资产', value: summary.value.assetTotal, color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)', icon: ServerOutline },
-  { label: '已登记资产', value: summary.value.assetConfirmed, color: '#84cc16', bg: 'rgba(132,204,22,0.12)', border: 'rgba(132,204,22,0.3)', icon: CheckmarkCircleOutline },
-  { label: '待确认资产', value: summary.value.assetPending, color: '#fb923c', bg: 'rgba(251,146,60,0.12)', border: 'rgba(251,146,60,0.3)', icon: TimeOutline },
-  { label: '导入资产', value: summary.value.importedTotal, color: '#eab308', bg: 'rgba(234,179,8,0.12)', border: 'rgba(234,179,8,0.3)', icon: LayersOutline },
+  { label: 'Web 资产', value: summary.value.assetTotal, color: '#3b82f6', bg: 'rgba(59,130,246,0.12)', border: 'rgba(59,130,246,0.3)', icon: ServerOutline },
+  { label: '已登记资产', value: summary.value.assetConfirmed, color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.3)', icon: CheckmarkCircleOutline },
+  { label: '待确认资产', value: summary.value.assetPending, color: '#f97316', bg: 'rgba(249,115,22,0.12)', border: 'rgba(249,115,22,0.3)', icon: TimeOutline },
+  { label: '导入资产', value: summary.value.importedTotal, color: '#a855f7', bg: 'rgba(168,85,247,0.12)', border: 'rgba(168,85,247,0.3)', icon: LayersOutline },
   { label: '运行中任务', value: summary.value.runningTasks, color: '#06b6d4', bg: 'rgba(6,182,212,0.12)', border: 'rgba(6,182,212,0.3)', icon: PulseOutline },
   { label: '合规违规', value: summary.value.violationTotal, color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)', icon: AlertCircleOutline }
 ])
@@ -155,7 +155,7 @@ function renderPie() {
       emphasis: { scale: true, scaleSize: 6 },
       data: [
         { value: summary.value.assetConfirmed, name: '已登记', itemStyle: { color: '#84cc16' } },
-        { value: summary.value.assetPending, name: '待确认', itemStyle: { color: '#fb923c' } },
+        { value: summary.value.assetPending, name: '待确认', itemStyle: { color: '#f97316' } },
         { value: summary.value.violationTotal, name: '违规', itemStyle: { color: '#ef4444' } }
       ]
     }]
@@ -166,15 +166,21 @@ function renderTrend() {
   if (!trendRef.value) return
   if (!trendChart) trendChart = echarts.init(trendRef.value)
   const chart = trendChart
+  // 面积色按 series 主色转 rgba
+  const withAlpha = (hex, a) => {
+    const n = parseInt(hex.slice(1), 16)
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
+  }
   const mk = (name, key, color, withArea) => ({
-    name, type: 'line', smooth: 0.4, symbol: 'circle', symbolSize: 6,
+    name, type: 'line', smooth: 0.4, symbol: 'circle', symbolSize: 8,
     data: trend.value.map(p => p[key] || 0),
-    lineStyle: { width: 2.4, color },
-    itemStyle: { color, borderColor: '#0b1020', borderWidth: 1.5 },
+    lineStyle: { width: 3.5, color, shadowColor: withAlpha(color, 0.45), shadowBlur: 6 },
+    itemStyle: { color, borderColor: '#0b1020', borderWidth: 2 },
+    emphasis: { focus: 'series', lineStyle: { width: 4.5 } },
     areaStyle: withArea ? {
       color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-        { offset: 0, color: 'rgba(59,130,246,0.26)' },
-        { offset: 1, color: 'rgba(59,130,246,0.01)' }
+        { offset: 0, color: withAlpha(color, 0.30) },
+        { offset: 1, color: withAlpha(color, 0.01) }
       ])
     } : undefined
   })
@@ -197,10 +203,10 @@ function renderTrend() {
       axisLabel: { color: '#64748b' }
     },
     series: [
-      mk('Web资产', 'webAssets', '#f59e0b', true),
-      mk('已登记', 'assetConfirmed', '#84cc16', false),
-      mk('待确认', 'assetPending', '#fb923c', false),
-      mk('导入资产', 'importedTotal', '#eab308', false),
+      mk('Web资产', 'webAssets', '#3b82f6', true),
+      mk('已登记', 'assetConfirmed', '#22c55e', false),
+      mk('待确认', 'assetPending', '#f97316', false),
+      mk('导入资产', 'importedTotal', '#a855f7', false),
       mk('违规', 'violations', '#ef4444', false)
     ]
   })

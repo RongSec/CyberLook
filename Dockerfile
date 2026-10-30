@@ -17,9 +17,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/asset-server ./cmd/server && \
-    GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux ./cmd/agent && \
-    GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
-    GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-windows.exe ./cmd/agent
+    GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux ./cmd/agent && \
+    GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
+    GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-windows.exe ./cmd/agent
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
