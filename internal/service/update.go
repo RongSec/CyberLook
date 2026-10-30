@@ -132,7 +132,12 @@ func CheckUpdate() (*UpdateInfo, error) {
 		info.ReleaseKind = "image"
 	}
 	// 是否可更新：按版本号比较（镜像发布没有附件，不能再用 downloadURL 判断）
-	info.HasUpdate = CompareVersion(strings.TrimPrefix(rel.TagName, "v"), version.Version) > 0
+	// 开发版（dev）不触发自动更新
+	if isDevVersion(version.Version) || isDevVersion(rel.TagName) {
+		info.HasUpdate = false
+	} else {
+		info.HasUpdate = CompareVersion(strings.TrimPrefix(rel.TagName, "v"), version.Version) > 0
+	}
 	return info, nil
 }
 
@@ -255,4 +260,10 @@ func CompareVersion(a, b string) int {
 		}
 	}
 	return 0
+}
+
+// isDevVersion 判断是否为开发版
+func isDevVersion(v string) bool {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	return v == "" || v == "dev" || v == "latest"
 }

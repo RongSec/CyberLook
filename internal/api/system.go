@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sync"
 	"encoding/json"
 	"bytes"
 	"os"
@@ -59,8 +60,16 @@ func CheckUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, info)
 }
 
+var updateMu sync.Mutex
+
 // ApplyUpdate 应用更新：交给 updater 边车执行（流式返回日志）
 func ApplyUpdate(c *gin.Context) {
+	// 防止并发更新
+	if !updateMu.TryLock() {
+		c.JSON(http.StatusConflict, gin.H{"error": "已有更新正在进行，请稍后再试"})
+		return
+	}
+	defer updateMu.Unlock()
 	var req struct {
 		Version string `json:"version"`
 	}
