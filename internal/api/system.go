@@ -59,7 +59,7 @@ func CheckUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, info)
 }
 
-// ApplyUpdate 应用更新：交给 updater 边车执行（pull 镜像 + 重启 + 健康检查 + 回滚）
+// ApplyUpdate 应用更新：交给 updater 边车执行（流式返回日志）
 func ApplyUpdate(c *gin.Context) {
 	var req struct {
 		Version string `json:"version"`
@@ -83,24 +83,29 @@ func ApplyUpdate(c *gin.Context) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "更新服务不可达: " + err.Error()})
 		return
 	}
 	defer resp.Body.Close()
-	var out struct {
-		OK      bool   `json:"ok"`
-		Message string `json:"message"`
-		Output  string `json:"output"`
+
+	// 流式透传 updater 的日志（每行立即 flush，前端实时可见）
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	c.Header("X-Stream", "true")
+	c.Status(resp.StatusCode)
+	buf := make([]byte, 256)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			c.Writer.Write(buf[:n])
+			c.Writer.Flush()
+		}
+		if err != nil {
+			break
+		}
 	}
-	json.NewDecoder(resp.Body).Decode(&out)
-	if resp.StatusCode != 200 || !out.OK {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": out.Message, "log": out.Output})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": out.Message, "log": out.Output})
 }
 
 // RollbackUpdate 回滚到最近备份
