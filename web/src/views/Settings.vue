@@ -6,6 +6,11 @@
         <n-descriptions-item label="版本">v{{ curVersion }}</n-descriptions-item>
         <n-descriptions-item label="扫描引擎">TscanClient 3.4.3</n-descriptions-item>
       </n-descriptions>
+          <n-alert v-if="updateLog.length" type="info" :bordered="false" style="margin-top: 12px">
+        <div style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap">
+          <div v-for="(line, i) in updateLog" :key="i">{{ line }}</div>
+        </div>
+      </n-alert>
     </n-card>
 
     <n-card title="修改密码" style="margin-top: 16px">
@@ -66,7 +71,7 @@
       <n-space justify="end" style="margin-top: 12px">
         <n-button :loading="checking" @click="checkUpdate">检查更新</n-button>
         <n-button :loading="applying" type="primary" :disabled="!updateInfo.hasUpdate" @click="applyUpdate">
-          {{ updateInfo.hasUpdate ? `更新到 ${updateInfo.version}` : '已是最新' }}
+          {{ applying ? '更新中…（预计 2-5 分钟）' : (updateInfo.hasUpdate ? ('更新到 ' + updateInfo.version) : '已是最新') }}
         </n-button>
         <n-button :loading="rolling" type="warning" @click="rollback">回滚</n-button>
         <n-button type="primary" @click="saveUpdateSettings">保存设置</n-button>
@@ -75,6 +80,11 @@
         <div><b>最新版本</b>：{{ updateInfo.version }}　<b>发布时间</b>：{{ updateInfo.publishedAt }}</div>
         <div style="margin-top: 6px"><b>当前版本</b>：<code>{{ updateInfo.current }}</code></div>
         <div v-if="updateInfo.notes" style="margin-top: 8px; white-space: pre-wrap">{{ updateInfo.notes }}</div>
+      </n-alert>
+      <n-alert v-if="updateLog.length" type="info" :bordered="false" style="margin-top: 12px">
+        <div style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap">
+          <div v-for="(line, i) in updateLog" :key="i">{{ line }}</div>
+        </div>
       </n-alert>
     </n-card>
 </template>
@@ -129,6 +139,7 @@ async function loadVersion() {
 }
 const checking = ref(false)
 const applying = ref(false)
+const updateLog = ref([])
 const rolling = ref(false)
 
 async function loadUpdateSettings() {
@@ -164,11 +175,15 @@ async function checkUpdate() {
 async function applyUpdate() {
   if (!updateInfo.value.version) { message.warning('请先检查更新'); return }
   applying.value = true
+  updateLog.value = []
   try {
-    await api.post('/system/update/apply', { version: updateInfo.value.version })
-    message.success('已更新，系统正在重启')
+    const res = await api.post('/system/update/apply', { version: updateInfo.value.version }, { timeout: 600000 })
+    message.success(res.message || '已更新，系统正在重启')
+    if (res.log) updateLog.value = res.log.split('\\n').filter(Boolean)
   } catch (e) {
-    message.error(e.response?.data?.error || '更新失败')
+    const data = e.response?.data
+    message.error(data?.error || '更新失败')
+    if (data?.log) updateLog.value = data.log.split('\\n').filter(Boolean)
   } finally {
     applying.value = false
   }
