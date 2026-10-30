@@ -40,32 +40,35 @@ const groups = [
   {
     name: 'api',
     items: [
-      { method: 'GET', path: '/api/agent/nodes/:id/tasks', desc: '查询agent/nodes/:id/tasks', auth: '需登录' },
-      { method: 'GET', path: '/api/agent/stream/:id', desc: '查询agent/stream/:id', auth: '需登录' },
-      { method: 'GET', path: '/api/agent/tasks/:id', desc: '查询agent/tasks/:id', auth: '需登录' },
-      { method: 'POST', path: '/api/agent/tasks/:id/finish', desc: '创建/执行agent/tasks/:id/finish', auth: '需登录' },
-      { method: 'POST', path: '/api/agent/tasks/:id/progress', desc: '创建/执行agent/tasks/:id/progress', auth: '需登录' },
-      { method: 'POST', path: '/api/nodes/:id/heartbeat', desc: '创建/执行nodes/:id/heartbeat', auth: '需登录' },
-      { method: 'POST', path: '/api/nodes/:id/results', desc: '创建/执行nodes/:id/results', auth: '需登录' },
-      { method: 'GET', path: '/api/nodes/:id/tasks', desc: '查询nodes/:id/tasks', auth: '需登录' },
-      { method: 'GET', path: '/api/nodes/agent-binary', desc: '查询nodes/agent-binary', auth: '需登录' },
-      { method: 'GET', path: '/api/nodes/install.ps1', desc: '查询nodes/install.ps1', auth: '需登录' },
-      { method: 'GET', path: '/api/nodes/install.sh', desc: '查询nodes/install.sh', auth: '需登录' },
-      { method: 'POST', path: '/api/nodes/register', desc: '创建/执行nodes/register', auth: '需登录' },
-      { method: 'GET', path: '/api/nodes/tscan-binary', desc: '查询nodes/tscan-binary', auth: '需登录' }
+      { method: 'GET', path: '/api/agent/nodes/:id/tasks', desc: '查询节点任务列表（agent 专用）', auth: '需登录' },
+      { method: 'GET', path: '/api/agent/stream/:id', desc: '任务执行流式输出（agent 专用）', auth: '需登录' },
+      { method: 'GET', path: '/api/agent/tasks/:id', desc: '查询任务详情（agent 专用）', auth: '需登录' },
+      { method: 'POST', path: '/api/agent/tasks/:id/finish', desc: '上报任务完成（agent 专用）', auth: '需登录' },
+      { method: 'POST', path: '/api/agent/tasks/:id/progress', desc: '上报任务进度（agent 专用）', auth: '需登录' },
+      { method: 'POST', path: '/api/nodes/:id/heartbeat', desc: '节点心跳（版本不一致时自动触发升级）', auth: '需登录' },
+      { method: 'POST', path: '/api/nodes/:id/results', desc: '上报扫描结果（agent 专用）', auth: '需登录' },
+      { method: 'GET', path: '/api/nodes/:id/tasks', desc: '查询节点任务（agent 专用）', auth: '需登录' },
+      { method: 'GET', path: '/api/nodes/agent-binary', desc: '下载控制文件二进制（按架构）', auth: '需登录' },
+      { method: 'GET', path: '/api/nodes/install.ps1', desc: 'Windows 安装脚本', auth: '需登录' },
+      { method: 'GET', path: '/api/nodes/install.sh', desc: 'Linux 安装脚本', auth: '需登录' },
+      { method: 'POST', path: '/api/nodes/register', desc: '节点注册', auth: '需登录' },
+      { method: 'GET', path: '/api/nodes/tscan-binary', desc: '下载 TscanClient 扫描引擎', auth: '需登录' }
     ]
   },
   {
     name: '资产',
     items: [
       { method: 'GET', path: '/assets', desc: '资产列表，支持 keyword/status/page/size', auth: '需登录' },
-      { method: 'PUT', path: '/assets/:id/confirm', desc: '更新:id/confirm', auth: '需登录' },
-      { method: 'PUT', path: '/assets/:id/owner', desc: '更新:id/owner', auth: '需登录' },
-      { method: 'GET', path: '/assets/:ip/ports', desc: '查询:ip/ports', auth: '需登录' },
-      { method: 'GET', path: '/assets/:ip/snapshots', desc: '查询:ip/snapshots', auth: '需登录' },
-      { method: 'POST', path: '/assets/batch-delete', desc: '创建/执行batch-delete', auth: '需登录' },
-      { method: 'POST', path: '/assets/import', desc: '创建/执行import', auth: '需登录' },
-      { method: 'GET', path: '/assets/template', desc: '查询template', auth: '需登录' }
+      { method: 'PUT', path: '/assets/:id/confirm', desc: '标注归属（系统名/负责人/部门）', auth: '需登录' },
+      { method: 'PUT', path: '/assets/:id/owner', desc: '修改资产负责人/部门', auth: '需登录' },
+      { method: 'GET', path: '/assets/:ip/ports', desc: '查询资产端口列表', auth: '需登录' },
+      { method: 'GET', path: '/assets/:ip/snapshots', desc: '查询资产快照', auth: '需登录' },
+      { method: 'POST', path: '/assets/batch-delete', desc: '批量删除资产', auth: '需登录' },
+      { method: 'POST', path: '/assets/import', desc: '导入台账 Excel（xlsx，已确认资产不覆盖）', auth: '需登录' },
+      { method: 'GET', path: '/assets/template', desc: '下载台账导入模板', auth: '需登录' },
+      { method: 'GET', path: '/assets/import-conflicts', desc: '列出重复导入冲突（已确认资产被改）', auth: '需登录' },
+      { method: 'POST', path: '/assets/import-conflicts/:id/resolve', desc: '处理单条冲突（按旧/按新+编辑）', auth: '需登录' },
+      { method: 'POST', path: '/assets/import-conflicts/resolve-all', desc: '批量处理冲突（全部按旧/按新）', auth: '需登录' }
     ]
   },
   {
@@ -90,8 +93,8 @@ const groups = [
   {
     name: '首页概览',
     items: [
-      { method: 'GET', path: '/dashboard/summary', desc: '首页概览统计', auth: '需登录' },
-      { method: 'GET', path: '/dashboard/trend', desc: '查询trend', auth: '需登录' }
+      { method: 'GET', path: '/dashboard/summary', desc: '首页概览统计（Web资产/已登记/待确认/导入/新存活等）', auth: '需登录' },
+      { method: 'GET', path: '/dashboard/trend', desc: '首页趋势图数据（7d/30d）', auth: '需登录' }
     ]
   },
   {
@@ -107,9 +110,9 @@ const groups = [
     items: [
       { method: 'GET', path: '/disposal', desc: '查询disposal', auth: '需登录' },
       { method: 'DELETE', path: '/disposal/:ip', desc: '删除:ip', auth: '需登录' },
-      { method: 'POST', path: '/disposal/batch-delete', desc: '创建/执行batch-delete', auth: '需登录' },
+      { method: 'POST', path: '/disposal/batch-delete', desc: '批量删除资产', auth: '需登录' },
       { method: 'POST', path: '/disposal/confirm-ledger', desc: '创建/执行confirm-ledger', auth: '需登录' },
-      { method: 'GET', path: '/disposal/export', desc: '查询export', auth: '需登录' }
+      { method: 'GET', path: '/disposal/export', desc: '导出资产处置 Excel', auth: '需登录' }
     ]
   },
   {
@@ -123,7 +126,7 @@ const groups = [
   {
     name: '导出',
     items: [
-      { method: 'POST', path: '/export/excel', desc: '创建/执行excel', auth: '需登录' }
+      { method: 'POST', path: '/export/excel', desc: '导出 Excel（按类型+筛选条件+列）', auth: '需登录' }
     ]
   },
   {
@@ -151,7 +154,7 @@ const groups = [
     name: '通知',
     items: [
       { method: 'GET', path: '/notify/settings', desc: '通知配置', auth: '需登录' },
-      { method: 'POST', path: '/notify/settings', desc: '创建/执行settings', auth: '需登录' },
+      { method: 'POST', path: '/notify/settings', desc: '保存系统设置', auth: '需登录' },
       { method: 'POST', path: '/notify/test', desc: '发送测试通知，?channel=xxx', auth: '需登录' }
     ]
   },
@@ -169,7 +172,7 @@ const groups = [
     items: [
       { method: 'GET', path: '/services', desc: '查询services', auth: '需登录' },
       { method: 'DELETE', path: '/services/:id', desc: '删除:id', auth: '需登录' },
-      { method: 'POST', path: '/services/batch-delete', desc: '创建/执行batch-delete', auth: '需登录' }
+      { method: 'POST', path: '/services/batch-delete', desc: '批量删除资产', auth: '需登录' }
     ]
   },
   {
@@ -177,25 +180,25 @@ const groups = [
     items: [
       { method: 'GET', path: '/snapshots', desc: '查询snapshots', auth: '需登录' },
       { method: 'GET', path: '/snapshots/:id/image', desc: '查询:id/image', auth: '需登录' },
-      { method: 'POST', path: '/snapshots/batch-delete', desc: '创建/执行batch-delete', auth: '需登录' },
+      { method: 'POST', path: '/snapshots/batch-delete', desc: '批量删除资产', auth: '需登录' },
       { method: 'POST', path: '/snapshots/capture', desc: '创建/执行capture', auth: '需登录' },
-      { method: 'GET', path: '/snapshots/settings', desc: '查询settings', auth: '需登录' },
-      { method: 'POST', path: '/snapshots/settings', desc: '创建/执行settings', auth: '需登录' }
+      { method: 'GET', path: '/snapshots/settings', desc: '读取系统设置（GitHub仓库/代理/端口）', auth: '需登录' },
+      { method: 'POST', path: '/snapshots/settings', desc: '保存系统设置', auth: '需登录' }
     ]
   },
   {
     name: '系统',
     items: [
-      { method: 'GET', path: '/system/fuse', desc: '读取熔断规则', auth: '需登录' },
-      { method: 'POST', path: '/system/fuse', desc: '保存熔断规则', auth: '需登录' },
+      { method: 'GET', path: '/system/fuse', desc: '读取扫描熔断规则', auth: '需登录' },
+      { method: 'POST', path: '/system/fuse', desc: '保存扫描熔断规则', auth: '需登录' },
       { method: 'GET', path: '/system/logs', desc: '系统日志（故障+执行记录）', auth: '需登录' },
-      { method: 'GET', path: '/system/settings', desc: '查询settings', auth: '需登录' },
-      { method: 'POST', path: '/system/settings', desc: '创建/执行settings', auth: '需登录' },
-      { method: 'GET', path: '/system/stats', desc: '查询stats', auth: '需登录' },
-      { method: 'POST', path: '/system/update/apply', desc: '创建/执行update/apply', auth: '需登录' },
-      { method: 'GET', path: '/system/update/check', desc: '查询update/check', auth: '需登录' },
-      { method: 'POST', path: '/system/update/rollback', desc: '创建/执行update/rollback', auth: '需登录' },
-      { method: 'GET', path: '/system/version', desc: '查询version', auth: '需登录' }
+      { method: 'GET', path: '/system/settings', desc: '读取系统设置（GitHub仓库/代理/端口）', auth: '需登录' },
+      { method: 'POST', path: '/system/settings', desc: '保存系统设置', auth: '需登录' },
+      { method: 'GET', path: '/system/stats', desc: '系统运行统计', auth: '需登录' },
+      { method: 'POST', path: '/system/update/apply', desc: '应用更新（交给 updater 边车拉镜像重启）', auth: '需登录' },
+      { method: 'GET', path: '/system/update/check', desc: '检查 GitHub Release 新版本（返回 hasUpdate/version/current）', auth: '需登录' },
+      { method: 'POST', path: '/system/update/rollback', desc: '回滚到最近一次备份的二进制', auth: '需登录' },
+      { method: 'GET', path: '/system/version', desc: '获取服务端版本号', auth: '需登录' }
     ]
   },
   {
@@ -218,7 +221,7 @@ const groups = [
       { method: 'POST', path: '/tasks/:id/run', desc: '立即执行任务', auth: '需登录' },
       { method: 'GET', path: '/tasks/:id/runs', desc: '任务执行历史', auth: '需登录' },
       { method: 'POST', path: '/tasks/:id/stop', desc: '停止任务', auth: '需登录' },
-      { method: 'POST', path: '/tasks/batch-delete', desc: '创建/执行batch-delete', auth: '需登录' },
+      { method: 'POST', path: '/tasks/batch-delete', desc: '批量删除资产', auth: '需登录' },
       { method: 'GET', path: '/tasks/scheduled', desc: '定时任务列表', auth: '需登录' }
     ]
   },

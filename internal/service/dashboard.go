@@ -23,18 +23,12 @@ type DashboardSummary struct {
 // GetDashboardSummary 汇总统计 + 最近两次任务 diff（新存活/新应用）
 func GetDashboardSummary() DashboardSummary {
 	var s DashboardSummary
-	// 三个资产指标统一按「可达 web 资产」统计，保证 总数 = 已登记 + 待确认
-	// 非 web 主机（SSH/RDP/SNMP 等）不计入资产登记，只在资产总览页按 IP 展示
-	// 只统计已确认的 web 资产：未确认的属于「待处置」，不进资产总览也不计入总数
-	// 按「服务条数」统计（一个 IP 可能有多个 web 服务，用户期望看到服务数）
-	config.DB.Raw(`SELECT count(*) FROM services s
+	// Web 资产：有可达 web 服务（有响应码或标题）的 IP 去重数，含待确认
+	config.DB.Raw(`SELECT count(DISTINCT s.ip) FROM services s
 		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
-		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')
-		  AND s.confirmed = true`).Scan(&s.AssetTotal)
-	config.DB.Raw(`SELECT count(*) FROM services s
-		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
-		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')
-		  AND s.confirmed = true`).Scan(&s.AssetConfirmed)
+		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')`).Scan(&s.AssetTotal)
+	// 已登记资产：assets 表里人工确认过的数量（与「资产总览 → 状态=已登记」同源）
+	config.DB.Model(&model.Asset{}).Where("status = ?", "confirmed").Count(&s.AssetConfirmed)
 	// 与「资产处置」页完全同源：可达 web 服务中尚未处置的（按 IP 去重）
 	// 之前用 status='pending' 会把非 web、不可达、已确认的台账资产都算进来，导致首页和列表对不上
 	// 待确认资产：按 IP 计（有 Web 响应但尚未确认的 IP 数），与处置页口径一致
@@ -70,7 +64,8 @@ func diffNewAlive(cur model.ScanTask, tasks []model.ScanTask) []string {
 	config.DB.Model(&model.ScanSnapshot{}).
 		Where("task_id = ? AND is_alive = true", cur.ID).Pluck("ip", &curIPs)
 	if len(tasks) < 2 {
-		return curIPs // 首次扫描，全部视为新存活
+		// 只有一次扫描，没有对比基线，不能把全部存活当「新存活」
+		return []string{}
 	}
 	var prevIPs []string
 	config.DB.Model(&model.ScanSnapshot{}).

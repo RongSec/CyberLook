@@ -48,7 +48,7 @@
 
 | 组件 | 技术 |
 |---|---|
-| 后端 | Go 1.21+ (Gin + GORM) |
+| 后端 | Go 1.26+ (Gin + GORM) |
 | 前端 | Vue 3 + Naive UI + ECharts |
 | 数据库 | PostgreSQL 16 + Redis 7 |
 | 扫描引擎 | TscanClient |
@@ -59,7 +59,7 @@
 ### 1. 环境要求
 
 - Docker 20+ / Docker Compose 2+
-- 仅二次开发需要：Go 1.21+、Node.js 18+
+- 仅二次开发需要：Go 1.26+、Node.js 22+
 
 ### 2. 一键部署
 
@@ -69,13 +69,15 @@
 
 **Linux / macOS**：
 ```bash
-cd asset-platform
+git clone https://github.com/RongSec/CyberLook.git
+cd CyberLook
 bash init.sh
 ```
 
 **Windows (PowerShell)**：
 ```powershell
-cd asset-platform
+git clone https://github.com/RongSec/CyberLook.git
+cd CyberLook
 .\init.ps1
 ```
 
