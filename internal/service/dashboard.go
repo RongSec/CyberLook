@@ -138,13 +138,13 @@ func GetServiceTrend(limit int) []TrendPoint {
 	vioCum := getCum(`SELECT date_trunc('day', created_at) AS day, count(*) AS cnt
 		FROM compliance_results WHERE status = 'violation' GROUP BY 1 ORDER BY 1 DESC LIMIT ?`)
 
-	// 已登记/待确认依赖 assets 的 status，历史快照不全，用当前值填最后一点
-	var cur WebStat
-	config.DB.Raw(`SELECT count(DISTINCT CASE WHEN a.status = 'confirmed' THEN s.ip END) AS web_assets,
-		count(DISTINCT CASE WHEN a.status = 'confirmed' THEN s.ip END) AS confirmed
-		FROM services s JOIN assets a ON a.ip = s.ip
-		WHERE (s.protocol ILIKE 'http%' OR s.service ILIKE '%http%')
-		  AND (COALESCE(s.status_code,'') <> '' OR COALESCE(s.title,'') <> '')`).Scan(&cur)
+	// 已登记/待确认按 assets.updated_at 近似（状态变更时间）
+	confCum := getCum(`SELECT date_trunc('day', updated_at) AS day, count(*) AS cnt
+		FROM assets WHERE status = 'confirmed' AND updated_at IS NOT NULL
+		GROUP BY 1 ORDER BY 1 DESC LIMIT ?`)
+	pendCum := getCum(`SELECT date_trunc('day', updated_at) AS day, count(*) AS cnt
+		FROM assets WHERE status = 'pending' AND updated_at IS NOT NULL
+		GROUP BY 1 ORDER BY 1 DESC LIMIT ?`)
 
 	// 收集所有出现过的日期
 	days := map[string]bool{}
@@ -155,6 +155,12 @@ func GetServiceTrend(limit int) []TrendPoint {
 		days[k] = true
 	}
 	for k := range vioCum {
+		days[k] = true
+	}
+	for k := range confCum {
+		days[k] = true
+	}
+	for k := range pendCum {
 		days[k] = true
 	}
 	list := make([]string, 0, len(days))
@@ -170,8 +176,8 @@ func GetServiceTrend(limit int) []TrendPoint {
 			WebAssets:      int(webCum[k]),
 			ImportedTotal:  int(impCum[k]),
 			Violations:     int(vioCum[k]),
-			AssetConfirmed: int(cur.Confirmed),
-			AssetPending:   int(cur.WebAssets - cur.Confirmed),
+			AssetConfirmed: int(confCum[k]),
+			AssetPending:   int(pendCum[k]),
 		}
 		out = append(out, p)
 	}
