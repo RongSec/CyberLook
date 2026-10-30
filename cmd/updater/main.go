@@ -44,6 +44,12 @@ func runTimeout(d time.Duration, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// isDev 判断是否为开发版
+func isDev(v string) bool {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	return v == "" || v == "dev" || v == "latest"
+}
+
 func healthCheck(stopAt time.Time) bool {
 	for time.Now().Before(stopAt) {
 		resp, err := http.Get("http://server:18888/api/health")
@@ -85,6 +91,15 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Stream", "true")
 	w.WriteHeader(http.StatusOK)
 
+	// 校验版本号
+	if isDev(req.Version) {
+		emit(w, "ERROR 目标版本号无效: "+req.Version)
+		return
+	}
+	if req.OldVersion != "" && isDev(req.OldVersion) {
+		req.OldVersion = "" // 开发版无法回滚，清空
+	}
+
 	log.Printf("[update] 开始更新 -> %s（当前 %s）", req.Version, req.OldVersion)
 	emit(w, "START "+req.Version)
 
@@ -106,6 +121,9 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 	emit(w, "== 切换版本 ==")
 	envPath := "/project/.env"
 	content, _ := os.ReadFile(envPath)
+	if len(content) == 0 {
+		content = []byte("POSTGRES_PASSWORD=asset123\n")
+	}
 	ver := req.Version
 	if ver != "" && !strings.HasPrefix(ver, "v") {
 		ver = "v" + ver
@@ -156,6 +174,14 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emit(w, "健康检查通过")
+
+	// 清理旧镜像（释放磁盘空间，失败不影响更新结果）
+	emit(w, "== 清理旧镜像 ==")
+	if out, err := run("docker", "image", "prune", "-f"); err == nil {
+		emit(w, "已清理: "+strings.TrimSpace(out))
+	} else {
+		emit(w, "清理失败（不影响更新）: "+err.Error())
+	}
 
 	log.Printf("[update] 更新完成 -> %s", req.Version)
 	emit(w, "SUCCESS 已更新到 "+req.Version)

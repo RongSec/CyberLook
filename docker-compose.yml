@@ -30,11 +30,6 @@ services:
 
   server:
     image: ghcr.io/rongsec/cyberlook:${APP_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        VERSION: ${APP_VERSION:-dev}
     container_name: asset-server
     restart: always
     ports:
@@ -61,11 +56,6 @@ services:
   # 更新边车：只有它能碰 docker.sock，主应用通过 HTTP 调它
   updater:
     image: ghcr.io/rongsec/cyberlook-updater:${APP_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.updater
-      args:
-        VERSION: ${APP_VERSION:-dev}
     container_name: asset-updater
     restart: always
     volumes:
