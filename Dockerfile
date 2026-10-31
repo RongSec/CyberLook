@@ -23,7 +23,7 @@ RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Versio
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium-headless fonts-wqy-zenhei && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 
@@ -36,7 +36,9 @@ COPY --from=go-builder /out/scope-agent-linux-arm64 /app/agent/scope-agent-linux
 COPY --from=go-builder /out/scope-agent-windows.exe /app/agent/scope-agent-windows.exe
 # TscanClient 可选：仓库不提交其二进制（体积大），缺失时仍可构建；
 # 扫描功能需要用户自行放入 third_party/（见 README「扫描引擎准备」）
-COPY third_party/ /app/third_party/
+# 只打包扫描引擎二进制（Linux + Windows），不打源码/tar.gz
+COPY third_party/tscanclient_linux/ /app/third_party/tscanclient_linux/
+COPY third_party/tscanclient_win/ /app/third_party/tscanclient_win/
 RUN mkdir -p /app/tscan && \
     if [ -f /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 ]; then \
         cp /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscan/TscanClient_Linux; \

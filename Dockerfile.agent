@@ -17,7 +17,8 @@ WORKDIR /app
 
 COPY --from=go-builder /out/scope-agent /app/scope-agent
 # TscanClient 可选（仓库不提交二进制）
-COPY third_party/ /app/third_party/
+# 只打包 Linux 扫描引擎
+COPY third_party/tscanclient_linux/ /app/third_party/tscanclient_linux/
 RUN mkdir -p /app/tscanclient && \
     if [ -f /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 ]; then \
         cp /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscanclient/TscanClient; \
