@@ -12,3 +12,5 @@ third_party/*.zip
 .git
 .workbuddy
 *.log
+third_party/TscanPlus-main
+third_party/tscanplus.tar.gz
