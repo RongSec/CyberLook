@@ -48,8 +48,9 @@ services:
       # 如需外部注入，改用 env_file 提供强随机值，不要用可猜测的字符串。
       # JWT_SECRET: <通过 env_file 注入>
     volumes:
-      - ./data/files:/app/data
-      - ./data/backup:/app/backup
+      # 用 HOST_PROJECT_DIR 确保 updater 容器内路径与宿主机一致
+      - ${HOST_PROJECT_DIR:-.}/data/files:/app/data
+      - ${HOST_PROJECT_DIR:-.}/data/backup:/app/backup
       - tscan-config:/app/third_party/tscanclient_linux/config
     depends_on:
       postgres:

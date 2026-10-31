@@ -14,6 +14,7 @@ if [ ! -f .env ]; then
 # 自动生成，请勿提交到 git
 # PostgreSQL 数据库密码（服务端连接数据库用，用户无需关心）
 COMPOSE_PROJECT_NAME=asset-platform
+HOST_PROJECT_DIR=$(pwd)
 POSTGRES_PASSWORD=$PASSWORD
 
 # JWT 密钥（留空则自动生成）
