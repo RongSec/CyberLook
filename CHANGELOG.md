@@ -9,6 +9,22 @@
 
 ---
 
+## [0.0.14] - 2026-10-31
+
+### 修复
+
+- **updater 容器内路径解析导致容器无法启动**：`docker compose` 在 updater 容器里运行时，
+  相对路径 `./data/files` 被解析成 `/project/data/files`，原样交给宿主机 Docker 守护进程，
+  而宿主机没有这个目录，容器创建成功但启动失败。
+  现在 volumes 用 `${HOST_PROJECT_DIR:-.}` 确保容器内外路径一致。
+  `.env`/`init.sh`/`init.ps1`/`.env.example` 都已包含 `HOST_PROJECT_DIR` 配置。
+
+### 优化
+
+- `Dockerfile.agent` 加版本号注入（`-X version.Version`），agent 版本不再显示 dev。
+
+---
+
 ## [0.0.13] - 2026-10-31
 
 ### 修复

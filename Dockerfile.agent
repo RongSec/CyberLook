@@ -6,7 +6,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /out/scope-agent ./cmd/agent
+RUN ARG VERSION=dev
+RUN go build -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -trimpath -ldflags="-s -w" -o /out/scope-agent ./cmd/agent
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
