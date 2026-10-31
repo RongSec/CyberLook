@@ -211,10 +211,39 @@ async function applyUpdate() {
       message.error(last.replace('ERROR ', ''))
     }
   } catch (e) {
-    message.error('更新失败: ' + (e.message || '网络错误'))
+    // 流中断是预期的（server 容器重建会断开连接）
+    // 轮询 /api/health 确认更新是否实际成功
+    updateLog.value.push('连接中断（server 重启中），正在确认状态...')
+    const ok = await confirmUpdateSuccess()
+    if (ok) {
+      message.success('已更新到 ' + updateInfo.value.version + '，3 秒后刷新页面')
+      setTimeout(() => window.location.reload(), 3000)
+    } else {
+      message.error('更新失败: ' + (e.message || '网络错误'))
+    }
   } finally {
     applying.value = false
   }
+}
+
+// 轮询 /api/health 确认更新成功（最多 90 秒）
+async function confirmUpdateSuccess() {
+  const target = updateInfo.value.version?.replace(/^v/, '') || ''
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 3000))
+    try {
+      const resp = await fetch('/api/health')
+      const data = await resp.json()
+      if (data.ok && data.version === target) {
+        updateLog.value.push('确认成功: version=' + data.version)
+        return true
+      }
+      updateLog.value.push('等待服务启动... (当前 version=' + (data.version || '?') + ')')
+    } catch {
+      updateLog.value.push('服务未就绪，继续等待...')
+    }
+  }
+  return false
 }
 
 async function rollback() {
