@@ -64,3 +64,29 @@ type LLMUsage struct {
 }
 
 func (LLMUsage) TableName() string { return "llm_usages" }
+
+// LLMConversation 会话
+type LLMConversation struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	Title        string    `gorm:"column:title;size:200" json:"title"`
+	ProfileName  string    `gorm:"column:profile_name;size:100" json:"profileName"`
+	MessageCount int       `gorm:"column:message_count;default:0" json:"messageCount"`
+	TotalTokens  int       `gorm:"column:total_tokens;default:0" json:"totalTokens"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+func (LLMConversation) TableName() string { return "llm_conversations" }
+
+// LLMMessage 会话消息
+type LLMMessage struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	ConversationID uint      `gorm:"column:conversation_id;index" json:"conversationId"`
+	Role           string    `gorm:"column:role;size:20" json:"role"` // user / assistant
+	Content        string    `gorm:"column:content;type:text" json:"content"`
+	ToolCalls      string    `gorm:"column:tool_calls;type:text" json:"toolCalls"` // JSON 数组
+	Tokens         int       `gorm:"column:tokens;default:0" json:"tokens"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+func (LLMMessage) TableName() string { return "llm_messages" }
