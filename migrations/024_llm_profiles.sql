@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
     fail_threshold    INTEGER DEFAULT 3,
     cooldown_seconds  INTEGER DEFAULT 60,
     timeout_seconds   INTEGER DEFAULT 120,
+    tls_skip_verify   BOOLEAN NOT NULL DEFAULT false,
+    tls_min_version   VARCHAR(10) DEFAULT '',
     created_at        TIMESTAMPTZ DEFAULT now(),
     updated_at        TIMESTAMPTZ DEFAULT now()
 );

@@ -14,17 +14,24 @@ type LLMProfile struct {
 
 	// 生成参数
 	Temperature float64 `gorm:"column:temperature;default:0.3" json:"temperature"`
-	MaxTokens   int     `gorm:"column:max_tokens;default:4096" json:"maxTokens"`
+	MaxTokens   int     `gorm:"column:max_tokens" json:"maxTokens"`  // 0 = 用默认 8192
 	// ContextWindowK 上下文窗口（K tokens），0 = 默认 128K
 	ContextWindowK int `gorm:"column:context_window_k;default:128" json:"contextWindowK"`
 
 	// 轮询与熔断
-	Priority        int  `gorm:"column:priority;default:100" json:"priority"`         // 越高越优先
+	Priority        int  `gorm:"column:priority" json:"priority"`  // 0-10，越小越优先（0 最先尝试）
 	Enabled         bool `gorm:"column:enabled" json:"enabled"`                        // 是否启用
 	PoolExclude     bool `gorm:"column:pool_exclude" json:"poolExclude"`              // 排除出故障轮询链
 	FailThreshold   int  `gorm:"column:fail_threshold;default:3" json:"failThreshold"`   // 连续失败熔断阈值
 	CooldownSeconds int  `gorm:"column:cooldown_seconds;default:60" json:"cooldownSeconds"` // 熔断冷却秒数
-	TimeoutSeconds  int  `gorm:"column:timeout_seconds;default:120" json:"timeoutSeconds"`
+	TimeoutSeconds  int  `gorm:"column:timeout_seconds" json:"timeoutSeconds"`
+
+	// TLS 兼容（内网 LLM 网关常见需要）
+	TLSSkipVerify bool `gorm:"column:tls_skip_verify" json:"tlsSkipVerify"` // 跳过证书校验
+	// ViaProxy 应用层代理地址（如 http://host.docker.internal:8898）
+	// 用途：Docker Desktop 等环境下 TLS 握手会被 VM 网络丢弃，此时让宿主机代理完成 TLS
+	ViaProxy string `gorm:"column:via_proxy;size:200" json:"viaProxy"`
+	TLSMinVersion string `gorm:"column:tls_min_version;size:10" json:"tlsMinVersion"` // ""=默认，tls1.0/tls1.2
 
 	// 运行时状态（不入库，由熔断器填充）
 	BreakerOpen   bool   `gorm:"-" json:"breakerOpen"`

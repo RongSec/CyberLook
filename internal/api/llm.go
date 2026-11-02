@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -73,6 +74,9 @@ type llmProfileReq struct {
 	FailThreshold   int     `json:"failThreshold"`
 	CooldownSeconds int     `json:"cooldownSeconds"`
 	TimeoutSeconds  int     `json:"timeoutSeconds"`
+	TLSSkipVerify   bool    `json:"tlsSkipVerify"`
+	TLSMinVersion   string  `json:"tlsMinVersion"`
+	ViaProxy        string  `json:"viaProxy"`
 }
 
 func keyHint(k string) string {
@@ -95,8 +99,9 @@ func CreateLlmProfile(c *gin.Context) {
 	if req.Provider == "" {
 		req.Provider = "openai"
 	}
-	if req.Priority == 0 {
-		req.Priority = 100
+	// priority: 0-10，0 最优先；未填时用 5（中间值）
+	if req.Priority == 0 && req.Enabled == nil {
+		req.Priority = 5
 	}
 	if req.FailThreshold == 0 {
 		req.FailThreshold = 3
@@ -108,7 +113,7 @@ func CreateLlmProfile(c *gin.Context) {
 		req.TimeoutSeconds = 120
 	}
 	if req.MaxTokens == 0 {
-		req.MaxTokens = 4096
+		req.MaxTokens = 8192 // 推理模型需要足够空间
 	}
 	if req.ContextWindowK == 0 {
 		req.ContextWindowK = 128
@@ -121,6 +126,8 @@ func CreateLlmProfile(c *gin.Context) {
 		Priority: req.Priority, Enabled: req.Enabled == nil || *req.Enabled,
 		PoolExclude: req.PoolExclude, FailThreshold: req.FailThreshold,
 		CooldownSeconds: req.CooldownSeconds, TimeoutSeconds: req.TimeoutSeconds,
+		TLSSkipVerify: req.TLSSkipVerify, TLSMinVersion: req.TLSMinVersion,
+		ViaProxy: req.ViaProxy,
 	}
 	// Select("*") 强制写入零值字段，避免 gorm default 标签覆盖 false
 	if err := config.DB.Select("*").Create(&p).Error; err != nil {
@@ -191,6 +198,9 @@ func UpdateLlmProfile(c *gin.Context) {
 	if req.TimeoutSeconds > 0 {
 		updates["timeout_seconds"] = req.TimeoutSeconds
 	}
+	updates["tls_skip_verify"] = req.TLSSkipVerify
+	updates["tls_min_version"] = req.TLSMinVersion
+	updates["via_proxy"] = req.ViaProxy
 
 	if err := config.DB.Model(&p).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -219,7 +229,20 @@ func TestLlmProfile(c *gin.Context) {
 	}
 	latency, reply, err := llm.TestProfile(&p)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"ok": false, "latencyMs": latency, "error": err.Error()})
+		msg := err.Error()
+		hint := ""
+		if strings.Contains(msg, "EOF") || strings.Contains(msg, "connection reset") {
+			hint = "TLS 握手被中断。常见原因：1) 内网网关只支持 TLS 1.0/1.1，试试把「TLS 最低版本」设为 tls1.0；2) 证书自签，勾选「跳过证书校验」；3) Docker 容器网络限制（本地开发环境常见，生产服务器通常正常）"
+		} else if strings.Contains(msg, "connection refused") {
+			hint = "目标端口拒绝连接，检查 Base URL 的地址和端口是否正确"
+		} else if strings.Contains(msg, "no such host") {
+			hint = "域名解析失败，检查容器内 DNS 配置"
+		} else if strings.Contains(msg, "401") {
+			hint = "认证失败，检查 API Key 是否正确"
+		} else if strings.Contains(msg, "404") {
+			hint = "路径不存在，检查 Base URL 是否需要包含 /v1"
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": false, "latencyMs": latency, "error": msg, "hint": hint})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "latencyMs": latency, "reply": reply})

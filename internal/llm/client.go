@@ -1,10 +1,9 @@
 package llm
 
 import (
-	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -14,6 +13,19 @@ import (
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
 )
+
+// legacyCiphers 内网老设备/网关可能只支持这些旧密码套件（Go 1.26 默认已移除）
+var legacyCiphers = []uint16{
+	tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+	tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+}
 
 // ---- 协议类型 ----
 
@@ -143,6 +155,64 @@ func ChatWithFailover(req ChatRequest, round int) (*CallResult, error) {
 	return nil, fmt.Errorf("所有 LLM 配置均失败，最后一个错误: %w", lastErr)
 }
 
+// buildClient 构造带 TLS 兼容的 HTTP 客户端
+//
+// 内网 LLM 网关（如 ai.sinochem.com）常只支持旧密码套件或不常见配置，
+// Go 1.26 默认已移除部分旧套件，需要显式指定。
+func buildClient(p *model.LLMProfile) *http.Client {
+	timeout := time.Duration(p.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: p.TLSSkipVerify,
+		MinVersion:         tls.VersionTLS12,
+		MaxVersion:         tls.VersionTLS13,
+	}
+	// 只有明确要求时才降级到 TLS 1.0/1.1
+	switch strings.ToLower(p.TLSMinVersion) {
+	case "tls1.0", "tls1", "tls10":
+		tlsCfg.MinVersion = tls.VersionTLS10
+		tlsCfg.CipherSuites = legacyCiphers
+	case "tls1.1", "tls11":
+		tlsCfg.MinVersion = tls.VersionTLS11
+		tlsCfg.CipherSuites = legacyCiphers
+	case "", "tls1.2", "tls12":
+		// 默认 TLS 1.2 起步，但加旧套件以兼容部分网关
+		tlsCfg.CipherSuites = append(tlsCfg.CipherSuites, legacyCiphers...)
+	}
+
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Timeout:   timeout,
+	}
+}
+
+// normalizeBaseURL 补全 BaseURL
+//
+// 支持这些写法：
+//   https://api.xxx.com          → https://api.xxx.com/v1
+//   https://api.xxx.com/v1       → 原样
+//   https://api.xxx.com/v1/      → 去掉末尾斜杠
+//   https://api.xxx.com/chat/completions → 去掉末尾路径
+func normalizeBaseURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	u = strings.TrimRight(u, "/")
+	// 已包含 /chat/completions 的去掉
+	u = strings.TrimSuffix(u, "/chat/completions")
+	if u == "" {
+		return u
+	}
+	// 没有 /v1、/v2 等版本路径的补 /v1
+	lower := strings.ToLower(u)
+	if !strings.Contains(lower, "/v1") && !strings.Contains(lower, "/v2") &&
+		!strings.Contains(lower, "/v3") && !strings.Contains(lower, "/openai") {
+		u += "/v1"
+	}
+	return u
+}
+
 // callOne 调用单个 profile，记录用量与熔断
 func callOne(p *model.LLMProfile, req ChatRequest, round int) (*CallResult, error) {
 	start := time.Now()
@@ -155,49 +225,39 @@ func callOne(p *model.LLMProfile, req ChatRequest, round int) (*CallResult, erro
 	if req.MaxTokens == 0 {
 		req.MaxTokens = p.MaxTokens
 	}
+	if req.MaxTokens == 0 {
+		req.MaxTokens = 8192 // 默认 8K，推理模型需要足够空间
+	}
 
 	body, _ := json.Marshal(req)
-	url := strings.TrimRight(p.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	url := normalizeBaseURL(p.BaseURL) + "/chat/completions"
+
+	headers := map[string]string{"Content-Type": "application/json"}
 	if p.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+		headers["Authorization"] = "Bearer " + p.APIKey
 	}
-	// Anthropic 也需要 x-api-key
 	if p.Provider == "anthropic" {
-		httpReq.Header.Set("x-api-key", p.APIKey)
-		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		headers["x-api-key"] = p.APIKey
+		headers["anthropic-version"] = "2023-06-01"
 	}
 
-	timeout := time.Duration(p.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 120 * time.Second
-	}
-	client := &http.Client{Timeout: timeout}
-
-	resp, err := client.Do(httpReq)
+	statusCode, respBody, err := postChat(p, url, headers, body)
 	if err != nil {
 		breaker.Fail(p.ID, err, p.FailThreshold, p.CooldownSeconds, false)
 		recordUsage(p, 0, 0, 0, int(time.Since(start).Milliseconds()), "error", err.Error(), round)
 		return nil, fmt.Errorf("[%s] 请求失败: %w", p.Name, err)
 	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
 	latency := int(time.Since(start).Milliseconds())
 
-	if resp.StatusCode != 200 {
+	if statusCode != 200 {
 		msg := string(respBody)
 		if len(msg) > 500 {
 			msg = msg[:500]
 		}
-		deterministic := IsDeterministic(resp.StatusCode, msg)
-		breaker.Fail(p.ID, fmt.Errorf("HTTP %d", resp.StatusCode), p.FailThreshold, p.CooldownSeconds, deterministic)
+		deterministic := IsDeterministic(statusCode, msg)
+		breaker.Fail(p.ID, fmt.Errorf("HTTP %d", statusCode), p.FailThreshold, p.CooldownSeconds, deterministic)
 		recordUsage(p, 0, 0, latency, latency, "error", msg, round)
-		return nil, fmt.Errorf("[%s] HTTP %d: %s", p.Name, resp.StatusCode, msg)
+		return nil, fmt.Errorf("[%s] HTTP %d: %s", p.Name, statusCode, msg)
 	}
 
 	var out ChatResponse
@@ -251,40 +311,30 @@ func TestProfile(p *model.LLMProfile) (int, string, error) {
 	req := ChatRequest{
 		Model: p.Model,
 		Messages: []Message{
-			{Role: "user", Content: "回复 OK 两个字"},
+			{Role: "user", Content: "只回复两个字母：OK"},
 		},
-		MaxTokens: 10,
+		MaxTokens: 200,
 	}
 	body, _ := json.Marshal(req)
-	url := strings.TrimRight(p.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return 0, "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	url := normalizeBaseURL(p.BaseURL) + "/chat/completions"
+	headers := map[string]string{"Content-Type": "application/json"}
 	if p.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+		headers["Authorization"] = "Bearer " + p.APIKey
 	}
-	timeout := time.Duration(p.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	client := &http.Client{Timeout: timeout}
+
 	start := time.Now()
-	resp, err := client.Do(httpReq)
+	statusCode, b, err := postChat(p, url, headers, body)
 	if err != nil {
 		return 0, "", err
 	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
 	latency := int(time.Since(start).Milliseconds())
 
-	if resp.StatusCode != 200 {
+	if statusCode != 200 {
 		msg := string(b)
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return latency, msg, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return latency, msg, fmt.Errorf("HTTP %d", statusCode)
 	}
 	var out ChatResponse
 	json.Unmarshal(b, &out)
