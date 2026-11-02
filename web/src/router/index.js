@@ -7,6 +7,7 @@ const routes = [
     component: () => import('../layouts/MainLayout.vue'),
     redirect: '/dashboard',
     children: [
+      { path: 'assistant', component: () => import('../views/Assistant.vue'), meta: { title: 'AI 助手' } },
       { path: 'dashboard', component: () => import('../views/Dashboard.vue'), meta: { title: '首页' } },
       { path: 'assets', component: () => import('../views/Assets.vue'), meta: { title: '资产总览' } },
       { path: 'disposal', component: () => import('../views/Disposal.vue'), meta: { title: '资产处置' } },

@@ -135,8 +135,7 @@ import {
   SpeedometerOutline, ServerOutline, LayersOutline, ShieldCheckmarkOutline,
   ImagesOutline, CalendarOutline, CubeOutline, SettingsOutline, PersonCircle,
   LogOutOutline, Terminal, Sunny, Moon, GitNetworkOutline, BusinessOutline, ClipboardOutline,
-  LogoGithub, DocumentTextOutline, NotificationsOutline
-} from '@vicons/ionicons5'
+  LogoGithub, DocumentTextOutline, NotificationsOutline, SparklesOutline } from '@vicons/ionicons5'
 import api from '../api'
 
 const route = useRoute()
@@ -182,6 +181,7 @@ function renderIcon(icon) {
 }
 
 const menuOptions = [
+  { label: 'AI 助手', key: '/assistant', icon: renderIcon(SparklesOutline) },
   { label: '首页', key: '/dashboard', icon: renderIcon(SpeedometerOutline) },
   { label: '资产总览', key: '/assets', icon: renderIcon(ServerOutline) },
   { label: '资产处置', key: '/disposal', icon: renderIcon(ClipboardOutline) },
