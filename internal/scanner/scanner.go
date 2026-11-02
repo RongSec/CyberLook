@@ -319,7 +319,12 @@ func readTable(dbPath, table, projectID string) ([]ScanResult, error) {
 		r.Protocol = cleanNone(protocol)
 		r.Banner = cleanNone(banner)
 		r.Title = cleanNone(title)
-		r.Fingerprint = cleanNone(banner) // urlscan 的 Banner 即 web 指纹
+		// 标题 fallback：从响应体提取 <title>
+		if r.Title == "" && respBody != "" {
+			r.Title = extractTitle(respBody)
+		}
+		// 指纹：过滤安全特性 + 从响应体补充产品指纹
+		r.Fingerprint = enhanceFingerprint(cleanFingerprint(cleanNone(banner)), respBody)
 		r.StatusCode = cleanStatus(statusCode)
 		if n, e := strconv.Atoi(strings.TrimSpace(lenBody)); e == nil {
 			r.ContentLength = n
@@ -341,6 +346,117 @@ func cleanNone(s string) string {
 	}
 	return s
 }
+
+// extractTitle 从 HTTP 响应体提取 <title> 标签
+func extractTitle(resp string) string {
+	lower := strings.ToLower(resp)
+	start := strings.Index(lower, "<title")
+	if start < 0 {
+		return ""
+	}
+	// 找到 > 后开始
+	gt := strings.Index(resp[start:], ">")
+	if gt < 0 {
+		return ""
+	}
+	content := resp[start+gt+1:]
+	end := strings.Index(strings.ToLower(content), "</title>")
+	if end < 0 {
+		return ""
+	}
+	title := strings.TrimSpace(content[:end])
+	title = strings.NewReplacer("\r", "", "\n", " ", "\t", " ").Replace(title)
+	// 去 HTML 实体
+	title = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", "\"", "&#39;", "'").Replace(title)
+	if len(title) > 200 {
+		title = title[:200]
+	}
+	return title
+}
+
+// cleanFingerprint 过滤非产品指纹（HSTS 等安全特性）并去重
+func cleanFingerprint(fp string) string {
+	fp = strings.TrimSpace(fp)
+	if fp == "" || strings.EqualFold(fp, "none") {
+		return ""
+	}
+	// 按逗号分割，过滤掉安全特性类标签
+	parts := strings.Split(fp, ",")
+	var keep []string
+	seen := map[string]bool{}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		lower := strings.ToLower(p)
+		// 跳过纯安全特性（不是产品指纹）
+		switch lower {
+		case "hsts", "x-frame-options", "x-content-type-options",
+			"x-xss-protection", "content-security-policy", "x-powered-by":
+			continue
+		}
+		if !seen[lower] {
+			seen[lower] = true
+			keep = append(keep, p)
+		}
+	}
+	return strings.Join(keep, ",")
+}
+
+// enhanceFingerprint 从响应体补充产品指纹
+func enhanceFingerprint(fp, resp string) string {
+	if resp == "" {
+		return fp
+	}
+	lower := strings.ToLower(resp)
+	var extras []string
+	// 常见产品特征（简单关键词匹配）
+	patterns := map[string]string{
+		"浪潮bms":      "浪潮",
+		"inspur":       "浪潮",
+		"bmc":          "BMC",
+		"ilo":          "iLO",
+		"idrac":        "iDRAC",
+		"ipmi":         "IPMI",
+		"weblogic":     "WebLogic",
+		"tomcat":       "Tomcat",
+		"jboss":        "JBoss",
+		"jenkins":      "Jenkins",
+		"grafana":      "Grafana",
+		"kibana":       "Kibana",
+		"zabbix":       "Zabbix",
+		"exchange":     "Exchange",
+		"owa":          "Exchange-OWA",
+		"vmware":       "VMware",
+		"vcenter":      "vCenter",
+		"citrix":       "Citrix",
+		"fortinet":     "Fortinet",
+		"fortigate":    "FortiGate",
+		"paloalto":     "PaloAlto",
+		"checkpoint":   "CheckPoint",
+		"qnap":         "QNAP",
+		"synology":     "Synology",
+		"coremail":     "Coremail",
+	}
+	for keyword, name := range patterns {
+		if strings.Contains(lower, keyword) {
+			// 检查是否已在指纹里
+			if !strings.Contains(strings.ToLower(fp), strings.ToLower(name)) {
+				extras = append(extras, name)
+			}
+		}
+	}
+	if len(extras) > 0 {
+		if fp != "" {
+			fp = fp + "," + strings.Join(extras, ",")
+		} else {
+			fp = strings.Join(extras, ",")
+		}
+	}
+	return fp
+}
+
 
 // cleanStatus 响应码清理：TscanClient 对非 HTTP 会写 "0"，视为空
 func cleanStatus(s string) string {
@@ -380,7 +496,6 @@ func inferService(protocol, banner, mid string) string {
 		{"kafka", "kafka"},
 		{"uvicorn", "uvicorn"},
 		{"nginx", "nginx"}, {"apache", "apache"}, {"tomcat", "tomcat"},
-		{"weblogic", "weblogic"}, {"iis", "iis"},
 		{"rdp", "rdp"}, {"vnc", "vnc"}, {"ftp", "ftp"}, {"smtp", "smtp"},
 		{"dns", "dns"}, {"telnet", "telnet"},
 	}

@@ -159,6 +159,49 @@ flowchart TD
 | `confirmed` | 资产总览 / 应用服务 | 已人工标注部门与负责人 |
 | 台账红/绿/黄 | 资产总览 | 与台账比对结果（无/有/页面变更） |
 
+## 一个 IP 的完整生命周期
+
+> 从发现 → 处置 → 长期维护 → 变更再发现，形成闭环。
+
+```mermaid
+flowchart TD
+    subgraph 发现
+        A1["台账导入<br/>（Excel 批量）"] --> J
+        A2["扫描发现<br/>（定时任务 / 手动）"] --> D{"该 IP 是否已在库?"}
+        D -->|"否"| E["新发现<br/>落 pending"]
+        D -->|"是"| F{"页面内容有变化?"}
+        F -->|"是"| G["标记「新变更」<br/>content_changed = true"]
+        F -->|"否"| H["跳过<br/>仅更新 last_seen"]
+    end
+
+    subgraph 处置
+        E --> J["资产处置页<br/>待确认池"]
+        G --> J
+        J --> K{"人工判断"}
+        K -->|"确认归属"| L["填 部门 / 负责人 / 系统名<br/>（支持批量）"]
+        K -->|"误报或无关"| M["批量删除"]
+        L --> N[("status = confirmed")]
+        M --> Z["流程结束"]
+    end
+
+    subgraph 长期维护
+        N --> O["资产总览<br/>全量可检索"]
+        N --> P["应用服务<br/>仅已确认 Web 资产"]
+        N --> Q["页面快照<br/>按间隔定期截图"]
+        O --> R["台账比对<br/>红=台账无 绿=台账有 黄=页面变更"]
+        Q --> S{"快照内容变化?"}
+    end
+
+    S -->|"是"| G
+    S -->|"否"| T["继续观察"]
+
+    style E fill:#FAEEDA,stroke:#BA7517
+    style N fill:#EAF3DE,stroke:#639922
+    style J fill:#E6F1FB,stroke:#378ADD
+    style R fill:#FBEAF0,stroke:#D4537E
+    style G fill:#FBEAF0,stroke:#D4537E
+```
+
 ## 架构说明
 
 ```
