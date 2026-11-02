@@ -66,7 +66,7 @@
               <n-input-number v-model:value="editing.temperature" :min="0" :max="2" :step="0.1" style="width:100%" />
             </n-form-item-gi>
             <n-form-item-gi label="最大输出 Tokens">
-              <n-input-number v-model:value="editing.maxTokens" :min="256" :step="512" style="width:100%" />
+              <n-input-number v-model:value="editing.maxTokens" :min="256" :step="1024" style="width:100%" placeholder="8192" />
             </n-form-item-gi>
             <n-form-item-gi label="上下文窗口 (K)">
               <n-input-number v-model:value="editing.contextWindowK" :min="8" :step="8" style="width:100%" />
@@ -75,8 +75,15 @@
 
           <n-divider title-placement="left" style="margin: 12px 0 8px">轮询与熔断</n-divider>
           <n-grid :cols="3" :x-gap="16">
-            <n-form-item-gi label="优先级（高优先）">
-              <n-input-number v-model:value="editing.priority" :min="1" :max="999" style="width:100%" />
+            <n-form-item-gi>
+              <template #label>
+                优先级
+                <n-tooltip trigger="hover">
+                  <template #trigger><span style="color:#999;cursor:help;margin-left:2px">ⓘ</span></template>
+                  0-10，数字越小越优先。0 最先尝试，失败后依次尝试 1、2…；相同优先级之间随机轮换（负载均衡）。
+                </n-tooltip>
+              </template>
+              <n-input-number v-model:value="editing.priority" :min="0" :max="10" style="width:100%" />
             </n-form-item-gi>
             <n-form-item-gi label="失败阈值（次）">
               <n-input-number v-model:value="editing.failThreshold" :min="1" :max="20" style="width:100%" />
@@ -86,6 +93,76 @@
             </n-form-item-gi>
           </n-grid>
 
+          <n-divider title-placement="left" style="margin: 12px 0 8px">TLS 兼容（内网网关常见）</n-divider>
+          <n-grid :cols="2" :x-gap="16">
+            <n-form-item-gi label="TLS 最低版本">
+              <n-select v-model:value="editing.tlsMinVersion" :options="tlsOptions" />
+            </n-form-item-gi>
+            <n-form-item-gi label=" ">
+              <n-checkbox v-model:checked="editing.tlsSkipVerify">跳过证书校验（自签证书时勾选）</n-checkbox>
+            </n-form-item-gi>
+          </n-grid>
+
+          <n-form-item>
+            <template #label>
+              应用层代理
+              <n-tooltip trigger="hover">
+                <template #trigger><span style="color:#999;cursor:help;margin-left:2px">ⓘ</span></template>
+                仅 Docker Desktop / 受限网络需要。在宿主机跑 llmproxy，填 http://host.docker.internal:8898。
+                留空则直连（生产 Linux 服务器不需要填）。
+              </n-tooltip>
+            </template>
+            <n-input v-model:value="editing.viaProxy" placeholder="留空直连；Docker Desktop 本地开发填 http://host.docker.internal:8898" />
+          </n-form-item>
+
+          <n-form-item>
+            <template #label>
+              应用层代理
+              <n-tooltip trigger="hover">
+                <template #trigger><span style="color:#999;cursor:help;margin-left:2px">ⓘ</span></template>
+                仅 Docker Desktop / 受限网络需要。在宿主机跑 llmproxy，填 http://host.docker.internal:8898。
+                留空则直连（生产 Linux 服务器不需要填）。
+              </n-tooltip>
+            </template>
+            <n-input v-model:value="editing.viaProxy" placeholder="留空直连；Docker Desktop 本地开发填 http://host.docker.internal:8898" />
+          </n-form-item>
+
+          <n-divider title-placement="left" style="margin: 12px 0 8px">其他</n-divider>
+          <n-divider title-placement="left" style="margin: 12px 0 8px">TLS 兼容（内网网关常见）</n-divider>
+          <n-grid :cols="2" :x-gap="16">
+            <n-form-item-gi label="TLS 最低版本">
+              <n-select v-model:value="editing.tlsMinVersion" :options="tlsOptions" />
+            </n-form-item-gi>
+            <n-form-item-gi label=" ">
+              <n-checkbox v-model:checked="editing.tlsSkipVerify">跳过证书校验（自签证书时勾选）</n-checkbox>
+            </n-form-item-gi>
+          </n-grid>
+
+          <n-form-item>
+            <template #label>
+              应用层代理
+              <n-tooltip trigger="hover">
+                <template #trigger><span style="color:#999;cursor:help;margin-left:2px">ⓘ</span></template>
+                仅 Docker Desktop / 受限网络需要。在宿主机跑 llmproxy，填 http://host.docker.internal:8898。
+                留空则直连（生产 Linux 服务器不需要填）。
+              </n-tooltip>
+            </template>
+            <n-input v-model:value="editing.viaProxy" placeholder="留空直连；Docker Desktop 本地开发填 http://host.docker.internal:8898" />
+          </n-form-item>
+
+          <n-form-item>
+            <template #label>
+              应用层代理
+              <n-tooltip trigger="hover">
+                <template #trigger><span style="color:#999;cursor:help;margin-left:2px">ⓘ</span></template>
+                仅 Docker Desktop / 受限网络需要。在宿主机跑 llmproxy，填 http://host.docker.internal:8898。
+                留空则直连（生产 Linux 服务器不需要填）。
+              </n-tooltip>
+            </template>
+            <n-input v-model:value="editing.viaProxy" placeholder="留空直连；Docker Desktop 本地开发填 http://host.docker.internal:8898" />
+          </n-form-item>
+
+          <n-divider title-placement="left" style="margin: 12px 0 8px">其他</n-divider>
           <n-grid :cols="2" :x-gap="16">
             <n-form-item-gi label="请求超时（秒）">
               <n-input-number v-model:value="editing.timeoutSeconds" :min="10" :max="600" style="width:100%" />
@@ -133,6 +210,14 @@ const profiles = ref([])
 const available = ref(0)
 const showModal = ref(false)
 
+const tlsOptions = [
+  { label: '默认（TLS 1.2+）', value: '' },
+  { label: 'TLS 1.2', value: 'tls1.2' },
+  { label: 'TLS 1.0（老网关）', value: 'tls1.0' },
+  { label: 'TLS 1.1', value: 'tls1.1' },
+]
+
+
 const providerOptions = [
   { label: 'OpenAI 兼容', value: 'openai' },
   { label: 'Anthropic', value: 'anthropic' },
@@ -142,9 +227,9 @@ const providerOptions = [
 
 const emptyForm = () => ({
   id: 0, name: '', provider: 'openai', baseUrl: '', apiKey: '', model: '',
-  temperature: 0.3, maxTokens: 4096, contextWindowK: 128,
-  priority: 100, failThreshold: 3, cooldownSeconds: 60, timeoutSeconds: 120,
-  enabled: true, poolExclude: false,
+  temperature: 0.3, maxTokens: 8192, contextWindowK: 128,
+  priority: 5, failThreshold: 3, cooldownSeconds: 60, timeoutSeconds: 120,
+  enabled: true, poolExclude: false, tlsSkipVerify: false, tlsMinVersion: '', viaProxy: '', viaProxy: '',
 })
 const editing = ref(emptyForm())
 
@@ -241,7 +326,14 @@ async function testProfile(id, inModal = false) {
     if (r.ok) {
       message.success(`连通正常，延迟 ${r.latencyMs}ms，回复: ${(r.reply || '').slice(0, 30)}`)
     } else {
-      message.error(`失败: ${r.error}`)
+      dialog.error({
+        title: '连通失败',
+        content: () => h('div', [
+          h('div', { style: 'margin-bottom:8px;color:#d03050' }, r.error),
+          r.hint ? h('div', { style: 'font-size:13px;color:#666;line-height:1.6' }, r.hint) : null,
+        ].filter(Boolean)),
+        positiveText: '知道了',
+      })
     }
     if (!inModal) load()
   } catch (e) {
