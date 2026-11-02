@@ -122,10 +122,29 @@ func Identify(protocol, ip string, port int) *Result {
 	}
 	baseURL := fmt.Sprintf("%s://%s:%d/", scheme, ip, port)
 
-	// L1
-	if r := l1Identify(baseURL); r != nil && r.Confidence >= 60 {
+	// L1（根路径）
+	r := l1Identify(baseURL)
+	if r != nil && r.Confidence >= 60 {
 		return r
-	} else if r != nil {
+	}
+
+	// L1.5：根路径不给力时，尝试常见入口（很多设备首页只是跳转页）
+	subPaths := []string{"ui/", "login", "admin/"}
+	for _, sp := range subPaths {
+		sub := baseURL + sp
+		if r2 := l1IdentifyFast(sub, 4*time.Second); r2 != nil {
+			if r2.Confidence > 60 {
+				r2.Evidence = append(r2.Evidence, "path:/"+sp)
+				return r2
+			}
+			if r == nil || r2.Confidence > r.Confidence {
+				r = r2
+				r.Evidence = append(r.Evidence, "path:/"+sp)
+			}
+		}
+	}
+
+	if r != nil {
 		// L2 补充
 		if r2 := l2CSSAnalyze(baseURL, r); r2 != nil && r2.Confidence > r.Confidence {
 			return r2
@@ -141,9 +160,14 @@ func Identify(protocol, ip string, port int) *Result {
 	return &Result{Layer: "none", Confidence: 0}
 }
 
-// l1Identify 单次请求提取 7 个维度
+// l1Identify 单次请求提取 7 个维度（默认 12 秒超时）
 func l1Identify(baseURL string) *Result {
-	client := ClientCompat(12 * time.Second)
+	return l1IdentifyFast(baseURL, 12*time.Second)
+}
+
+// l1IdentifyFast 带自定义超时的 L1
+func l1IdentifyFast(baseURL string, timeout time.Duration) *Result {
+	client := ClientCompat(timeout)
 	resp, err := client.Get(baseURL)
 	if err != nil {
 		log.Printf("[fp] L1 %s fail: %v", baseURL, err)
