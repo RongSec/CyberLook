@@ -58,6 +58,14 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/system/fuse", SaveFuseConfig)
 		auth.GET("/system/logs", SystemLogs)
 		auth.GET("/system/version", SystemVersion)
+		auth.POST("/fingerprint/identify", IdentifyFingerprint)
+		// LLM
+		auth.GET("/llm/status", LlmStatus)
+		auth.POST("/llm/chat", LlmChat)
+		auth.GET("/llm/tools", LlmTools)
+		auth.POST("/llm/tool-call", LlmToolCall)
+		auth.GET("/llm/doc", LlmDoc)
+		auth.POST("/fingerprint/batch", BatchIdentifyFingerprint)
 
 		// 资产
 		auth.GET("/assets", ListAssets)

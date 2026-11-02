@@ -40,6 +40,9 @@ services:
       - "18888:18888"
     environment:
       SERVER_PORT: "18888"
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-32b-instruct}
       PG_DSN: postgres://asset:${POSTGRES_PASSWORD:-asset123}@postgres:5432/asset_platform?sslmode=disable
       REDIS_ADDR: redis:6379
       TSCANCLIENT_PATH: /app/third_party/tscanclient_linux/TscanClient
