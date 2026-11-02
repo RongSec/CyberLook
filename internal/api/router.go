@@ -61,6 +61,15 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/fingerprint/identify", IdentifyFingerprint)
 		// LLM
 		auth.GET("/llm/status", LlmStatus)
+		// LLM 配置管理
+		auth.GET("/llm/profiles", ListLlmProfiles)
+		auth.POST("/llm/profiles", CreateLlmProfile)
+		auth.PUT("/llm/profiles/:id", UpdateLlmProfile)
+		auth.DELETE("/llm/profiles/:id", DeleteLlmProfile)
+		auth.POST("/llm/profiles/:id/test", TestLlmProfile)
+		auth.POST("/llm/profiles/:id/reset", ResetLlmBreaker)
+		auth.POST("/llm/breakers/reset-all", ResetAllLlmBreakers)
+		auth.GET("/llm/usage", LlmUsageStats)
 		auth.POST("/llm/chat", LlmChat)
 		auth.GET("/llm/tools", LlmTools)
 		auth.POST("/llm/tool-call", LlmToolCall)

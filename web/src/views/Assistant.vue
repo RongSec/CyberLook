@@ -11,7 +11,12 @@
             <n-tag v-else type="warning" size="small" round>未配置</n-tag>
           </div>
           <div class="actions">
-            <n-button size="small" quaternary @click="loadTools">能力清单（{{ status.tools }}）</n-button>
+            <n-tag size="small" :bordered="false" type="info">
+              今日 {{ status.todayCalls || 0 }} 次 / {{ formatTokens(status.todayTokens) }} tokens
+            </n-tag>
+            <n-button size="small" quaternary @click="loadTools">能力（{{ status.tools }}）</n-button>
+            <n-button size="small" quaternary @click="showUsage = true">用量</n-button>
+            <n-button size="small" quaternary @click="$router.push('/llm-settings')">配置</n-button>
             <n-button size="small" quaternary @click="clearChat">清空</n-button>
           </div>
         </div>
@@ -63,6 +68,41 @@
       </div>
     </n-card>
 
+    <n-drawer v-model:show="showUsage" :width="560">
+      <n-drawer-content title="Token 用量">
+        <n-spin :show="usageLoading">
+          <div v-if="usage.total" class="usage-summary">
+            <div class="stat"><div class="num">{{ usage.total.calls }}</div><div class="lbl">总调用</div></div>
+            <div class="stat"><div class="num">{{ formatTokens(usage.total.totalTokens) }}</div><div class="lbl">总 Tokens</div></div>
+            <div class="stat"><div class="num">{{ usage.total.errors }}</div><div class="lbl">失败</div></div>
+            <div class="stat"><div class="num">{{ usage.total.avgMs }}ms</div><div class="lbl">平均延迟</div></div>
+          </div>
+
+          <n-divider title-placement="left" style="margin: 16px 0 8px">按配置</n-divider>
+          <n-table :bordered="false" size="small">
+            <thead><tr><th>配置</th><th>模型</th><th style="text-align:right">调用</th><th style="text-align:right">Tokens</th><th style="text-align:right">失败</th></tr></thead>
+            <tbody>
+              <tr v-for="p in usage.byProfile" :key="p.profileName + p.model">
+                <td>{{ p.profileName }}</td>
+                <td style="font-size:12px;color:#888">{{ p.model }}</td>
+                <td style="text-align:right">{{ p.calls }}</td>
+                <td style="text-align:right">{{ formatTokens(p.totalTokens) }}</td>
+                <td style="text-align:right" :style="{color: p.errors > 0 ? '#d03050' : ''}">{{ p.errors }}</td>
+              </tr>
+            </tbody>
+          </n-table>
+
+          <n-divider title-placement="left" style="margin: 16px 0 8px">最近调用</n-divider>
+          <div v-for="r in usage.recent" :key="r.id" class="recent-row">
+            <n-tag size="tiny" :type="r.status === 'ok' ? 'success' : 'error'">{{ r.status }}</n-tag>
+            <span class="rname">{{ r.profileName }}</span>
+            <span class="rtok">{{ r.totalTokens }} tok</span>
+            <span class="rms">{{ r.latencyMs }}ms</span>
+          </div>
+        </n-spin>
+      </n-drawer-content>
+    </n-drawer>
+
     <n-drawer v-model:show="showTools" :width="480">
       <n-drawer-content title="可用能力">
         <n-list>
@@ -77,16 +117,21 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
-import { NCard, NTag, NButton, NAlert, NInput, NSpin, NDrawer, NDrawerContent, NList, NListItem, useMessage } from 'naive-ui'
+import { ref, onMounted, nextTick, watch } from 'vue'
+import { NCard, NTag, NButton, NAlert, NInput, NSpin, NDrawer, NDrawerContent, NList, NListItem, NTable, NDivider, NSpace, useMessage } from 'naive-ui'
 import api from '../api'
+import { useRouter } from 'vue-router'
 
 const message = useMessage()
+const router = useRouter()
 const input = ref('')
 const loading = ref(false)
 const messages = ref([])
 const scrollRef = ref(null)
 const showTools = ref(false)
+const showUsage = ref(false)
+const usageLoading = ref(false)
+const usage = ref({ total: null, byProfile: [], daily: [], recent: [] })
 const toolList = ref([])
 const status = ref({ enabled: false, model: '', tools: 0 })
 
@@ -113,6 +158,22 @@ async function loadTools() {
   } catch (e) {
     message.error('加载失败')
   }
+}
+
+function formatTokens(n) {
+  if (!n) return '0'
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K'
+  return String(n)
+}
+
+async function loadUsage() {
+  usageLoading.value = true
+  try {
+    const r = await api.get('/llm/usage?days=7')
+    usage.value = r
+  } catch { /* ignore */ }
+  finally { usageLoading.value = false }
 }
 
 function clearChat() {
@@ -167,6 +228,8 @@ async function send(text) {
   }
 }
 
+watch(showUsage, (v) => { if (v) loadUsage() })
+
 onMounted(() => {
   loadStatus()
 })
@@ -201,6 +264,14 @@ onMounted(() => {
   font-family: ui-monospace, monospace; font-size: 13px;
 }
 .input-area { display: flex; gap: 8px; align-items: flex-end; padding-top: 12px; border-top: 1px solid #eee; }
+.usage-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 8px; }
+.stat { text-align: center; padding: 12px 8px; background: #f8fafc; border-radius: 8px; }
+.stat .num { font-size: 20px; font-weight: 700; color: #2080f0; }
+.stat .lbl { font-size: 12px; color: #888; margin-top: 4px; }
+.recent-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f5f5f5; font-size: 12px; }
+.rname { flex: 1; color: #555; }
+.rtok { color: #888; }
+.rms { color: #aaa; width: 60px; text-align: right; }
 .tool-name { font-family: ui-monospace, monospace; font-weight: 600; font-size: 13px; color: #2080f0; }
 .tool-desc { font-size: 13px; color: #666; margin-top: 4px; }
 </style>

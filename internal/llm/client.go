@@ -1,4 +1,3 @@
-// Package llm 提供 LLM 对话能力，支持 Function Calling 操作资产平台全部数据
 package llm
 
 import (
@@ -7,39 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"asset-platform/internal/config"
+	"asset-platform/internal/model"
 )
 
-// Config LLM 配置（从环境变量读取）
-type Config struct {
-	BaseURL string // LLM API 地址，如 http://llm.internal:8000/v1
-	APIKey  string
-	Model   string
-	Timeout time.Duration
-}
-
-// LoadConfig 从环境变量加载
-func LoadConfig() Config {
-	cfg := Config{
-		BaseURL: os.Getenv("LLM_BASE_URL"),
-		APIKey:  os.Getenv("LLM_API_KEY"),
-		Model:   os.Getenv("LLM_MODEL"),
-		Timeout: 120 * time.Second,
-	}
-	if cfg.Model == "" {
-		cfg.Model = "qwen2.5-32b-instruct"
-	}
-	return cfg
-}
-
-// Enabled 是否已配置
-func (c Config) Enabled() bool {
-	return c.BaseURL != ""
-}
-
-// ---- OpenAI 兼容协议 ----
+// ---- 协议类型 ----
 
 type Message struct {
 	Role       string     `json:"role"` // system / user / assistant / tool
@@ -51,7 +27,7 @@ type Message struct {
 
 type ToolCall struct {
 	ID       string `json:"id"`
-	Type     string `json:"type"` // function
+	Type     string `json:"type"`
 	Function struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
@@ -64,6 +40,7 @@ type ChatRequest struct {
 	Tools       []Tool    `json:"tools,omitempty"`
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
 }
 
 type ChatResponse struct {
@@ -73,55 +50,247 @@ type ChatResponse struct {
 		Message Message `json:"message"`
 		Reason  string  `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
 }
 
-// Chat 调用 LLM
-func Chat(cfg Config, req ChatRequest) (*ChatResponse, error) {
-	if !cfg.Enabled() {
-		return nil, fmt.Errorf("LLM 未配置（设置 LLM_BASE_URL 环境变量）")
+// CallResult 一次调用的完整结果
+type CallResult struct {
+	Resp      *ChatResponse
+	Profile   *model.LLMProfile
+	Usage     *model.LLMUsage
+	LatencyMs int
+}
+
+// ---- 轮询池 ----
+
+var rrCounter atomic.Uint64
+
+// AvailableProfiles 返回按轮询顺序排列的可用配置
+//
+// 排序规则：
+//  1. 只取 enabled=true 且未熔断的
+//  2. priority 高的优先
+//  3. 同 priority 的按轮询计数器轮换（负载均衡）
+//  4. PoolExclude=true 的排除
+func AvailableProfiles() []model.LLMProfile {
+	var all []model.LLMProfile
+	config.DB.Where("enabled = ?", true).Order("priority DESC, id").Find(&all)
+
+	breaker := GlobalBreaker()
+	var avail []model.LLMProfile
+	var excluded []model.LLMProfile
+
+	for _, p := range all {
+		if p.PoolExclude {
+			excluded = append(excluded, p)
+			continue
+		}
+		if !breaker.Available(p.ID) {
+			continue
+		}
+		avail = append(avail, p)
 	}
-	req.Model = cfg.Model
+
+	if len(avail) == 0 {
+		return nil
+	}
+
+	// 同 priority 组内轮换
+	sort.SliceStable(avail, func(i, j int) bool { return avail[i].Priority > avail[j].Priority })
+
+	// 找到最高 priority 的组，轮换
+	maxPri := avail[0].Priority
+	var head, rest []model.LLMProfile
+	for _, p := range avail {
+		if p.Priority == maxPri {
+			head = append(head, p)
+		} else {
+			rest = append(rest, p)
+		}
+	}
+	if len(head) > 1 {
+		start := int(rrCounter.Add(1)) % len(head)
+		head = append(head[start:], head[:start]...)
+	}
+	return append(head, rest...)
+}
+
+// ChatWithFailover 按轮询链依次尝试，成功即返回
+func ChatWithFailover(req ChatRequest, round int) (*CallResult, error) {
+	profiles := AvailableProfiles()
+	if len(profiles) == 0 {
+		return nil, ErrNoProfile
+	}
+
+	var lastErr error
+	for i := range profiles {
+		p := &profiles[i]
+		result, err := callOne(p, req, round)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		// 继续下一个
+	}
+	return nil, fmt.Errorf("所有 LLM 配置均失败，最后一个错误: %w", lastErr)
+}
+
+// callOne 调用单个 profile，记录用量与熔断
+func callOne(p *model.LLMProfile, req ChatRequest, round int) (*CallResult, error) {
+	start := time.Now()
+	breaker := GlobalBreaker()
+
+	req.Model = p.Model
+	if req.Temperature == 0 {
+		req.Temperature = p.Temperature
+	}
+	if req.MaxTokens == 0 {
+		req.MaxTokens = p.MaxTokens
+	}
 
 	body, _ := json.Marshal(req)
-	url := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
+	url := strings.TrimRight(p.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	if p.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
+	// Anthropic 也需要 x-api-key
+	if p.Provider == "anthropic" {
+		httpReq.Header.Set("x-api-key", p.APIKey)
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
-	client := &http.Client{Timeout: cfg.Timeout}
+	timeout := time.Duration(p.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("LLM 请求失败: %w", err)
+		breaker.Fail(p.ID, err, p.FailThreshold, p.CooldownSeconds, false)
+		recordUsage(p, 0, 0, 0, int(time.Since(start).Milliseconds()), "error", err.Error(), round)
+		return nil, fmt.Errorf("[%s] 请求失败: %w", p.Name, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	latency := int(time.Since(start).Milliseconds())
+
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LLM 返回 %d: %s", resp.StatusCode, string(respBody[:min(500, len(respBody))]))
+		msg := string(respBody)
+		if len(msg) > 500 {
+			msg = msg[:500]
+		}
+		deterministic := IsDeterministic(resp.StatusCode, msg)
+		breaker.Fail(p.ID, fmt.Errorf("HTTP %d", resp.StatusCode), p.FailThreshold, p.CooldownSeconds, deterministic)
+		recordUsage(p, 0, 0, latency, latency, "error", msg, round)
+		return nil, fmt.Errorf("[%s] HTTP %d: %s", p.Name, resp.StatusCode, msg)
 	}
 
 	var out ChatResponse
 	if err := json.Unmarshal(respBody, &out); err != nil {
-		return nil, fmt.Errorf("解析 LLM 响应失败: %w", err)
+		breaker.Fail(p.ID, err, p.FailThreshold, p.CooldownSeconds, false)
+		return nil, fmt.Errorf("[%s] 解析响应失败: %w", p.Name, err)
 	}
 	if out.Error != nil {
-		return nil, fmt.Errorf("LLM 错误: %s", out.Error.Message)
+		deterministic := IsDeterministic(400, out.Error.Message)
+		breaker.Fail(p.ID, fmt.Errorf("%s", out.Error.Message), p.FailThreshold, p.CooldownSeconds, deterministic)
+		recordUsage(p, 0, 0, latency, latency, "error", out.Error.Message, round)
+		return nil, fmt.Errorf("[%s] %s", p.Name, out.Error.Message)
 	}
-	return &out, nil
+
+	// 成功
+	breaker.Success(p.ID, time.Since(start))
+
+	in, outTok := 0, 0
+	if out.Usage != nil {
+		in = out.Usage.PromptTokens
+		outTok = out.Usage.CompletionTokens
+	}
+	usage := recordUsage(p, in, outTok, latency, latency, "ok", "", round)
+
+	return &CallResult{Resp: &out, Profile: p, Usage: usage, LatencyMs: latency}, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// recordUsage 写用量记录
+func recordUsage(p *model.LLMProfile, inTok, outTok, latency1, latencyMs int, status, errMsg string, round int) *model.LLMUsage {
+	u := &model.LLMUsage{
+		ProfileID:    p.ID,
+		ProfileName:  p.Name,
+		Model:        p.Model,
+		InputTokens:  inTok,
+		OutputTokens: outTok,
+		TotalTokens:  inTok + outTok,
+		LatencyMs:    latencyMs,
+		Status:       status,
+		ErrorMsg:     errMsg,
+		Round:        round,
 	}
-	return b
+	if err := config.DB.Create(u).Error; err != nil {
+		// 用量记录失败不影响主流程
+		_ = err
+	}
+	return u
+}
+
+// TestProfile 测试单个配置连通性（不写用量、不影响熔断）
+func TestProfile(p *model.LLMProfile) (int, string, error) {
+	req := ChatRequest{
+		Model: p.Model,
+		Messages: []Message{
+			{Role: "user", Content: "回复 OK 两个字"},
+		},
+		MaxTokens: 10,
+	}
+	body, _ := json.Marshal(req)
+	url := strings.TrimRight(p.BaseURL, "/") + "/chat/completions"
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if p.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	}
+	timeout := time.Duration(p.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	start := time.Now()
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	latency := int(time.Since(start).Milliseconds())
+
+	if resp.StatusCode != 200 {
+		msg := string(b)
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return latency, msg, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out ChatResponse
+	json.Unmarshal(b, &out)
+	reply := ""
+	if len(out.Choices) > 0 {
+		reply = out.Choices[0].Message.Content
+	}
+	return latency, reply, nil
 }
