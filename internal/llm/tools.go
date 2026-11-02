@@ -174,6 +174,144 @@ func Tools() []Tool {
 			param(map[string]interface{}{
 				"limit": num("返回条数，默认 50"),
 			})),
+
+		// ===== 部门管理 =====
+		t("list_departments", "查询部门列表（含资产数量统计）",
+			param(map[string]interface{}{})),
+		t("create_department", "创建部门",
+			param(map[string]interface{}{
+				"name": str("部门名称"),
+				"parent": str("上级部门（可选）"),
+			}, "name")),
+		t("update_department", "修改部门名称",
+			param(map[string]interface{}{
+				"id":   num("部门 ID"),
+				"name": str("新名称"),
+			}, "id", "name")),
+		t("delete_department", "删除部门（危险操作）",
+			param(map[string]interface{}{
+				"id": num("部门 ID"),
+			}, "id")),
+
+		// ===== IP 规划 =====
+		t("list_segments", "查询 IP 网段规划列表",
+			param(map[string]interface{}{})),
+		t("create_segment", "创建 IP 网段",
+			param(map[string]interface{}{
+				"cidr":  str("网段，如 10.24.11.0/24"),
+				"name":  str("网段名称"),
+				"owner": str("负责人"),
+				"desc":  str("用途说明"),
+			}, "cidr")),
+		t("delete_segment", "删除 IP 网段",
+			param(map[string]interface{}{
+				"id": num("网段 ID"),
+			}, "id")),
+
+		// ===== 扫描模板 =====
+		t("list_templates", "查询扫描模板列表",
+			param(map[string]interface{}{})),
+		t("create_template", "创建扫描模板（端口范围+指纹+并发配置）",
+			param(map[string]interface{}{
+				"name":     str("模板名称"),
+				"ports":    str("端口，如 top100 或 80,443,8080-8090"),
+				"finger":   str("指纹开关：on/off"),
+				"concurrency": num("并发数"),
+			}, "name")),
+		t("delete_template", "删除扫描模板",
+			param(map[string]interface{}{
+				"id": num("模板 ID"),
+			}, "id")),
+
+		// ===== 服务 =====
+		t("delete_service", "删除单个服务记录（端口级）",
+			param(map[string]interface{}{
+				"id": num("服务 ID"),
+			}, "id")),
+
+		// ===== 快照 =====
+		t("list_snapshots", "查询页面快照列表（可选按 IP 过滤）",
+			param(map[string]interface{}{
+				"ip":    str("IP 过滤"),
+				"limit": num("返回条数，默认 20"),
+			})),
+
+		// ===== 冲突 =====
+		t("list_import_conflicts", "查询台账导入冲突（同一 IP 多条记录等）",
+			param(map[string]interface{}{})),
+
+		// ===== 系统 =====
+		t("get_system_config", "查询系统配置：熔断策略、保留天数、通知设置",
+			param(map[string]interface{}{})),
+		t("get_task_log", "查询任务执行日志（最近 N 行）",
+			param(map[string]interface{}{
+				"taskId": num("任务 ID"),
+				"lines":  num("返回行数，默认 50"),
+			}, "taskId")),
+
+		// ===== 统计 =====
+		t("get_asset_trend", "查询资产增长趋势（按天统计新增数）",
+			param(map[string]interface{}{
+				"days": num("统计天数，默认 30"),
+			})),
+		t("get_scan_coverage", "查询扫描覆盖率：已扫 IP 数 / 规划网段总 IP 数",
+			param(map[string]interface{}{})),
+
+		// ===== 待处置操作 =====
+		t("delete_disposal", "从待处置池删除资产（误报清理）",
+			param(map[string]interface{}{
+				"ip": str("资产 IP"),
+			}, "ip")),
+		t("batch_delete_disposal", "批量从待处置池删除",
+			param(map[string]interface{}{
+				"ips": str("IP 列表，逗号分隔"),
+			}, "ips")),
+
+		// ===== 节点管理 =====
+		t("delete_node", "删除扫描节点（危险操作）",
+			param(map[string]interface{}{
+				"id": num("节点 ID"),
+			}, "id")),
+		t("upgrade_node", "触发节点 agent 升级到当前版本",
+			param(map[string]interface{}{
+				"id": num("节点 ID"),
+			}, "id")),
+
+		// ===== 排除范围 =====
+		t("list_excludes", "查询免扫描清单",
+			param(map[string]interface{}{})),
+		t("create_exclude", "添加免扫描范围",
+			param(map[string]interface{}{
+				"range":  str("IP 范围，如 10.0.0.1-10.0.0.50 或 CIDR"),
+				"reason": str("原因说明"),
+			}, "range")),
+		t("delete_exclude", "删除免扫描范围",
+			param(map[string]interface{}{
+				"id": num("记录 ID"),
+			}, "id")),
+
+		// ===== 通知 =====
+		t("get_notify_config", "查询通知配置（Webhook/邮件）",
+			param(map[string]interface{}{})),
+
+		// ===== 冲突处理 =====
+		t("resolve_conflict", "解决台账导入冲突：keepNew=用新数据覆盖，keepOld=保留原数据",
+			param(map[string]interface{}{
+				"id":     num("冲突 ID"),
+				"choice": str("keepNew 或 keepOld"),
+			}, "id", "choice")),
+
+		// ===== 系统 =====
+		t("get_system_logs", "查询系统运行日志",
+			param(map[string]interface{}{
+				"lines": num("返回行数，默认 50"),
+			})),
+
+		// ===== 导出 =====
+		t("export_report", "导出资产报表（返回下载地址，Excel 格式）",
+			param(map[string]interface{}{
+				"type": str("导出类型：assets=资产总览，disposal=待处置"),
+			})),
 	}
 }
 
@@ -270,6 +408,101 @@ func Execute(name string, argsJSON string) string {
 
 	case "get_ledger_diff":
 		return ledgerDiff(limit)
+
+	// 部门
+	case "list_departments":
+		return listDepartments()
+	case "create_department":
+		return createDepartment(s("name"), s("parent"))
+	case "update_department":
+		return updateDepartment(n("id", 0), s("name"))
+	case "delete_department":
+		return deleteDepartment(n("id", 0))
+
+	// IP 规划
+	case "list_segments":
+		return listSegments()
+	case "create_segment":
+		return createSegment(s("cidr"), s("name"), s("owner"), s("desc"))
+	case "delete_segment":
+		return deleteSegment(n("id", 0))
+
+	// 模板
+	case "list_templates":
+		return listTemplates()
+	case "create_template":
+		return createTemplate(s("name"), s("ports"), s("finger"), n("concurrency", 100))
+	case "delete_template":
+		return deleteTemplate(n("id", 0))
+
+	// 服务
+	case "delete_service":
+		return deleteService(n("id", 0))
+
+	// 快照
+	case "list_snapshots":
+		return listSnapshots(s("ip"), n("limit", 20))
+
+	// 冲突
+	case "list_import_conflicts":
+		return listImportConflicts()
+
+	// 系统
+	case "get_system_config":
+		return getSystemConfig()
+	case "get_task_log":
+		return getTaskLog(n("taskId", 0), n("lines", 50))
+
+	// 统计
+	case "get_asset_trend":
+		return getAssetTrend(n("days", 30))
+	case "get_scan_coverage":
+		return getScanCoverage()
+
+	// 待处置
+	case "delete_disposal":
+		return deleteDisposal(s("ip"))
+	case "batch_delete_disposal":
+		return batchDeleteDisposal(s("ips"))
+
+	// 节点
+	case "delete_node":
+		return deleteNode(n("id", 0))
+	case "upgrade_node":
+		return upgradeNode(n("id", 0))
+
+	// 排除
+	case "list_excludes":
+		return listExcludes()
+	case "create_exclude":
+		return createExclude(s("range"), s("reason"))
+	case "delete_exclude":
+		return deleteExclude(n("id", 0))
+
+	// 通知
+	case "get_notify_config":
+		return getNotifyConfig()
+
+	// 冲突
+	case "resolve_conflict":
+		return resolveConflict(n("id", 0), s("choice"))
+
+	// 系统
+	case "get_system_logs":
+		return jsonOut(map[string]string{
+			"hint": "系统日志请在「故障和日志」页面查看，或访问 /api/system/logs",
+		})
+
+	// 导出
+	case "export_report":
+		t := s("type")
+		if t == "" {
+			t = "assets"
+		}
+		return jsonOut(map[string]string{
+			"downloadUrl": "/api/export/excel?type=" + t,
+			"hint":        "需要带 Token 访问该地址下载 Excel",
+		})
 	}
 	return jsonOut(map[string]string{"error": "未知工具: " + name})
 }
@@ -583,4 +816,419 @@ func SystemPrompt() string {
 - 查数据用工具，不要编造
 - 涉及删除等危险操作，先说明影响范围，等用户确认
 - 数据量大时先给汇总，再问是否需要明细`
+}
+
+// ============ 部门管理 ============
+
+func listDepartments() string {
+	var items []model.Department
+	config.DB.Order("sort, id").Find(&items)
+
+	// 统计每个部门下的资产数
+	type stat struct {
+		Department string
+		Cnt        int64
+	}
+	var stats []stat
+	config.DB.Model(&model.Asset{}).Select("department, COUNT(*) as cnt").
+		Where("department != ''").Group("department").Scan(&stats)
+	m := map[string]int64{}
+	for _, s := range stats {
+		m[s.Department] = s.Cnt
+	}
+
+	type item struct {
+		model.Department
+		AssetCount int64 `json:"assetCount"`
+	}
+	var out []item
+	for _, d := range items {
+		out = append(out, item{Department: d, AssetCount: m[d.Name]})
+	}
+	return jsonOut(map[string]interface{}{"count": len(out), "items": out})
+}
+
+func createDepartment(name, parent string) string {
+	if name == "" {
+		return jsonOut(map[string]string{"error": "需要 name"})
+	}
+	d := model.Department{Name: name}
+	if parent != "" {
+		var p model.Department
+		if err := config.DB.Where("name = ?", parent).First(&p).Error; err == nil {
+			d.ParentID = &p.ID
+		}
+	}
+	if err := config.DB.Create(&d).Error; err != nil {
+		return jsonOut(map[string]string{"error": err.Error()})
+	}
+	return jsonOut(map[string]interface{}{"ok": true, "id": d.ID})
+}
+
+func updateDepartment(id int, name string) string {
+	if id == 0 || name == "" {
+		return jsonOut(map[string]string{"error": "需要 id 和 name"})
+	}
+	res := config.DB.Model(&model.Department{}).Where("id = ?", id).Update("name", name)
+	if res.RowsAffected == 0 {
+		return jsonOut(map[string]string{"error": "部门不存在"})
+	}
+	return jsonOut(map[string]interface{}{"ok": true})
+}
+
+func deleteDepartment(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	// 先看有多少资产在用
+	var d model.Department
+	if err := config.DB.First(&d, id).Error; err != nil {
+		return jsonOut(map[string]string{"error": "部门不存在"})
+	}
+	var cnt int64
+	config.DB.Model(&model.Asset{}).Where("department = ?", d.Name).Count(&cnt)
+	if cnt > 0 {
+		return jsonOut(map[string]interface{}{
+			"error": "该部门下还有 " + itoa(int(cnt)) + " 个资产，请先转移",
+			"assetCount": cnt,
+		})
+	}
+	config.DB.Delete(&model.Department{}, id)
+	return jsonOut(map[string]interface{}{"ok": true})
+}
+
+// ============ IP 规划 ============
+
+func listSegments() string {
+	var items []model.IPSegment
+	config.DB.Order("cidr").Find(&items)
+	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+}
+
+func createSegment(cidr, name, owner, desc string) string {
+	if cidr == "" {
+		return jsonOut(map[string]string{"error": "需要 cidr"})
+	}
+	s := model.IPSegment{Name: name, CIDR: cidr, Description: desc}
+	if err := config.DB.Create(&s).Error; err != nil {
+		return jsonOut(map[string]string{"error": err.Error()})
+	}
+	return jsonOut(map[string]interface{}{"ok": true, "id": s.ID})
+}
+
+func deleteSegment(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	config.DB.Delete(&model.IPSegment{}, id)
+	return jsonOut(map[string]interface{}{"ok": true})
+}
+
+// ============ 扫描模板 ============
+
+func listTemplates() string {
+	var items []model.ScanTemplate
+	config.DB.Order("id").Find(&items)
+	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+}
+
+func createTemplate(name, ports, finger string, concurrency int) string {
+	if name == "" {
+		return jsonOut(map[string]string{"error": "需要 name"})
+	}
+	t := model.ScanTemplate{Name: name, Ports: ports, Finger: finger, Thread: concurrency}
+	if err := config.DB.Create(&t).Error; err != nil {
+		return jsonOut(map[string]string{"error": err.Error()})
+	}
+	return jsonOut(map[string]interface{}{"ok": true, "id": t.ID})
+}
+
+func deleteTemplate(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	config.DB.Delete(&model.ScanTemplate{}, id)
+	return jsonOut(map[string]interface{}{"ok": true})
+}
+
+// ============ 服务 / 快照 / 冲突 ============
+
+func deleteService(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	res := config.DB.Delete(&model.Service{}, id)
+	if res.RowsAffected == 0 {
+		return jsonOut(map[string]string{"error": "服务不存在"})
+	}
+	return jsonOut(map[string]interface{}{"ok": true})
+}
+
+func listSnapshots(ip string, limit int) string {
+	q := config.DB.Model(&model.PageSnapshot{})
+	if ip != "" {
+		q = q.Where("url ILIKE ?", "%"+ip+"%")
+	}
+	var items []model.PageSnapshot
+	q.Order("id DESC").Limit(limit).Find(&items)
+	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+}
+
+func listImportConflicts() string {
+	var items []model.ImportConflict
+	config.DB.Order("id DESC").Limit(50).Find(&items)
+	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+}
+
+// ============ 系统 ============
+
+func getSystemConfig() string {
+	var unresolvedFaults int64
+	config.DB.Model(&model.Fault{}).Where("resolved_at IS NULL").Count(&unresolvedFaults)
+
+	var profileTotal, profileEnabled int64
+	config.DB.Model(&model.LLMProfile{}).Count(&profileTotal)
+	config.DB.Model(&model.LLMProfile{}).Where("enabled = ?", true).Count(&profileEnabled)
+
+	return jsonOut(map[string]interface{}{
+		"llmProfiles":       profileTotal,
+		"llmEnabled":        profileEnabled,
+		"unresolvedFaults":  unresolvedFaults,
+	})
+}
+
+func getTaskLog(taskID, lines int) string {
+	if taskID == 0 {
+		return jsonOut(map[string]string{"error": "需要 taskId"})
+	}
+	var runs []model.TaskRun
+	config.DB.Where("task_id = ?", taskID).Order("id DESC").Limit(1).Find(&runs)
+	if len(runs) == 0 {
+		return jsonOut(map[string]string{"error": "暂无执行记录"})
+	}
+	r := runs[0]
+	return jsonOut(map[string]interface{}{
+		"taskId": taskID, "runId": r.ID, "status": r.Status,
+		"startedAt": r.StartedAt, "finishedAt": r.FinishedAt,
+		"durationSec": r.DurationSec, "totalIps": r.TotalIPs,
+		"aliveIps": r.AliveIPs, "appsFound": r.AppsFound, "appsNew": r.AppsNew,
+		"violations": r.Violations,
+		"hint": "实时日志请在「扫描」页面查看，或访问 /api/tasks/" + itoa(taskID) + "/log",
+	})
+}
+
+// ============ 统计 ============
+
+func getAssetTrend(days int) string {
+	if days <= 0 || days > 90 {
+		days = 30
+	}
+	type row struct {
+		Day   string `json:"day"`
+		Count int64  `json:"count"`
+	}
+	var rows []row
+	config.DB.Model(&model.Asset{}).
+		Select("TO_CHAR(created_at, 'MM-DD') as day, COUNT(*) as count").
+		Where("created_at >= NOW() - INTERVAL '1 day' * ?", days).
+		Group("day").Order("day").Scan(&rows)
+	return jsonOut(map[string]interface{}{"days": days, "trend": rows})
+}
+
+func getScanCoverage() string {
+	var segmentCount, assetCount, serviceCount int64
+	config.DB.Model(&model.IPSegment{}).Count(&segmentCount)
+	config.DB.Model(&model.Asset{}).Count(&assetCount)
+	config.DB.Model(&model.Service{}).Count(&serviceCount)
+	return jsonOut(map[string]interface{}{
+		"segments":     segmentCount,
+		"assets":       assetCount,
+		"services":     serviceCount,
+	})
+}
+
+// ---- 小工具 ----
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}
+
+func splitLines(s string) []string {
+	var out []string
+	cur := ""
+	for _, r := range s {
+		if r == '\n' {
+			out = append(out, cur)
+			cur = ""
+		} else {
+			cur += string(r)
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func joinLines(lines []string) string {
+	out := ""
+	for i, l := range lines {
+		if i > 0 {
+			out += "\n"
+		}
+		out += l
+	}
+	return out
+}
+
+// ============ 待处置 ============
+
+func deleteDisposal(ip string) string {
+	if ip == "" {
+		return jsonOut(map[string]string{"error": "需要 ip"})
+	}
+	tx := config.DB.Begin()
+	tx.Where("ip = ?", ip).Delete(&model.Service{})
+	res := tx.Where("ip = ? AND status = ?", ip, "pending").Delete(&model.Asset{})
+	if res.RowsAffected == 0 {
+		tx.Rollback()
+		return jsonOut(map[string]string{"error": "待处置池中没有该 IP"})
+	}
+	tx.Commit()
+	return jsonOut(map[string]interface{}{"ok": true, "ip": ip})
+}
+
+func batchDeleteDisposal(ips string) string {
+	if ips == "" {
+		return jsonOut(map[string]string{"error": "需要 ips"})
+	}
+	list := splitIPs(ips)
+	tx := config.DB.Begin()
+	tx.Where("ip IN ?", list).Delete(&model.Service{})
+	res := tx.Where("ip IN ? AND status = ?", list, "pending").Delete(&model.Asset{})
+	tx.Commit()
+	return jsonOut(map[string]interface{}{"ok": true, "affected": res.RowsAffected, "total": len(list)})
+}
+
+// ============ 节点 ============
+
+func deleteNode(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	var n model.Node
+	if err := config.DB.First(&n, id).Error; err != nil {
+		return jsonOut(map[string]string{"error": "节点不存在"})
+	}
+	config.DB.Delete(&model.Node{}, id)
+	return jsonOut(map[string]interface{}{"ok": true, "deleted": n.Name})
+}
+
+func upgradeNode(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	res := config.DB.Model(&model.Node{}).Where("id = ?", id).
+		Update("upgrade_requested", true)
+	if res.RowsAffected == 0 {
+		return jsonOut(map[string]string{"error": "节点不存在"})
+	}
+	return jsonOut(map[string]interface{}{"ok": true, "message": "已标记升级，节点下次心跳时执行"})
+}
+
+// ============ 排除范围 ============
+
+func listExcludes() string {
+	var items []model.ExcludeRange
+	config.DB.Order("id DESC").Find(&items)
+	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+}
+
+func createExclude(rng, reason string) string {
+	if rng == "" {
+		return jsonOut(map[string]string{"error": "需要 range"})
+	}
+	e := model.ExcludeRange{IPRange: rng, Reason: reason}
+	if err := config.DB.Create(&e).Error; err != nil {
+		return jsonOut(map[string]string{"error": err.Error()})
+	}
+	return jsonOut(map[string]interface{}{"ok": true, "id": e.ID})
+}
+
+func deleteExclude(id int) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	config.DB.Delete(&model.ExcludeRange{}, id)
+	return jsonOut(map[string]interface{}{"ok": true})
+}
+
+// ============ 通知 ============
+
+func getNotifyConfig() string {
+	var s model.SystemSettings
+	config.DB.First(&s)
+	return jsonOut(map[string]interface{}{
+		"settings": s,
+		"hint":     "通知详细配置请在「通知设置」页面修改",
+	})
+}
+
+// ============ 冲突 ============
+
+func resolveConflict(id int, choice string) string {
+	if id == 0 {
+		return jsonOut(map[string]string{"error": "需要 id"})
+	}
+	var cf model.ImportConflict
+	if err := config.DB.First(&cf, id).Error; err != nil {
+		return jsonOut(map[string]string{"error": "冲突记录不存在"})
+	}
+
+	switch choice {
+	case "keepNew":
+		config.DB.Model(&model.Asset{}).Where("ip = ?", cf.IP).Updates(map[string]interface{}{
+			"system_name": cf.NewSystem, "owner": cf.NewOwner, "department": cf.NewDept,
+		})
+	case "keepOld":
+		// 什么都不做，只删冲突记录
+	default:
+		return jsonOut(map[string]string{"error": "choice 必须是 keepNew 或 keepOld"})
+	}
+	config.DB.Delete(&model.ImportConflict{}, id)
+	return jsonOut(map[string]interface{}{"ok": true, "ip": cf.IP, "choice": choice})
+}
+
+func splitIPs(s string) []string {
+	var out []string
+	cur := ""
+	for _, r := range s {
+		if r == ',' || r == '\n' || r == ';' || r == ' ' {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+		} else {
+			cur += string(r)
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
 }
