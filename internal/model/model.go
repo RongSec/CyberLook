@@ -34,6 +34,7 @@ type ScanTask struct {
 	NodeID     *uint      `gorm:"column:node_id" json:"nodeId"`
 	TemplateID *uint      `gorm:"column:template_id" json:"templateId"`
 	Modules    string     `gorm:"column:modules;default:port" json:"modules"`
+	Engine     string     `gorm:"column:engine;default:builtin" json:"engine"` // builtin=自研引擎（默认）/ tscan=TscanPlus
 	Finger     string     `gorm:"column:finger;default:tiny" json:"finger"`
 	Thread     int        `gorm:"column:thread;default:600" json:"thread"`
 	Timeout    int        `gorm:"column:timeout;default:3" json:"timeout"`

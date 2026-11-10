@@ -9,6 +9,26 @@
 
 ---
 
+## [0.0.25] - 2026-11-10（平台深度适配）
+
+### 新增
+
+- **任务级引擎选择**：ScanTask 新增 `engine` 字段（`builtin`=自研默认 / `tscan`=TscanPlus 回退），
+  迁移 040。任务创建/编辑 API、Plans.vue 表单均支持；不指定时按 `SCAN_ENGINE` 环境变量走全局默认。
+- **扫描设置页**：新增「扫描引擎」下拉；noPing/noSmart 提示更新为双引擎语义说明。
+
+### 修复
+
+- **ScanResult 字段映射对齐 TscanPlus 语义**：Title←页面 title、Fingerprint←技术栈、
+  Response←HTTP 响应体（ingestService 算页面 SimHash 依赖它）、StatusCode/ContentLength←HTTP 实值、
+  OS←SMB/RDP 握手、Mid←产品。此前 Response 误填 Banner、StatusCode 恒空，会导致 content_changed 误判。
+- **超时单位 bug**：本地任务路径把秒当毫秒传给扫描器（task.Timeout=3 → 3ms）。
+  现在统一按毫秒传（`task.Timeout*1000`），引擎侧兼容 <100 视为秒。
+- **默认端口对齐**：未指定 Ports 时用 Top100（与 TscanClient 一致），此前是 top1000。
+- **Modules/Finger 参数语义**：Modules=port 时跳过 HTTP 识别；Finger=tiny 时不做主动探针。
+
+---
+
 ## [0.0.25] - 2026-11-09
 
 ### 新增

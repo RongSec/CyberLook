@@ -22,9 +22,17 @@ type Service struct {
 	Version  string   `json:"version"`
 	Banner   string   `json:"banner,omitempty"`
 	TLS      bool     `json:"tls"`
-	Source   string   `json:"source"` // probe / web-rule / http-title
+	Source   string   `json:"source"` // probe / web-rule / http-title / win-probe / service-probe / port-hint
 	Evidence []string `json:"evidence,omitempty"`
 	Score    int      `json:"score"`
+
+	// 平台 ingestService 消费的字段（与 TscanPlus 的 ScanResult 对齐）
+	Title        string `json:"title,omitempty"`        // 页面 <title>（非产品名）
+	StatusCode   string `json:"statusCode,omitempty"`   // HTTP 状态码
+	BodyLen      int    `json:"bodyLen"`                // HTTP 响应体长度
+	Body         string `json:"body,omitempty"`         // HTTP 响应体（算页面 SimHash 用）
+	OS           string `json:"os,omitempty"`           // SMB/RDP 握手拿到的 OS
+	Fingerprint  string `json:"fingerprint,omitempty"` // 技术栈（产品+版本，逗号分隔）
 }
 
 // IdentOptions 识别参数
@@ -70,6 +78,9 @@ func Identify(ctx context.Context, ip string, port int, opt IdentOptions) Servic
 				if v != "" {
 					res.Version = v
 				}
+				if extra != "" {
+					res.OS = extra
+				}
 				res.Banner = mergeExtra(ban, extra)
 			}
 		}
@@ -81,7 +92,8 @@ func Identify(ctx context.Context, ip string, port int, opt IdentOptions) Servic
 		if pr.Product == "" && (pr.Protocol == "tcp" || pr.Protocol == "msrpc") {
 			httpOpt.HTTPTimeout = 2500 * time.Millisecond // 未知端口兜底，短超时
 		}
-		if hdrs, body, title, mmh3, md5h, certHint, isTLS, ok := grabHTTP(ctx, ip, port, httpOpt); ok {
+		if hdrs, body, title, mmh3, md5h, certHint, status, isTLS, ok := grabHTTP(ctx, ip, port, httpOpt); ok {
+			res.Title, res.StatusCode, res.Body, res.BodyLen = title, status, body, len(body)
 			res.TLS = isTLS
 			if res.Protocol == "" || res.Protocol == "tcp" {
 				if isTLS {
@@ -166,6 +178,11 @@ func Identify(ctx context.Context, ip string, port int, opt IdentOptions) Servic
 	if len([]rune(res.Product)) < 2 {
 		res.Product = ""
 	}
+	// 技术栈字符串（产品+版本），供平台 fingerprint 字段使用
+	res.Fingerprint = res.Product
+	if res.Version != "" {
+		res.Fingerprint = res.Product + "/" + res.Version
+	}
 	return res
 }
 
@@ -193,7 +210,7 @@ func isHTTPish(pr ProbeResult, port int) bool {
 // grabHTTP 抓页面（容忍 3xx/4xx/自签证书/跨 scheme 重定向），返回 header/body/title/favicon 双哈希/证书线索。
 // 关键改动：**任何 HTTP 响应都算成功**（包括 301/403/500），因为 Server 头本身就能定产品；
 // 重定向失败时保留上一跳的响应，而不是整体放弃。
-func grabHTTP(ctx context.Context, ip string, port int, opt IdentOptions) (headers, body, title, mmh3, md5h, certHint string, isTLS, ok bool) {
+func grabHTTP(ctx context.Context, ip string, port int, opt IdentOptions) (headers, body, title, mmh3, md5h, certHint string, statusCode string, isTLS, ok bool) {
 	schemes := []string{"http", "https"}
 	if port == 443 || port == 8443 || port == 9443 {
 		schemes = []string{"https", "http"}
@@ -211,27 +228,29 @@ func grabHTTP(ctx context.Context, ip string, port int, opt IdentOptions) (heade
 	}
 
 	bestHeaders, bestBody, bestTitle, bestMMH3, bestMD5, bestCert := "", "", "", "", "", ""
+	bestStatus := ""
 	bestTLS, bestOK, bestScore := false, false, -1
 
 	for _, sch := range schemes {
-		hdrs, body, title, mmh3, md5h, cert, tlsOK, ok2, score := httpFetchFollow(ctx, cl, sch, ip, port, opt)
+		hdrs, body, title, mmh3, md5h, cert, status, tlsOK, ok2, score := httpFetchFollow(ctx, cl, sch, ip, port, opt)
 		if !ok2 {
 			continue
 		}
 		if score > bestScore {
 			bestHeaders, bestBody, bestTitle, bestMMH3, bestMD5, bestCert = hdrs, body, title, mmh3, md5h, cert
+			bestStatus = status
 			bestTLS, bestOK, bestScore = tlsOK, true, score
 		}
 		if score >= 300 {
 			break // 2xx 已是最好的
 		}
 	}
-	return bestHeaders, bestBody, bestTitle, bestMMH3, bestMD5, bestCert, bestTLS, bestOK
+	return bestHeaders, bestBody, bestTitle, bestMMH3, bestMD5, bestCert, bestStatus, bestTLS, bestOK
 }
 
 // httpFetchFollow 手动跟随同 host 重定向（最多 3 跳），任一跳有响应就算成功
 func httpFetchFollow(ctx context.Context, cl *http.Client, scheme, ip string, port int, opt IdentOptions) (
-	hdrs, body, title, mmh3, md5h, certHint string, isTLS, ok bool, score int) {
+	hdrs, body, title, mmh3, md5h, certHint string, statusCode string, isTLS, ok bool, score int) {
 	host := net.JoinHostPort(ip, strconv.Itoa(port))
 	url := scheme + "://" + host + "/"
 	score = -1
@@ -271,6 +290,7 @@ func httpFetchFollow(ctx context.Context, cl *http.Client, scheme, ip string, po
 		}
 		if rank > score {
 			hdrs, body, title = sb.String(), string(b), extractTitle(string(b))
+			statusCode = strconv.Itoa(status)
 			score = rank
 			if fb, e := fetchFavicon(cl, scheme, ip, port); e == nil && len(fb) > 0 {
 				md5h = FaviconHashes(fb)
@@ -299,7 +319,7 @@ func httpFetchFollow(ctx context.Context, cl *http.Client, scheme, ip string, po
 		}
 		break
 	}
-	return hdrs, body, title, mmh3, md5h, certHint, isTLS, ok, score
+	return hdrs, body, title, mmh3, md5h, certHint, statusCode, isTLS, ok, score
 }
 
 func fetchFavicon(cl *http.Client, scheme, ip string, port int) ([]byte, error) {
