@@ -54,6 +54,11 @@
           <n-select v-model:value="form.modules" multiple :options="moduleOptions" placeholder="默认端口扫描" />
         </n-form-item>
 
+        <n-form-item label="扫描引擎">
+          <n-select v-model:value="form.engine" :options="engineOptions" style="width: 220px" />
+          <span class="switch-tip">自研引擎：connect 扫描 + FingerprintHub 全量指纹；TscanPlus：原扫描器（兼容回退）</span>
+        </n-form-item>
+
         <n-form-item label="分片大小">
           <n-input-number v-model:value="form.batchSize" :min="10" :max="5000" style="width: 180px" />
           <span class="switch-tip">每批下发的 IP 数，默认 100。哪个节点完成就领下一批</span>
@@ -106,10 +111,10 @@
           <n-switch v-model:value="form.aliveProbe" /> <span class="switch-tip">开启 = 平台先探测存活、只下发存活 IP；关闭 = 直接把全部目标 IP 分批下发</span>
         </n-form-item>
         <n-form-item label="禁用存活探测(-np)">
-          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">开启 = 加 -np，跳过扫描器的 ICMP/ARP 存活探测</span>
+          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">自研引擎：connect 扫描天然不发 ICMP（等价 -np）；TscanPlus：加 -np 跳过 ICMP/ARP 探测</span>
         </n-form-item>
         <n-form-item label="禁用启发式扫描">
-          <n-switch v-model:value="form.noSmart" /> <span class="switch-tip">开启 = 加 -nosmart，跳过智能扫描</span>
+          <n-switch v-model:value="form.noSmart" /> <span class="switch-tip">自研引擎：按给定端口全扫，无启发式裁剪（等价 -nosmart）；TscanPlus：加 -nosmart</span>
         </n-form-item>
         <n-form-item label="额外参数">
           <n-input v-model:value="form.extraArgs" placeholder="可选，如 -pa 8080,9000" />
@@ -329,7 +334,11 @@ const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const showCreate = ref(false)
 const creating = ref(false)
-const form = ref({ name: '', templateId: null, modules: ['port', 'url'], batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
+const engineOptions = [
+  { label: '自研引擎（默认）', value: 'builtin' },
+  { label: 'TscanPlus（回退兼容）', value: 'tscan' },
+]
+const form = ref({ name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
 const nodes = ref([])
 const nodeOptions = computed(() => [
   { label: '全部节点', value: 'all' },
@@ -341,7 +350,7 @@ const templateOptions = ref([])
 const templates = ref([])
 
 const showTpl = ref(false)
-const tplForm = ref({ id: 0, name: '', modules: ['port'], portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '' })
+const tplForm = ref({ id: 0, name: '', modules: ['port'], engine: 'builtin', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '' })
 
 const showLog = ref(false)
 const logLines = ref([])
@@ -610,6 +619,7 @@ async function create(run) {
       name: form.value.name,
       ipRanges: parts.join(','),
       modules: form.value.modules.join(','),
+      engine: form.value.engine,
       portMode: form.value.portMode,
       ports: form.value.ports,
       batchSize: form.value.batchSize,
@@ -629,7 +639,7 @@ async function create(run) {
     showCreate.value = false
     cronInterval.value = ''
     cronHour.value = 2
-    form.value = { name: '', templateId: null, modules: ['port', 'url'], batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] }
+    form.value = { name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] }
     load()
   } catch (e) { message.error(e.response?.data?.error || '创建失败') } finally { creating.value = false }
 }
@@ -733,7 +743,7 @@ const showConfig = ref(false)
 const configTask = ref(null)
 const canEdit = ref(false)
 const savingCfg = ref(false)
-const editForm = ref({ name: '', ipRanges: '', segments: [], assets: [], manual: '', modules: [], portMode: 'top100', ports: '', batchSize: 100, thread: 600, timeout: 3, finger: 'tiny', nodeIds: [], cron: '' })
+const editForm = ref({ name: '', ipRanges: '', segments: [], assets: [], manual: '', modules: [], engine: 'builtin', portMode: 'top100', ports: '', batchSize: 100, thread: 600, timeout: 3, finger: 'tiny', nodeIds: [], cron: '' })
 
 // 编辑时的节点选项（含「全部节点」）
 const editNodeOptions = computed(() => [
@@ -828,6 +838,7 @@ async function saveTaskCfg() {
       name: editForm.value.name,
       ipRanges: mergeIpRanges(editForm.value),
       modules: editForm.value.modules.join(','),
+      engine: editForm.value.engine,
       portMode: editForm.value.portMode,
       ports: editForm.value.ports,
       batchSize: editForm.value.batchSize,

@@ -1,6 +1,8 @@
 package service
 
 import (
+	"os"
+	"strconv"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,10 +32,21 @@ import (
 // 必须把真实请求行、响应头、页面内容喂进去才有意义。
 
 const (
-	aiIdentifyMaxPerTask = 100
-	aiIdentifyWorkers    = 3
-	aiIdentifyQueueSize  = 2000
+	aiIdentifyWorkers   = 3
+	aiIdentifyQueueSize = 2000
 )
+
+// aiIdentifyMaxPerTask 每个任务最多识别多少条服务。
+// 历史值 100 导致上万 web 端口只有前 100 条走识别，其余静默丢弃。
+// 现在默认 2000，可用环境变量 AI_IDENTIFY_MAX_PER_TASK 覆盖。
+func aiIdentifyMaxPerTask() int {
+	if v := os.Getenv("AI_IDENTIFY_MAX_PER_TASK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2000
+}
 
 // IdentStage 识别链路的一步
 type IdentStage struct {
@@ -123,8 +136,12 @@ func EnqueueAIIdentify(taskID uint, ip string, port int) {
 		return
 	}
 	aiCountMu.Lock()
-	if aiCount[taskID] >= aiIdentifyMaxPerTask {
+	if aiCount[taskID] >= aiIdentifyMaxPerTask() {
+		n := aiCount[taskID]
 		aiCountMu.Unlock()
+		// 不再静默丢弃：显式记日志，便于发现"识别只跑了前 N 条"
+		log.Printf("[ai-ident] 任务 #%d 已达识别上限 %d 条，跳过 %s:%d（可用 AI_IDENTIFY_MAX_PER_TASK 调整）",
+			taskID, n, ip, port)
 		return
 	}
 	aiCount[taskID]++
@@ -134,6 +151,7 @@ func EnqueueAIIdentify(taskID uint, ip string, port int) {
 	select {
 	case aiQueue <- aiIdentifyJob{TaskID: taskID, IP: ip, Port: port}:
 	default:
+		log.Printf("[ai-ident] 任务 #%d 识别队列已满（%d），丢弃 %s:%d", taskID, aiIdentifyQueueSize, ip, port)
 	}
 }
 

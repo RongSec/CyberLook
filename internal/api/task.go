@@ -44,6 +44,7 @@ func CreateTask(c *gin.Context) {
 		Cron       string `json:"cron"`
 		TemplateID *uint  `json:"templateId"`
 		Modules    string `json:"modules"`
+		Engine     string `json:"engine"` // builtin / tscan
 		Finger     string `json:"finger"`
 		Thread     int    `json:"thread"`
 		Timeout    int    `json:"timeout"`
@@ -70,7 +71,7 @@ func CreateTask(c *gin.Context) {
 	in := service.TaskInput{
 		Name: req.Name, IPRanges: req.IPRanges, PortMode: req.PortMode, Ports: req.Ports,
 		AliveProbe: aliveProbe,
-		Cron: req.Cron, TemplateID: req.TemplateID, Modules: req.Modules, Finger: req.Finger,
+		Cron: req.Cron, TemplateID: req.TemplateID, Modules: req.Modules, Engine: req.Engine, Finger: req.Finger,
 		Thread: req.Thread, Timeout: req.Timeout, NoPing: req.NoPing, NoSmart: req.NoSmart,
 		ExtraArgs: req.ExtraArgs, NodeIDs: req.NodeIDs, BatchSize: req.BatchSize,
 	}
@@ -230,6 +231,7 @@ func UpdateTask(c *gin.Context) {
 		Name      string `json:"name"`
 		IPRanges  string `json:"ipRanges"`
 		Modules   string `json:"modules"`
+		Engine    string `json:"engine"`
 		PortMode  string `json:"portMode"`
 		Ports     string `json:"ports"`
 		Thread    int    `json:"thread"`
@@ -248,6 +250,7 @@ func UpdateTask(c *gin.Context) {
 	}
 	if err := config.DB.Model(&task).Updates(map[string]interface{}{
 		"name": req.Name, "ip_ranges": req.IPRanges, "modules": req.Modules,
+		"engine": req.Engine,
 		"port_mode": req.PortMode, "ports": req.Ports, "thread": req.Thread,
 		"timeout": req.Timeout, "finger": req.Finger, "no_ping": req.NoPing,
 		"no_smart": req.NoSmart, "extra_args": req.ExtraArgs, "cron": req.Cron,

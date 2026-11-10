@@ -37,6 +37,7 @@ type ScanResult struct {
 
 // ScanOptions 扫描参数（由模板/任务拼接）
 type ScanOptions struct {
+	Engine    string // 引擎选择：builtin=自研（默认）/ tscan=TscanPlus；空=按 SCAN_ENGINE 环境变量
 	ProjectID string // -pr 项目名（并发任务隔离用）
 	Modules   string // -m 模块，如 port 或 port,url,poc（默认 port）
 	Ports     string // 端口（空=Top100）
@@ -73,8 +74,8 @@ func StopScan(projectID string) bool {
 // RunPortScan 执行扫描：目标展开去重排除 → 写 host 文件 → 拼接命令 → 实时输出/入库 → 读 ipscan
 // onResult 为可选的实时结果回调（扫描过程中每发现新结果即回调，用于实时入库）
 func RunPortScan(targets, excludes []string, opts ScanOptions, logFn LogFunc, onResult func([]ScanResult)) ([]ScanResult, error) {
-	// 自研引擎：SCAN_ENGINE=builtin 时完全不调用 TscanPlus（灰度开关，默认仍走原链路）
-	if UseBuiltinEngine() {
+	// 引擎路由：任务级 opts.Engine 优先，否则按全局默认（SCAN_ENGINE 环境变量）
+	if useEngine(opts.Engine) {
 		return RunBuiltinPortScan(targets, excludes, opts, logFn, onResult)
 	}
 	if TscanClientPath == "" {
@@ -331,35 +332,11 @@ func readTable(dbPath, table, projectID string) ([]ScanResult, error) {
 		// 指纹：过滤安全特性 + 从响应体补充产品指纹
 		r.Fingerprint = enhanceFingerprint(cleanFingerprint(cleanNone(banner)), respBody)
 
-		// 二次识别 + 合并（只对 title 空/通用词的服务，避免过多请求）
-		needEnhance := isGenericTitle(r.Title) || r.Fingerprint == ""
-		if needEnhance && r.Protocol != "" {
-			newResult := identifyEnhanced(r.Protocol, r.IP, r.Port)
-			if newResult != nil {
-				// 合并 title
-				finalTitle, titleSrc, titleChanged := MergeIdentification(r.Title, newResult.Title)
-				if titleChanged {
-					// 保存旧值用于对比
-					if r.Title != "" {
-						// 旧值需要保存（用于对比）
-						_ = titleSrc
-					}
-				}
-				r.Title = finalTitle
-
-				// 合并 fingerprint
-				finalFP, _, fpChanged := MergeFingerprint(r.Fingerprint, newResult.Fingerprint)
-				if fpChanged {
-					// 保存旧值
-				}
-				r.Fingerprint = finalFP
-
-				// 补充 meta description（如果 title 还是空）
-				if r.Title == "" && newResult.MetaDesc != "" {
-					r.Title = newResult.MetaDesc
-				}
-			}
-		}
+		// 注意：这里**不做**二次识别（identifyEnhanced）。
+		// 历史上 readTable 被 500ms ticker 反复调用，每次对泛标题服务同步发 GET（8s 超时），
+		// 同一服务在扫描期被反复识别几十上百次，是比 LLM 更贵的隐藏瓶颈。
+		// 识别统一交给 ingestService 之后的识别链路（本地产品库/规则/LLM），
+		// readTable 只负责「读 + 解析」，不发任何网络请求。
 		r.StatusCode = cleanStatus(statusCode)
 		if n, e := strconv.Atoi(strings.TrimSpace(lenBody)); e == nil {
 			r.ContentLength = n

@@ -30,6 +30,7 @@ type TaskInput struct {
 	Cron       string
 	TemplateID *uint
 	Modules    string
+	Engine     string // builtin / tscan
 	Finger     string
 	Thread     int
 	Timeout    int
@@ -46,7 +47,7 @@ func CreateTask(in TaskInput) (*model.ScanTask, error) {
 	task := model.ScanTask{
 		Name: in.Name, IPRanges: in.IPRanges, PortMode: in.PortMode, Ports: in.Ports,
 		Cron: in.Cron, Status: "pending", TemplateID: in.TemplateID,
-		Modules: in.Modules, Finger: in.Finger,
+		Modules: in.Modules, Engine: in.Engine, Finger: in.Finger,
 		Thread: in.Thread, Timeout: in.Timeout, NoPing: in.NoPing, NoSmart: in.NoSmart,
 		AliveProbe: in.AliveProbe,
 		ExtraArgs: in.ExtraArgs, NodeIDs: in.NodeIDs, BatchSize: in.BatchSize,
@@ -208,9 +209,13 @@ func ExecuteTask(taskID uint) error {
 	opts := scanner.ScanOptions{
 		ProjectID: taskProjectID(task),
 		Modules:   task.Modules, Finger: task.Finger,
-		Ports:     ports, Thread: task.Thread, Timeout: task.Timeout,
+		Ports:     ports, Thread: task.Thread, Timeout: task.Timeout * 1000, // 秒→毫秒（与 agent 侧一致）
 		NoPing: task.NoPing, NoSmart: task.NoSmart,
 		ExtraArgs: task.ExtraArgs,
+	}
+	// 引擎选择：任务级 task.Engine 优先，未指定时走全局默认（SCAN_ENGINE 环境变量）
+	if task.Engine != "" {
+		opts.Engine = task.Engine
 	}
 	results, err := scanner.RunPortScan(targets, ExcludeRangeStrings(), opts, func(line string, isProgress bool) {
 		if isProgress {
