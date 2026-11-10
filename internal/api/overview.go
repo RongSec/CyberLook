@@ -130,6 +130,17 @@ func buildOverview(taskID uint, totalIPs, aliveIPs int) gin.H {
 	}
 	qvn.Count(&vioNew)
 
+	// 存活数就用探测阶段的命中数（alive_count），这才是「存活探测」的语义。
+	// 不要改成 count(distinct ip)：那是「有服务发现的 IP 数」，会把存活但没开放端口的主机漏掉
+	// （实测 alive_count=1349 vs 有服务的 IP=1271）。另外注意别把「服务条数」当 IP 数——
+	// 一个 IP 平均有 11 个端口，服务条数是 IP 数的十倍多。
+	if aliveIPs <= 0 {
+		var aliveDedup int64
+		config.DB.Model(&model.Service{}).Where("last_task_id = ?", taskID).
+			Distinct("ip").Count(&aliveDedup)
+		aliveIPs = int(aliveDedup)
+	}
+
 	return gin.H{
 		"totalIps": totalIPs, "aliveIps": aliveIPs,
 		"appsFound": appsFound, "appsNew": appsNew,

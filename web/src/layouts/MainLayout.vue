@@ -83,12 +83,12 @@
         <n-layout-footer class="footer">
           <div class="foot-left">
             <span class="dot" :class="{ live: stats.runningTasks > 0 }"></span>
-            <span>运行中任务 <b class="accent">{{ stats.runningTasks }}</b></span>
+            <span>运行中任务 <b class="accent">{{ stats.runningTasks ?? 0 }}</b></span>
           </div>
           <div class="foot-right">
-            <span>CPU <b :style="{ color: cpuColor }">{{ stats.cpuPercent.toFixed(1) }}%</b></span>
+            <span>CPU <b :style="{ color: cpuColor }">{{ (stats.cpuPercent ?? 0).toFixed(1) }}%</b></span>
             <span class="sep">·</span>
-            <span>内存 <b>{{ stats.memUsedMB }} / {{ stats.memTotalMB }} MB</b></span>
+            <span>内存 <b>{{ stats.memUsedMB ?? 0 }} / {{ stats.memTotalMB ?? 0 }} MB</b></span>
           </div>
         </n-layout-footer>
       </n-layout>
@@ -228,7 +228,11 @@ async function savePassword() {
 }
 
 async function loadStats() {
-  try { stats.value = await api.get('/system/stats') } catch (e) { /* ignore */ }
+  try {
+    // 合并而不是整体覆盖：接口若少返回字段（版本差异/字段调整），
+    // 保留默认值，避免 stats.cpuPercent 变 undefined 后 toFixed 抛错
+    stats.value = { ...stats.value, ...(await api.get('/system/stats')) }
+  } catch (e) { /* ignore */ }
 }
 
 async function openTerminal() {

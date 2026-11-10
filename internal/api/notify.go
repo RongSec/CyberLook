@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"net/http"
 	"time"
 
@@ -16,6 +17,20 @@ func GetNotifySettings(c *gin.Context) {
 	if err := config.DB.First(&s, 1).Error; err != nil {
 		c.JSON(http.StatusOK, service.NotifySettings{EmailPort: 465, EmailSSL: true, OnTaskDone: true, OnNewAsset: true, OnViolation: true})
 		return
+	}
+	// 模板留空时把默认文案返回给前端，用户可以直接看到并修改
+	dt, dn, dv, df := service.DefaultTemplates()
+	if strings.TrimSpace(s.TplTaskDone) == "" {
+		s.TplTaskDone = dt
+	}
+	if strings.TrimSpace(s.TplNewAsset) == "" {
+		s.TplNewAsset = dn
+	}
+	if strings.TrimSpace(s.TplViolation) == "" {
+		s.TplViolation = dv
+	}
+	if strings.TrimSpace(s.TplFault) == "" {
+		s.TplFault = df
 	}
 	c.JSON(http.StatusOK, s)
 }
@@ -45,6 +60,10 @@ func SaveNotifySettings(c *gin.Context) {
 		"on_new_asset":     req.OnNewAsset,
 		"on_violation":     req.OnViolation,
 		"notify_faults":    req.OnFault,
+		"tpl_task_done":    req.TplTaskDone,
+		"tpl_new_asset":    req.TplNewAsset,
+		"tpl_violation":    req.TplViolation,
+		"tpl_fault":        req.TplFault,
 	}
 	if req.EmailPass != "" {
 		updates["email_pass"] = req.EmailPass

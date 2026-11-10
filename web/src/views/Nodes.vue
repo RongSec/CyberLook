@@ -347,7 +347,9 @@ async function genToken() {
   // Linux：sudo 安装 systemd 服务（开机自启 + 崩溃自动重启）
   linuxCmd.value = `curl -fsSL "${base}/api/nodes/install.sh?token=${res.token}" | sudo bash`
   // Windows：脚本内部自动申请一次 UAC，之后计划任务常驻 + 看门狗自愈
-  winCmd.value = `powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -useb '${base}/api/nodes/install.ps1?token=${res.token}' | iex"`
+  // 必须用 irm（Invoke-RestMethod 返回字符串）。iwr 返回响应对象，管道进 iex 时走
+  // ToString() 的丢字符转换：中文变 "?"、BOM 变 "???"，首行被当命令名报错（PS 5.1 实测）
+  winCmd.value = `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm '${base}/api/nodes/install.ps1?token=${res.token}' | iex"`
   expireAt.value = new Date(Date.now() + res.expiresIn * 1000).toLocaleTimeString('zh-CN')
   message.success('令牌已生成，请在 5 分钟内使用')
 }
@@ -363,9 +365,21 @@ async function upgrade(row) {
 }
 
 async function del(id) {
-  await api.delete(`/nodes/${id}`)
-  message.success('已删除')
+  try {
+    const res = await api.delete(`/nodes/${id}`)
+    message.success(res?.message || '已删除')
+  } catch (e) {
+    message.error(e.response?.data?.error || '删除失败')
+    return
+  }
   load()
+  // 在线节点走"下发卸载 → agent 自清理退出 → 中心再删行"，是异步的：
+  // 这里每 15 秒刷一次列表，最多 6 次，让列表自己跟上
+  let n = 0
+  const timer = setInterval(() => {
+    load()
+    if (++n >= 6) clearInterval(timer)
+  }, 15000)
 }
 
 // ===== 节点配置 / 健康检查 =====

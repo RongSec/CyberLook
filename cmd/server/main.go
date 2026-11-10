@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"path"
 	"fmt"
 	"asset-platform/internal/model"
@@ -19,7 +20,26 @@ import (
 )
 
 func main() {
+	// 内网设备常用老式自签证书（负序列号），Go 1.23+ 默认在解析阶段就拒绝，
+	// 连 InsecureSkipVerify 都绕不过去，导致 HTTPS 目标抓不到请求响应包。
+	// 打开兼容开关后 TLS 握手能过，抓包/识别才可用。
+	if os.Getenv("GODEBUG") == "" {
+		_ = os.Setenv("GODEBUG", "x509negativeserial=1")
+	} else if !strings.Contains(os.Getenv("GODEBUG"), "x509negativeserial") {
+		_ = os.Setenv("GODEBUG", os.Getenv("GODEBUG")+",x509negativeserial=1")
+	}
 	cfg := config.Load()
+
+	// 识别链路审计（dry-run，不写业务表）：/app/asset-server audit-identify --unclear 100 --clear 30
+	if len(os.Args) > 1 && os.Args[1] == "audit-identify" {
+		runAuditIdentify(os.Args[2:])
+		return
+	}
+	// 自研端口扫描 + 识别压测（替代 TscanPlus 的对拍工具）
+	if len(os.Args) > 1 && os.Args[1] == "bench-scan" {
+		runBenchScan(os.Args[2:])
+		return
+	}
 
 	// 初始化数据库（失败仅告警，便于开发阶段先起服务）
 	config.LatestAgentVersion = config.ComputeAgentVersion()
@@ -67,6 +87,9 @@ func main() {
 			}
 		}()
 		scheduler.Start()
+		// 分片停滞看门狗：节点还活着但扫描进程卡死（scanned 长时间不涨）时收尾或回收，
+		// 否则分片永远 running，任务进度卡在 99%
+		service.StartShardWatchdog()
 	}
 
 	r := gin.Default()
@@ -99,11 +122,19 @@ func main() {
 		log.Printf("[asset-platform] 已启用前端静态服务 (web/dist)")
 	}
 
-	// 后台清理：每天清理 30 天前的扫描报告文件
+	// 任务日志持久化：接到数据库（重启/换容器后日志还在）
+	service.InitTaskLogStore()
+	// 每日自动备份（pg_dump）+ 超期清理
+	service.StartBackupScheduler()
+
+	// 后台清理：每天清理 30 天前的扫描报告文件 + 7 天前的任务日志
 	go func() {
 		for {
 			if n := service.CleanOldReports(30); n > 0 {
 				log.Printf("[cleanup] 已清理过期扫描报告 %d 个", n)
+			}
+			if n := service.CleanOldTaskLogs(7); n > 0 {
+				log.Printf("[cleanup] 已清理 7 天前的任务日志 %d 行", n)
 			}
 			time.Sleep(24 * time.Hour)
 		}

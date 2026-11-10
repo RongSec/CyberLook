@@ -1,5 +1,21 @@
 <template>
   <div class="llm-settings">
+    <n-card :bordered="false" style="margin-bottom: 12px">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <b>AI 功能</b>
+        <span style="display:flex;align-items:center;gap:6px">
+          <n-switch v-model:value="aiSet.serviceIdentify" @update:value="saveAISet" />
+          <span>服务识别</span>
+        </span>
+        <span style="display:flex;align-items:center;gap:6px">
+          <n-switch v-model:value="aiSet.scanMonitor" @update:value="saveAISet" />
+          <span>扫描监控</span>
+        </span>
+        <span class="tip" style="color:#888;font-size:12px">
+          服务识别＝扫描入库时判断标题/系统名；扫描监控＝节点日志 15 分钟无刷新时由 AI 诊断并收尾
+        </span>
+      </div>
+    </n-card>
     <n-card :bordered="false">
       <template #header>
         <div class="header">
@@ -93,16 +109,29 @@
             </n-form-item-gi>
           </n-grid>
 
-          <n-divider title-placement="left" style="margin: 12px 0 8px">TLS 兼容（内网网关常见）</n-divider>
-          <n-grid :cols="2" :x-gap="16">
-            <n-form-item-gi label="TLS 最低版本">
-              <n-select v-model:value="editing.tlsMinVersion" :options="tlsOptions" />
+          <n-divider title-placement="left" style="margin: 12px 0 8px">AI 思考配置</n-divider>
+          <n-grid :cols="3" :x-gap="16">
+            <n-form-item-gi label="Provider">
+              <n-select v-model:value="editing.provider" :options="providerOptions" />
             </n-form-item-gi>
-            <n-form-item-gi label=" ">
-              <n-checkbox v-model:checked="editing.tlsSkipVerify">跳过证书校验（自签证书时勾选）</n-checkbox>
+            <n-form-item-gi label="思考开关">
+              <n-select v-model:value="editing.thinkingType" :options="thinkingOptions" />
+            </n-form-item-gi>
+            <n-form-item-gi label="思考强度">
+              <n-select v-model:value="editing.reasoningEffort" :options="effortOptions" />
             </n-form-item-gi>
           </n-grid>
 
+          <n-grid :cols="2" :x-gap="16">
+            <n-form-item-gi label="速率限制（每秒，0=不限）">
+              <n-input-number v-model:value="editing.ratePerSecond" :min="0" :precision="1" style="width:100%" />
+            </n-form-item-gi>
+            <n-form-item-gi label="速率限制（每分钟，0=不限）">
+              <n-input-number v-model:value="editing.ratePerMinute" :min="0" :precision="1" style="width:100%" />
+            </n-form-item-gi>
+          </n-grid>
+
+          <n-divider title-placement="left" style="margin: 12px 0 8px">应用层代理</n-divider>
           <n-form-item>
             <template #label>
               应用层代理
@@ -153,6 +182,17 @@ import {
 import api from '../api'
 
 const message = useMessage()
+const aiSet = ref({ serviceIdentify: true, scanMonitor: true })
+
+async function loadAISet() {
+  try { aiSet.value = { ...aiSet.value, ...(await api.get('/ai/settings')) } } catch { /* ignore */ }
+}
+async function saveAISet() {
+  try {
+    await api.put('/ai/settings', aiSet.value)
+    message.success('已保存')
+  } catch (e) { message.error('保存失败') }
+}
 const dialog = useDialog()
 
 const loading = ref(false)
@@ -170,8 +210,25 @@ const tlsOptions = [
 ]
 
 
+const thinkingOptions = [
+  { label: '不发送（默认）', value: '' },
+  { label: '开启思考', value: 'enabled' },
+  { label: '关闭思考', value: 'disabled' },
+]
+const effortOptions = [
+  { label: '不发送（默认）', value: '' },
+  { label: '低', value: 'low' },
+  { label: '中', value: 'medium' },
+  { label: '高', value: 'high' },
+  { label: '超高', value: 'xhigh' },
+  { label: '最大', value: 'max' },
+]
+
+
 const providerOptions = [
   { label: 'OpenAI 兼容', value: 'openai' },
+  { label: 'OpenAI Responses', value: 'openai-responses' },
+  { label: 'OpenAI Responses', value: 'openai-responses' },
   { label: 'Anthropic', value: 'anthropic' },
   { label: 'Ollama', value: 'ollama' },
   { label: 'Azure OpenAI', value: 'azure' },
@@ -181,7 +238,7 @@ const emptyForm = () => ({
   id: 0, name: '', provider: 'openai', baseUrl: '', apiKey: '', model: '',
   temperature: 0.3, maxTokens: 8192, contextWindowK: 128,
   priority: 5, failThreshold: 3, cooldownSeconds: 60, timeoutSeconds: 120,
-  enabled: true, poolExclude: false, tlsSkipVerify: false, tlsMinVersion: '', viaProxy: '',
+  enabled: true, poolExclude: false, viaProxy: '', provider: 'openai', thinkingType: '', reasoningEffort: '', ratePerSecond: 0, ratePerMinute: 0,
 })
 const editing = ref(emptyForm())
 

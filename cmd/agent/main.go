@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -226,7 +227,7 @@ func selfUpgrade(target string) {
 	}
 	_ = os.Chmod(tmp, 0755)
 
-	// 备份旧文件后原子替换（Linux 允许覆盖运行中的文件）
+	// 备份旧文件后原子替换
 	_ = os.Remove(exe + ".old")
 	_ = os.Rename(exe, exe+".old")
 	if err := os.Rename(tmp, exe); err != nil {
@@ -235,8 +236,23 @@ func selfUpgrade(target string) {
 		return
 	}
 	log.Printf("[agent] 控制文件已更新 %s -> %s，正在交接重启", myVersion, target)
+
+	// Windows 不支持 syscall.Exec，改用 exec.Command 启动新进程
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command(exe, os.Args[1:]...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			log.Printf("[agent] 启动新进程失败: %v（watchdog 会拉起）", err)
+		} else {
+			log.Printf("[agent] 新进程已启动 PID=%d，旧进程退出", cmd.Process.Pid)
+		}
+		os.Exit(0)
+	}
+
+	// Linux/Mac：原子替换当前进程
 	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
-		log.Printf("[agent] 重启失败: %v（请手动重启）", err)
+		log.Printf("[agent] 重启失败: %v（watchdog 会拉起）", err)
 	}
 }
 
@@ -456,6 +472,7 @@ func doHeartbeat() {
 	}
 	var r struct {
 		Upgrade       bool   `json:"upgrade"`
+		Uninstall     bool   `json:"uninstall"`
 		LatestVersion string `json:"latestVersion"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
@@ -464,7 +481,74 @@ func doHeartbeat() {
 		log.Printf("[agent] 收到升级指令 -> %s（当前 %s）", r.LatestVersion, myVersion)
 		selfUpgrade(r.LatestVersion)
 	}
+	// Uninstall=true → 清理并退出
+	if r.Uninstall {
+		log.Printf("[agent] 收到卸载指令，开始清理...")
+		selfUninstall()
+	}
 	syncLicense()
+}
+
+// selfUninstall 自清理：停止进程 + 删除服务/计划任务 + 删除文件
+func selfUninstall() {
+	exe, _ := os.Executable()
+	dir := filepath.Dir(exe)
+
+	if runtime.GOOS == "windows" {
+		// 写清理脚本到临时目录（不被安装目录删除影响）
+		cleanup := os.Getenv("TEMP") + `\weijian-cleanup.ps1`
+		script := fmt.Sprintf(`# 自清理脚本（由 scope-agent 生成）
+Start-Sleep -Seconds 2
+$Dir = "%s"
+# 关键：先把当前目录切到 TEMP。否则进程的 CWD 就在安装目录里，
+# Remove-Item 会因为"目录正在使用"而静默失败（实测残留 scope-agent.exe）。
+Set-Location -Path $env:TEMP
+taskkill /F /IM scope-agent.exe 2>$null
+schtasks /Delete /TN "WeijianAgent" /F 2>$null
+schtasks /Delete /TN "WeijianAgentWatchdog" /F 2>$null
+# 只删 agent 自己的文件，TscanClient.exe 等用户文件保留
+foreach ($f in @("scope-agent.exe", "start-agent.bat", "agent.json", "agent.token")) {
+    Remove-Item -Force -LiteralPath (Join-Path $Dir $f) -ErrorAction SilentlyContinue
+}
+# 目录空了才删；非空说明还有用户的文件，保留目录
+if ((Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0) {
+    Remove-Item -Force -LiteralPath $Dir -ErrorAction SilentlyContinue
+}
+Remove-Item -Force -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue
+`, dir)
+		os.WriteFile(cleanup, []byte(script), 0644)
+
+		// 启动清理脚本（后台）；CWD 设在 TEMP，避免占用安装目录
+		cmd := exec.Command("powershell.exe", "-WindowStyle", "Hidden", "-NoProfile",
+			"-ExecutionPolicy", "Bypass", "-File", cleanup)
+		cmd.Dir = os.Getenv("TEMP")
+		cmd.Start()
+		log.Printf("[agent] 清理脚本已启动（Windows），退出")
+	} else {
+		// Linux/Mac：写清理脚本到 /tmp
+		cleanup := "/tmp/weijian-cleanup.sh"
+		script := fmt.Sprintf(`#!/bin/bash
+# 自清理脚本（由 scope-agent 生成）
+DIR="%s"
+cd / || cd /tmp
+sleep 2
+systemctl stop weijian-agent 2>/dev/null
+systemctl disable weijian-agent 2>/dev/null
+rm -f /etc/systemd/system/weijian-agent.service
+systemctl daemon-reload 2>/dev/null
+rm -f "$DIR/scope-agent" "$DIR/start-agent.sh" "$DIR/agent.json" "$DIR/agent.token"
+rmdir "$DIR" 2>/dev/null
+rm -f /tmp/weijian-cleanup.sh
+`, dir)
+		os.WriteFile(cleanup, []byte(script), 0755)
+
+		// 启动清理脚本（后台）；CWD 切到 /，否则删不掉 agent 所在的目录
+		cmd := exec.Command("bash", cleanup)
+		cmd.Dir = "/"
+		cmd.Start()
+		log.Printf("[agent] 清理脚本已启动（Linux），退出")
+	}
+	os.Exit(0)
 }
 
 // streamLoop SSE 长连接：服务端有任务时唤醒，避免空轮询

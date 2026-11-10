@@ -81,8 +81,12 @@
         </n-form-item>
 
         <n-form-item label="执行节点">
-          <n-select v-model:value="form.nodeIds" multiple filterable :options="nodeOptions"
-            placeholder="默认本机执行；可多选节点（并发高的分更多 IP）" />
+          <div style="display:flex;gap:8px;width:100%">
+            <n-select v-model:value="form.nodeIds" multiple filterable :options="nodeOptions"
+              placeholder="默认本机执行；可多选节点" style="flex:1" />
+            <n-button size="tiny" @click="form.nodeIds = ['all']">全部节点</n-button>
+            <n-button size="tiny" quaternary @click="form.nodeIds = []">清空</n-button>
+          </div>
         </n-form-item>
 
         <n-form-item label="端口策略">
@@ -98,8 +102,11 @@
         <n-form-item label="指纹策略 -finger">
           <n-select v-model:value="form.finger" :options="fingerOptions" style="width: 140px" />
         </n-form-item>
-        <n-form-item label="禁用存活探测">
-          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">开启 = 加 -np，跳过 ICMP/ARP 存活探测</span>
+        <n-form-item label="服务端存活探测">
+          <n-switch v-model:value="form.aliveProbe" /> <span class="switch-tip">开启 = 平台先探测存活、只下发存活 IP；关闭 = 直接把全部目标 IP 分批下发</span>
+        </n-form-item>
+        <n-form-item label="禁用存活探测(-np)">
+          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">开启 = 加 -np，跳过扫描器的 ICMP/ARP 存活探测</span>
         </n-form-item>
         <n-form-item label="禁用启发式扫描">
           <n-switch v-model:value="form.noSmart" /> <span class="switch-tip">开启 = 加 -nosmart，跳过智能扫描</span>
@@ -226,13 +233,34 @@
         </div>
       </div>
       <n-empty v-if="nodeProgList.length === 0" description="该任务未分配到节点，未走分片（请检查执行节点是否在线）" />
-      <n-data-table v-else :columns="nodeProgCols" :data="nodeProgList" size="small" />
+      <n-data-table v-else :columns="nodeProgCols" :data="nodeProgList" size="small"
+        :pagination="{ pageSize: 20, showSizePicker: true, pageSizes: [10, 20, 50, 100] }" />
     </n-modal>
 
     <!-- 节点终端 -->
     <n-modal :show="showNodeTerm" preset="card" :title="`节点终端 · ${nodeTermName}（每 2 秒刷新）`"
       style="width: 760px" @update:show="v => { if (!v) closeNodeTerminal() }">
       <pre class="node-term" ref="nodeTermEl">{{ nodeTermLines.join('\n') }}</pre>
+    </n-modal>
+
+    <!-- 诊断记录 -->
+    <n-modal v-model:show="showDiagLog" preset="card"
+      :title="`诊断记录 · 分片 #${diagRec.id || ''}（${diagRec.node || ''}）`" style="width: 780px">
+      <div class="diag-grid">
+        <div class="diag-row"><span class="k">分片状态</span>
+          <span>{{ nodeStatusText[diagRec.status] || diagRec.status || '-' }}</span></div>
+        <div class="diag-row"><span class="k">诊断结论</span>
+          <span :style="{ color: diagRec.verdict === 'done' ? '#16a34a' : diagRec.verdict === 'stalled' ? '#dc2626' : '#6b7280' }">
+            {{ diagVerdictText(diagRec.verdict) }}</span></div>
+        <div class="diag-row"><span class="k">诊断时间</span>
+          <span>{{ diagRec.at ? new Date(diagRec.at).toLocaleString('zh-CN') : '未诊断过' }}</span></div>
+        <div class="diag-row"><span class="k">扫描进度</span>
+          <span>{{ (diagRec.scanned || 0).toLocaleString() }} / {{ (diagRec.total || 0).toLocaleString() }}
+            （{{ diagRec.total ? Math.round((diagRec.scanned || 0) * 100 / diagRec.total) : 0 }}%）</span></div>
+        <div class="diag-row"><span class="k">诊断说明</span><span>{{ diagRec.note || '—' }}</span></div>
+      </div>
+      <div class="diag-logs-title">该分片的监控与诊断日志</div>
+      <pre class="node-term">{{ diagLogs.length ? diagLogs.join('\n') : '暂无记录（该分片从未触发过扫描监控或手动诊断）' }}</pre>
     </n-modal>
 
     <!-- 模板弹窗 -->
@@ -301,9 +329,12 @@ const pageSize = ref(20)
 const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const showCreate = ref(false)
 const creating = ref(false)
-const form = ref({ name: '', templateId: null, modules: ['port', 'url'], batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '', cron: '', nodeIds: [] })
+const form = ref({ name: '', templateId: null, modules: ['port', 'url'], batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
 const nodes = ref([])
-const nodeOptions = computed(() => nodes.value.map(n => ({ label: `${n.name}（${n.ip} · 并发${n.concurrency}）`, value: n.id })))
+const nodeOptions = computed(() => [
+  { label: '全部节点', value: 'all' },
+  ...nodes.value.map(n => ({ label: `${n.name}（${n.ip} · 并发${n.concurrency}）`, value: n.id }))
+])
 const segmentOptions = ref([])
 const assetOptions = ref([])
 const templateOptions = ref([])
@@ -586,18 +617,19 @@ async function create(run) {
       timeout: form.value.timeout,
       finger: form.value.finger,
       noPing: form.value.noPing,
+      aliveProbe: form.value.aliveProbe,
       noSmart: form.value.noSmart,
       extraArgs: form.value.extraArgs,
       templateId: form.value.templateId,
       cron: buildCron(),
-      nodeIds: form.value.nodeIds.length ? form.value.nodeIds.join(',') : '',
+      nodeIds: form.value.nodeIds.includes('all') ? 'all' : (form.value.nodeIds.length ? form.value.nodeIds.join(',') : ''),
       run: !!run
     })
     message.success(run ? '任务已创建并下发执行' : '任务已创建（待执行）')
     showCreate.value = false
     cronInterval.value = ''
     cronHour.value = 2
-    form.value = { name: '', templateId: null, modules: ['port', 'url'], batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '', cron: '', nodeIds: [] }
+    form.value = { name: '', templateId: null, modules: ['port', 'url'], batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] }
     load()
   } catch (e) { message.error(e.response?.data?.error || '创建失败') } finally { creating.value = false }
 }
@@ -853,11 +885,12 @@ let termTimer = null
 let termNodeId = 0
 
 async function fetchTerminal() {
-  if (!termNodeId) return
+  // 按分片取回显：节点日志是累积的（混着几百个分片），分片日志才是这一次的输出
+  if (!termShardId) return
   try {
-    const res = await api.get(`/nodes/${termNodeId}/terminal`)
+    const res = await api.get(`/agent-tasks/${termShardId}/log`)
     nodeTermName.value = res.node || ''
-    nodeTermLines.value = res.lines || []
+    nodeTermLines.value = String(res.log || '').split('\n').filter(x => x.trim() !== '')
   } catch {}
 }
 
@@ -894,8 +927,12 @@ function fmtEta(sec) {
   return `${sec2} 秒`
 }
 
+let termShardId = 0
+
+
 async function openNodeTerminal(at) {
   termNodeId = at.nodeId
+  termShardId = at.id
   await fetchTerminal()
   showNodeTerm.value = true
   if (termTimer) clearInterval(termTimer)
@@ -907,18 +944,65 @@ function closeNodeTerminal() {
   showNodeTerm.value = false
 }
 
-const nodeStatusText = { pending: '待执行', running: '执行中', done: '完成', failed: '失败', cancelled: '已取消' }
+const aiDiagnosing = ref(0)
+
+// ===== 诊断记录 =====
+// 诊断结果一直写在 agent_tasks.ai_verdict / ai_verdict_note / ai_verdict_at，
+// 但界面只弹一个 toast，事后完全查不到。这里给个入口把结论 + 相关日志都列出来。
+const showDiagLog = ref(false)
+const diagRec = ref({})
+const diagLogs = ref([])
+
+function diagVerdictText(v) {
+  if (v === 'done') return '已完成（AI 收尾，日志显示跑完但没收到结束信号）'
+  if (v === 'stalled') return '卡死中断（无完成迹象，IP 已收回重派）'
+  return '未诊断'
+}
+
+async function openDiagLog(r) {
+  diagRec.value = { ...r }
+  diagLogs.value = []
+  showDiagLog.value = true
+  try {
+    const res = await api.get(`/agent-tasks/${r.id}/diagnose-log`)
+    diagRec.value = res
+    diagLogs.value = (res.logs || []).map(x => x.line)
+  } catch (e) {
+    message.error(e.response?.data?.error || '读取诊断记录失败')
+  }
+}
+
+async function aiDiagnose(row) {
+  aiDiagnosing.value = row.id
+  try {
+    const r = await api.post(`/agent-tasks/${row.id}/ai-diagnose`)
+    message.success(`AI 诊断：${r.label}` + (r.note ? `（${r.note}）` : ''))
+    openNodeProgress(nodeProgTask.value)
+  } catch (e) {
+    message.error(e.response?.data?.error || 'AI 诊断失败')
+  } finally {
+    aiDiagnosing.value = 0
+  }
+}
+
+const nodeStatusText = { pending: '待执行', running: '执行中', done: '完成', done_ai: 'AI完成', stalled_ai: 'AI中断', failed: '失败', cancelled: '已取消' }
 const nodeProgCols = [
   { title: '节点', key: 'nodeName', width: 120 },
   {
     title: '状态', key: 'status', width: 90,
-    render: r => h(NTag, { size: 'small', type: r.status === 'done' ? 'success' : r.status === 'failed' ? 'error' : r.status === 'running' ? 'info' : 'default' },
-      { default: () => nodeStatusText[r.status] || r.status })
+    render: r => h(NTag, {
+      size: 'small',
+      type: r.status === 'done' ? 'success'
+        : r.status === 'done_ai' ? 'info'
+        : r.status === 'stalled_ai' ? 'error'
+        : r.status === 'failed' ? 'error'
+        : r.status === 'running' ? 'info' : 'default'
+    }, { default: () => nodeStatusText[r.status] || r.status })
   },
   {
     title: '进度', key: 'progress', width: 190,
     render: r => h(NProgress, { type: 'line', percentage: r.progress || 0, height: 8,
-      color: r.status === 'done' ? '#84cc16' : r.status === 'failed' ? '#ef4444' : '#f59e0b' })
+      color: (r.status === 'done' || r.status === 'done_ai') ? '#84cc16' : r.status === 'failed' || r.status === 'stalled_ai' ? '#ef4444' : '#f59e0b' })
   },
   { title: '总端口数', key: 'total', width: 110, render: r => (r.total || 0).toLocaleString() },
   { title: '已扫端口数', key: 'scanned', width: 120, render: r => (r.scanned || 0).toLocaleString() },
@@ -935,7 +1019,17 @@ const nodeProgCols = [
         disabled: r.status === 'done' || r.status === 'cancelled',
         onClick: () => cancelNodeTask(r)
       }, { default: () => '故障转移' }),
-      h(NButton, { size: 'small', text: true, onClick: () => openNodeTerminal(r) }, { default: () => '终端' })
+      h(NButton, { size: 'small', text: true, onClick: () => openNodeTerminal(r) }, { default: () => '终端' }),
+      h(NButton, {
+        size: 'small', text: true, type: 'primary',
+        loading: aiDiagnosing === r.id,
+        disabled: r.status !== 'running' && r.status !== 'pending',
+        onClick: () => aiDiagnose(r)
+      }, { default: () => 'AI诊断' }),
+      h(NButton, {
+        size: 'small', text: true, type: 'info',
+        onClick: () => openDiagLog(r)
+      }, { default: () => '诊断记录' })
     ])
   }
 ]
@@ -972,6 +1066,11 @@ onBeforeUnmount(() => { clearInterval(pollTimer); stopSSE() })
   font-family: 'JetBrains Mono', Consolas, monospace; white-space: pre-wrap;
   max-height: 420px; overflow: auto;
 }
+
+.diag-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.diag-row { display: flex; gap: 10px; font-size: 13px; line-height: 1.6; }
+.diag-row .k { flex: 0 0 72px; color: #6b7280; }
+.diag-logs-title { font-size: 12.5px; color: #6b7280; margin-bottom: 6px; }
 .switch-tip { color: #94a3b8; font-size: 12px; margin-left: 8px; }
 .terminal {
   background: #0d1117;

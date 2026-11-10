@@ -7,8 +7,8 @@ scope-agent-linux-arm64
 scope-agent-windows.exe
 *.exe
 # 例外：第三方扫描引擎需要随仓库分发
-!third_party/**/*.exe
-!third_party/**
+# third_party 整体不分发（含 956MB TscanPlus 全家桶）
+third_party/
 
 # 前端
 web/node_modules/
@@ -16,7 +16,9 @@ web/dist/
 web/dist_*/
 
 # 运行时数据（不要提交到 git）
-data/
+data/*
+# 例外：指纹规则随扫描引擎分发（FingerprintHub，MIT）
+!data/fingerprint/
 *.db
 *.db-shm
 *.db-wal

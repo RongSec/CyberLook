@@ -105,7 +105,22 @@ func DispatchTask(task *model.ScanTask) error {
 	if len(ips) == 0 {
 		return fmt.Errorf("目标展开后无有效 IP")
 	}
-	config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).Update("total_ips", len(ips))
+	// 关键：先把状态落成 running，再启流水线。
+	// 之前的写法是「DispatchTask 返回后由 handler 更新 status」，而流水线协程已经先跑起来了，
+	// DispatchNextBatch 开头判断 status != running 就直接 return —— 静默死锁：
+	// 任务显示 running、日志停在"进入流水线"，实际一个 IP 都没探（实测任务 107 卡了 40 分钟）。
+	updates := map[string]interface{}{
+		"status":    "running",
+		"total_ips": len(ips),
+		"node_ids":  task.NodeIDs,
+	}
+	if task.StartedAt == nil {
+		now := time.Now()
+		updates["started_at"] = now
+		task.StartedAt = &now
+	}
+	config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).Updates(updates)
+	task.Status = "running"
 	tasklog.AppendTS(task.ID, "[调度] 任务 #%d 目标 %d 个 IP，进入流水线（边探测边扫描）", task.ID, len(ips))
 
 	// 交给流水线：先探第一片，探完自动下发
@@ -166,15 +181,29 @@ type taskPipeline struct {
 	alivePool []string // 已确认存活、还没下发的 IP
 	probing   bool     // 是否有探测在进行
 	dispatching bool   // 防止 DispatchNextBatch 重入
+	// stopped 流水线已废弃（重跑/删除/停止）。旧协程拿到这个标记后必须自行退出，
+	// 不能再去 ensurePipeline，否则会凭空再造一条流水线并行跑。
+	stopped bool
 	// 落盘快照（避免持锁写文件）
 	offsetSnapshot int
 	poolSnapshot   []string
 }
 
-var pipelines sync.Map // taskID(uint) -> *taskPipeline
+var (
+	pipelines  sync.Map // taskID(uint) -> *taskPipeline
+	pipelineMu sync.Mutex
+)
 
 // ensurePipeline 懒加载任务流水线；首次会展开 IP 并读取已探测进度
 func ensurePipeline(task *model.ScanTask) *taskPipeline {
+	if v, ok := pipelines.Load(task.ID); ok {
+		return v.(*taskPipeline)
+	}
+	// 双检锁：并发调用（探完一片 + 节点回报一批 + 重启续跑）会同时走到这里，
+	// 之前没有锁，两个协程都能创建成功 → 同一任务跑出两条流水线，
+	// 同一片 IP 被探测两遍、同一批 IP 被下发两次（实测日志里同一片出现两次）。
+	pipelineMu.Lock()
+	defer pipelineMu.Unlock()
 	if v, ok := pipelines.Load(task.ID); ok {
 		return v.(*taskPipeline)
 	}
@@ -189,14 +218,28 @@ func ensurePipeline(task *model.ScanTask) *taskPipeline {
 	if p.offset > len(ips) {
 		p.offset = len(ips)
 	}
+	// 关闭存活探测：不做 ICMP/TCP 预探测，直接把全部目标 IP 塞进待扫池按批下发。
+	// 适用场景：目标网段普遍禁 ping、透明代理干扰探测，或用户就是要覆盖全量 IP。
+	if !task.AliveProbe {
+		p.offset = len(ips)
+		p.alivePool = append([]string(nil), ips...)
+		log.Printf("[task #%d] 已关闭存活探测，直接下发全部 %d 个 IP", task.ID, len(ips))
+	}
 	pipelines.Store(task.ID, p)
 	log.Printf("[task #%d] 流水线初始化：总 %d 个 IP，已探测 %d", task.ID, len(ips), p.offset)
 	return p
 }
 
-// CleanPipeline 任务重跑/删除时清空流水线状态
+// CleanPipeline 任务重跑/删除时清空流水线状态。
+// 关键：先给旧对象打 stopped 标记再删，否则旧探测协程探完这一片会重新建一条流水线，
+// 与新流水线并行跑（重复探测 + 重复下发）。
 func CleanPipeline(taskID uint) {
-	pipelines.Delete(taskID)
+	if v, ok := pipelines.LoadAndDelete(taskID); ok {
+		old := v.(*taskPipeline)
+		old.mu.Lock()
+		old.stopped = true
+		old.mu.Unlock()
+	}
 	removePipelineFile(taskID) // 断点一并清理
 }
 
@@ -208,13 +251,20 @@ func DispatchNextBatch(taskID uint) {
 		return
 	}
 	// 只有 running 状态才推进：paused/stopped/done 不派发、不探测
+	// 注意：这里以前是静默 return，一旦上层没把 status 落成 running，整条流水线就永久停住
+	// 且日志里毫无痕迹（很难查）。现在改为写一行说明，至少能看出来"为什么没推进"。
 	if task.Status != "running" {
+		tasklog.AppendTS(taskID, "[调度] 跳过推进：任务状态为 %s（只有 running 才推进）", task.Status)
 		return
 	}
 
 	p := ensurePipeline(&task)
 
 	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		return // 这条流水线已废弃（重跑/删除/停止），旧协程不得再推进
+	}
 	if p.dispatching {
 		p.mu.Unlock()
 		return // 已有一次调度在跑，避免并发重复下发
@@ -352,15 +402,16 @@ func probeNextSlice(taskID uint) {
 	p := ensurePipeline(&task)
 
 	p.mu.Lock()
-	if p.probing || p.offset >= len(p.totalIPs) {
+	if p.stopped || p.probing || p.offset >= len(p.totalIPs) {
 		p.mu.Unlock()
 		return
 	}
 	p.probing = true
 	start := p.offset
 	end := start + probeSliceSize
-	if end > len(p.totalIPs) {
-		end = len(p.totalIPs)
+	totalN := len(p.totalIPs)
+	if end > totalN {
+		end = totalN
 	}
 	slice := append([]string(nil), p.totalIPs[start:end]...)
 	p.mu.Unlock()
@@ -372,6 +423,10 @@ func probeNextSlice(taskID uint) {
 	}()
 
 	probeStart := time.Now()
+	// 先写一行"开始探测"，否则用户只能等整片探完（几十秒）才看到任何进展，
+	// 会误以为卡住了。
+	tasklog.AppendTS(taskID, "[存活] 开始探测第 %d-%d 个（本片 %d 个 IP，目标共 %d 个）",
+		start+1, end, len(slice), totalN)
 	results := scanner.NewAliveCheck().Probe(context.Background(), slice, nil)
 	var alive []string
 	for _, r := range results {
@@ -381,6 +436,12 @@ func probeNextSlice(taskID uint) {
 	}
 
 	p.mu.Lock()
+	if p.stopped {
+		// 探测期间任务被重跑/停止：这片结果作废，也不要再推进（否则会重建流水线并行跑）
+		p.probing = false
+		p.mu.Unlock()
+		return
+	}
 	p.alivePool = append(p.alivePool, alive...)
 	p.offset = end
 	// 必须在这里就把 probing 置回 false：
@@ -653,6 +714,10 @@ func redispatch(at model.AgentTask) error {
 
 // UpdateAgentProgress agent 上报进度
 func UpdateAgentProgress(id uint, total, scanned, progress, eta int, message string) error {
+	// 记录进度变化，供停滞看门狗判断（scanned 长时间不涨 = 卡死）
+	if scanned >= 0 {
+		noteShardProgress(id, scanned)
+	}
 	up := map[string]interface{}{"message": message}
 	// agent 上报的 total/scanned 是端口维度，覆盖分片初始的 IP 数（进度/ETA 都以端口为准）
 	if total > 0 {
@@ -661,7 +726,16 @@ func UpdateAgentProgress(id uint, total, scanned, progress, eta int, message str
 	if scanned >= 0 {
 		up["scanned"] = scanned
 	}
-	if progress > 0 {
+	// 进度百分比统一由服务端按「已扫端口/总端口」算，不再用 TscanClient 自己报的百分比：
+	// 它经常早早跳到 99（分母口径不同），而实际只扫了 70~80%，
+	// 结果界面上显示 99% 却长期不动，让人以为卡死。
+	if total > 0 && scanned >= 0 {
+		p := scanned * 100 / total
+		if p > 100 {
+			p = 100
+		}
+		up["progress"] = p
+	} else if progress > 0 {
 		up["progress"] = progress
 	}
 	if eta > 0 {
@@ -673,6 +747,181 @@ func UpdateAgentProgress(id uint, total, scanned, progress, eta int, message str
 		Updates(up).Error
 }
 
+// ===== 分片停滞看门狗 =====
+// TscanClient 偶尔会卡在最后几个端口上不动：agent 照常每 2 秒上报，但 scanned 不再增长，
+// ETA 一直显示「还剩 2 秒」。之前没有任何无进展检测，分片就永远 running，
+// 任务进度永远卡在 99%（实测 zhsz0006 分片 #331 卡了 35 分钟，3276363/3276750）。
+const (
+	// 15 分钟：单 IP 扫 65535 端口、目标又不通时，TscanClient 一轮就要 5~6 分钟，
+	// 原来 5 分钟阈值会在它还没扫完时就判"停滞"→ 取消 → 重派 → 再被判停滞，
+	// 分片被反复回收，任务永远停在 99%（实测 342/358/362 都是 99% 被卡死回收）。
+	shardStallTimeout = 15 * time.Minute
+	// 一个端口都没扫过的分片给更长宽限（多半是 agent 还在排队/刚拉起扫描器）
+	shardStallColdStart = 20 * time.Minute
+	// 全端口扫描（port_mode=all）的停滞阈值：一个分片 100 IP × 65535 端口，
+	// 目标不通时单 IP 就要几分钟，整片正常要 30~60 分钟，用 15 分钟必然误杀
+	shardStallAllPort = 60 * time.Minute
+	// 同一分片最多回收几次：超过就直接按已完成收尾，避免无限循环
+	shardMaxRetry = 2
+	// 卡死时若已完成到这个比例以上，直接按「已完成」收尾（不值得为最后几个端口重扫整批）；
+	// 低于这个比例说明是早期卡死，收回 IP 重派更划算。
+	shardStallAcceptRatio = 90
+)
+
+var (
+	shardActMu sync.Mutex
+	shardAct   = map[uint]shardActEntry{}
+	// diagBusy 诊断中的分片：看门狗每 30 秒扫一次，若不挡一下，
+	// 同一个分片会被连续诊断多次（AI 调用有耗时），日志刷屏、IP 被重复回收
+	diagBusy   = map[uint]bool{}
+	stallCache = map[uint]time.Duration{}
+)
+
+// stallWindow 该任务判定「停滞」的超时。
+// 全端口扫描（port_mode=all）一个分片是 100×65535 次探测，正常也要 30~60 分钟，
+// 用统一的 15 分钟必然误杀（任务 #115 连续 19 个分片被判中断就是这个原因）。
+func stallWindow(taskID uint) time.Duration {
+	shardActMu.Lock()
+	if d, ok := stallCache[taskID]; ok {
+		shardActMu.Unlock()
+		return d
+	}
+	shardActMu.Unlock()
+
+	d := shardStallTimeout
+	var t model.ScanTask
+	if err := config.DB.Select("id", "port_mode").First(&t, taskID).Error; err == nil && t.PortMode == "all" {
+		d = shardStallAllPort
+	}
+	shardActMu.Lock()
+	stallCache[taskID] = d
+	shardActMu.Unlock()
+	return d
+}
+
+type shardActEntry struct {
+	scanned int
+	since   time.Time
+}
+
+func noteShardProgress(id uint, scanned int) {
+	shardActMu.Lock()
+	defer shardActMu.Unlock()
+	if a, ok := shardAct[id]; ok && scanned <= a.scanned {
+		return // 没涨，保持原计时起点
+	}
+	shardAct[id] = shardActEntry{scanned: scanned, since: time.Now()}
+}
+
+func shardActDrop(id uint) {
+	shardActMu.Lock()
+	delete(shardAct, id)
+	shardActMu.Unlock()
+}
+
+var watchdogOnce sync.Once
+
+// StartShardWatchdog 启动分片停滞看门狗（main 里调用一次）
+func StartShardWatchdog() {
+	watchdogOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				checkStalledShards()
+			}
+		}()
+	})
+}
+
+func checkStalledShards() {
+	// 扫描监控总开关（LLM 设置页里可关）
+	if !AIScanMonitorEnabled() {
+		return
+	}
+	var shards []model.AgentTask
+	config.DB.Where("status = ?", "running").Find(&shards)
+	now := time.Now()
+
+	for i := range shards {
+		s := &shards[i]
+		win := stallWindow(s.TaskID)
+
+		// 分片自身进度是否还在涨 —— 最可靠的活性信号（agent 每 2 秒上报 scanned）。
+		// 全端口扫描时 tscan 经常十几分钟不打印新日志，但 scanned 一直在涨，这种情况不该判死。
+		shardActMu.Lock()
+		act, hasAct := shardAct[s.ID]
+		busy := diagBusy[s.ID]
+		shardActMu.Unlock()
+		if busy {
+			continue
+		}
+		if hasAct && now.Sub(act.since) < win {
+			continue // 进度在涨 = 活着
+		}
+
+		// 节点终端日志最后变化时间（tscan 卡死时日志不再刷新）
+		var node model.Node
+		_ = config.DB.First(&node, s.NodeID).Error
+		ref := s.StartedAt
+		if node.TerminalLogAt != nil && (ref == nil || node.TerminalLogAt.After(*ref)) {
+			t := *node.TerminalLogAt
+			ref = &t
+		}
+		if ref != nil && now.Sub(*ref) < win {
+			continue // 日志还在刷 = 活着
+		}
+
+		// 刚开工的分片给宽限，避免一上来就诊断
+		if s.StartedAt != nil && now.Sub(*s.StartedAt) < shardStallColdStart {
+			continue
+		}
+
+		// 两个信号都没有 → 诊断（同一分片同时只允许一个诊断在跑）
+		shardActMu.Lock()
+		if diagBusy[s.ID] {
+			shardActMu.Unlock()
+			continue
+		}
+		diagBusy[s.ID] = true
+		shardActMu.Unlock()
+
+		tasklog.AppendTS(s.TaskID, "[扫描监控] 分片 #%d（%s）%d 分钟无进度且日志无刷新，启动 AI 诊断",
+			s.ID, s.NodeName, int(win.Minutes()))
+		go func(at model.AgentTask) {
+			defer func() {
+				shardActMu.Lock()
+				delete(diagBusy, at.ID)
+				shardActMu.Unlock()
+			}()
+			v, note, err := DiagnoseShard(at, "watchdog")
+			if err != nil {
+				log.Printf("[watchdog] 分片 #%d 诊断失败: %v", at.ID, err)
+			} else {
+				log.Printf("[watchdog] 分片 #%d 诊断=%s（%s）", at.ID, v, note)
+			}
+			DispatchNextBatch(at.TaskID)
+		}(*s)
+	}
+}
+
+// reclaimShardIPs 把分片的 IP 放回待扫池（供重派）
+func reclaimShardIPs(taskID uint, ipRanges string) {
+	ips := splitIPs(ipRanges)
+	if len(ips) == 0 {
+		return
+	}
+	if v, ok := pipelines.Load(taskID); ok {
+		p := v.(*taskPipeline)
+		p.mu.Lock()
+		p.alivePool = append(p.alivePool, ips...)
+		off := p.offset
+		pool := append([]string(nil), p.alivePool...)
+		p.mu.Unlock()
+		_ = savePipelineFile(taskID, off, pool)
+	}
+}
+
 // FinishAgentTask agent 完成任务
 func FinishAgentTask(id uint, ok bool) error {
 	now := time.Now()
@@ -680,6 +929,7 @@ func FinishAgentTask(id uint, ok bool) error {
 	if !ok {
 		st, pr = "failed", 0
 	}
+	shardActDrop(id)
 
 	// 已取消的分片保持 cancelled：
 	// agent 收到取消指令会 kill 扫描进程，退出码非 0，agent 会报「失败」，
@@ -687,7 +937,9 @@ func FinishAgentTask(id uint, ok bool) error {
 	var cur model.AgentTask
 	retryScheduled := false
 	if err := config.DB.First(&cur, id).Error; err == nil {
-		if cur.Status == "cancelled" {
+		// done 也要保住：停滞看门狗已按"完成"收尾，随后 agent 被叫停会回来报失败，
+		// 不能把已完成翻成 failed
+		if cur.Status == "cancelled" || cur.Status == "done" {
 			return config.DB.Model(&model.AgentTask{}).Where("id = ?", id).
 				Updates(map[string]interface{}{"finished_at": now}).Error
 		}
@@ -723,6 +975,11 @@ func FinishAgentTask(id uint, ok bool) error {
 
 	updates := map[string]interface{}{
 		"status": st, "progress": pr, "finished_at": now,
+	}
+	// 正常结束但 agent 少报了几个端口（最后一行进度没赶上）：按已扫满计。
+	// 否则任务总进度 = SUM(scanned)/SUM(total) 会永远停在 99%，用户看到「扫完了但卡 99%」。
+	if st == "done" {
+		updates["scanned"] = gorm.Expr("total")
 	}
 	if retryScheduled {
 		updates["retry_count"] = gorm.Expr("retry_count + 1")

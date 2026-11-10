@@ -95,6 +95,7 @@ func Heartbeat(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":       "ok",
 		"upgrade":       needUpgrade,
+		"uninstall":     node.UninstallReq,
 		"latestVersion": config.ComputeAgentVersion(),
 	})
 }
@@ -129,10 +130,16 @@ func ListNodes(c *gin.Context) {
 }
 
 // DeleteNode 删除节点
+// 在线节点先下发卸载指令（agent 自清理），心跳停掉后再从中心移除；离线节点直接删行。
 func DeleteNode(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	if err := service.DeleteNode(uint(id)); err != nil {
+	uninstallFirst, err := service.DeleteNode(uint(id))
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if uninstallFirst {
+		c.JSON(http.StatusOK, gin.H{"message": "已下发卸载指令，节点将在一分钟内自清理并自动移除"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})

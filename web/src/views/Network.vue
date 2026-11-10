@@ -177,7 +177,7 @@ const importCount = computed(() =>
   importText.value.split('\n').map(l => l.trim()).filter(Boolean).length)
 
 const importHint = computed(() => importType.value === 'seg'
-  ? '每行一条：网段 或 机房名,网段,描述；只有网段必填'
+  ? '每行一条：网段,描述 或 机房名,网段,描述；描述必填（每条都要写原因）'
   : '每行一条：IP范围 或 IP范围,原因；原因可省略')
 
 const importPlaceholder = computed(() => importType.value === 'seg'
@@ -214,12 +214,14 @@ async function doImport() {
           name = parts[0]; cidr = parts[1] || ''; description = parts[2] || ''
         }
         if (!cidr) throw new Error('缺少网段')
+        if (!description) throw new Error('缺少描述（每行必须带原因/描述）')
         await api.post('/segments', { name, cidr, description })
       } else {
         if (!parts.length) throw new Error('空行')
         const ipRange = parts[0]
         const reason = parts[1] || '未填写'
         if (!ipRange) throw new Error('缺少 IP 范围')
+        if (!reason) throw new Error('缺少原因（每行必须填写原因）')
         await api.post('/excludes', { ipRange, reason })
       }
       ok++

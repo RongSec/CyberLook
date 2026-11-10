@@ -34,6 +34,7 @@ type TaskInput struct {
 	Thread     int
 	Timeout    int
 	NoPing     bool
+	AliveProbe bool // 是否先探测存活（默认 true；false=全量直接下发）
 	NoSmart    bool
 	ExtraArgs  string
 	NodeIDs    string
@@ -47,6 +48,7 @@ func CreateTask(in TaskInput) (*model.ScanTask, error) {
 		Cron: in.Cron, Status: "pending", TemplateID: in.TemplateID,
 		Modules: in.Modules, Finger: in.Finger,
 		Thread: in.Thread, Timeout: in.Timeout, NoPing: in.NoPing, NoSmart: in.NoSmart,
+		AliveProbe: in.AliveProbe,
 		ExtraArgs: in.ExtraArgs, NodeIDs: in.NodeIDs, BatchSize: in.BatchSize,
 	}
 	if task.Modules == "" {
@@ -99,6 +101,7 @@ func DeleteTask(id uint) error {
 	}
 	config.DB.Where("task_id = ?", id).Delete(&model.ScanSnapshot{})
 	CleanPipeline(id) // 清掉内存里的流水线状态
+	DeleteTaskLogs(id)
 	return config.DB.Delete(&model.ScanTask{}, id).Error
 }
 
@@ -227,12 +230,11 @@ func ExecuteTask(taskID uint) error {
 		config.DB.Model(&task).Updates(map[string]interface{}{"status": "failed", "finished_at": time.Now()})
 		return err
 	}
-	// 连续 3 次未发现才剔除 + 自动合规检测
+	// 连续 3 次未发现才剔除
 	expanded := target.Resolve(targets, ExcludeRangeStrings())
 	markMissingServices(expanded, results)
-	if nv, fixed, err := RunComplianceCheck(); err == nil {
-		tasklog.Append(task.ID, fmt.Sprintf("[合规] 检测完成，新增违规 %d 条，已整改 %d 条", nv, fixed))
-	}
+	// 注意：扫描结束后不再自动跑合规检测。合规结果只由「合规检测」页手动触发产生
+	//（手动检测会对端口做实连确认），避免用陈旧扫描数据刷出一堆假违规。
 	// 记录本次报告文件
 	reportPath := findTaskReport(taskProjectID(task))
 	tasklog.AppendTS(task.ID, "[本机] 扫描完成，共 %d 条结果", len(results))
@@ -304,18 +306,61 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	// 页面内容指纹：仅当有响应体时计算
 	fp := similarity.Fingerprint(p.Response)
 
+	// ===== 新旧识别合并 =====
+	// 旧值：上次扫描的 title/fingerprint
+	prevTitle := ""
+	prevFP := ""
+	if err != gorm.ErrRecordNotFound {
+		prevTitle = svc.Title
+		prevFP = svc.Fingerprint
+	}
+
+	// 合并 title（语义一致用旧，避免无意义"新变更"）
+	mergedTitle, titleSrc, titleChanged := scanner.MergeIdentification(prevTitle, p.Title)
+	if titleChanged && prevTitle != "" {
+		// 有变更，保存旧值用于对比
+		svc.PrevTitle = prevTitle
+	}
+
+	// 响应码/长度变化时留旧值（待处置里展示"旧→新"）
+	prevStatus := ""
+	prevLen := 0
+	if err != gorm.ErrRecordNotFound {
+		prevStatus = svc.StatusCode
+		prevLen = svc.ContentLength
+	}
+
+	// 合并 fingerprint
+	mergedFP, _, fpChanged := scanner.MergeFingerprint(prevFP, fpStr)
+	if fpChanged && prevFP != "" {
+		svc.PrevFingerprint = prevFP
+	}
+
+	// 更新后的值
+	p.Title = mergedTitle
+	fpStr = mergedFP
+
 	if err == gorm.ErrRecordNotFound {
 		config.DB.Create(&model.Service{
 			AssetID: &asset.ID, IP: ip, Port: p.Port, Protocol: p.Protocol,
 			Service: p.Service, Banner: p.Banner, Title: p.Title, Fingerprint: fpStr,
 			StatusCode: p.StatusCode, ContentLength: p.ContentLength, PageSimhash: fp,
+			PrevTitle: svc.PrevTitle, PrevFingerprint: svc.PrevFingerprint, TitleSource: titleSrc,
 			FirstSeen: &now, LastSeen: &now,
 			TaskID: taskID, LastTaskID: taskID, // 首次发现归本任务
 		})
 	} else {
+		if prevStatus != p.StatusCode && prevStatus != "" {
+			svc.PrevStatusCode = prevStatus
+		}
+		if prevLen != p.ContentLength && prevLen != 0 {
+			svc.PrevContentLength = prevLen
+		}
 		config.DB.Model(&svc).Updates(map[string]interface{}{
 			"protocol": p.Protocol, "service": p.Service, "banner": p.Banner,
+			"prev_status_code": svc.PrevStatusCode, "prev_content_length": svc.PrevContentLength,
 			"title": p.Title, "fingerprint": fpStr, "status_code": p.StatusCode,
+			"prev_title": svc.PrevTitle, "prev_fingerprint": svc.PrevFingerprint, "title_source": titleSrc,
 			"content_length": p.ContentLength, "page_simhash": fp,
 			"last_seen": now, "asset_id": asset.ID, "miss_count": 0,
 			"last_task_id": taskID, // 只更新「最近扫到」，不动首次归属
@@ -330,9 +375,16 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 		log.Printf("[变更] %s 页面内容发生变化（汉明距离 > %d）", ip, similarity.DefaultThreshold)
 	}
 
-	// 实时合规检测（端口 + 指纹双重判定），发现即入库
-	config.DB.Where("ip = ? AND port = ?", ip, p.Port).First(&svc)
+	// 合规判定：扫描阶段只做「疑似/违规」标记（纯数据比对，不起连接、不扫指纹），
+	// 真正的「确认违规」要等人打开合规页手动一键检测（实连确认）。
 	CheckComplianceForService(svc, taskID)
+
+	// AI 识别：web 服务扫到但「标题不清晰」（空 / nginx 默认页 / 欢迎页 / 纯 IP）时，
+	// 异步走「规则→AI→浏览器渲染→AI」分级识别，结果写回 title/fingerprint（title_source=ai），
+	// 同一任务的识别链路都归到一个会话里，方便在 AI 助手页回溯卡在哪一级。
+	if strings.HasPrefix(strings.ToLower(p.Protocol), "http") && !TitleClear(p.Title) {
+		EnqueueAIIdentify(taskID, ip, p.Port)
+	}
 }
 
 // markMissingServices 本次扫描未发现的服务累计缺席，连续 3 次才剔除

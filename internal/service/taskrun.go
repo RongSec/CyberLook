@@ -43,6 +43,14 @@ func FinishTaskRun(taskID uint, status string) {
 		"apps_found": appsFound, "apps_new": appsNew,
 		"violations": vioTotal, "violations_new": vioNew,
 	})
+
+	// 事件通知：本次执行发现的新资产 / 新违规（按次汇总，不逐条推送）
+	if appsNew > 0 {
+		NotifyNewAsset(taskID, t.Name, int(appsNew))
+	}
+	if vioNew > 0 {
+		NotifyViolation(taskID, t.Name, int(vioNew))
+	}
 }
 
 // CleanupStaleRuns 服务启动时把上一轮残留的 running 执行记录收尾，

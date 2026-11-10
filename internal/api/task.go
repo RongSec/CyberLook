@@ -48,6 +48,7 @@ func CreateTask(c *gin.Context) {
 		Thread     int    `json:"thread"`
 		Timeout    int    `json:"timeout"`
 		NoPing     bool   `json:"noPing"`
+		AliveProbe *bool  `json:"aliveProbe"` // 省略=开启存活探测
 		BatchSize  int    `json:"batchSize"`
 		NoSmart    bool   `json:"noSmart"`
 		ExtraArgs  string `json:"extraArgs"`
@@ -62,8 +63,13 @@ func CreateTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "任务名和 IP 范围必填"})
 		return
 	}
+	aliveProbe := true
+	if req.AliveProbe != nil {
+		aliveProbe = *req.AliveProbe
+	}
 	in := service.TaskInput{
 		Name: req.Name, IPRanges: req.IPRanges, PortMode: req.PortMode, Ports: req.Ports,
+		AliveProbe: aliveProbe,
 		Cron: req.Cron, TemplateID: req.TemplateID, Modules: req.Modules, Finger: req.Finger,
 		Thread: req.Thread, Timeout: req.Timeout, NoPing: req.NoPing, NoSmart: req.NoSmart,
 		ExtraArgs: req.ExtraArgs, NodeIDs: req.NodeIDs, BatchSize: req.BatchSize,

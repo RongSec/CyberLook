@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log"
 	"io"
 	"asset-platform/internal/config"
 
@@ -28,6 +29,12 @@ type NotifySettings struct {
 	EmailPass       string `gorm:"column:email_pass" json:"-"`
 	EmailTo         string `gorm:"column:email_to" json:"emailTo"`
 
+	// 可编辑模板（支持 {{变量}}），为空则用内置默认文案
+	TplTaskDone  string `gorm:"column:tpl_task_done;type:text" json:"tplTaskDone"`
+	TplNewAsset  string `gorm:"column:tpl_new_asset;type:text" json:"tplNewAsset"`
+	TplViolation string `gorm:"column:tpl_violation;type:text" json:"tplViolation"`
+	TplFault     string `gorm:"column:tpl_fault;type:text" json:"tplFault"`
+
 	OnTaskDone   bool `gorm:"column:on_task_done" json:"onTaskDone"`
 	OnNewAsset   bool `gorm:"column:on_new_asset" json:"onNewAsset"`
 	OnViolation  bool `gorm:"column:on_violation" json:"onViolation"`
@@ -35,6 +42,17 @@ type NotifySettings struct {
 }
 
 func (NotifySettings) TableName() string { return "notify_settings" }
+
+// DefaultTemplates 默认通知文案（页面留空时使用，用户可覆盖）
+func DefaultTemplates() (taskDone, newAsset, violation, fault string) {
+	taskDone = "**扫描任务{{status}}**\n> 任务：#{{taskId}} {{taskName}}\n> 时间：{{time}}"
+	newAsset = "**发现新资产**\n> 任务：#{{taskId}} {{taskName}}\n> 时间：{{time}}"
+	violation = "**合规违规提醒**\n> 任务：#{{taskId}} {{taskName}}\n> 时间：{{time}}"
+	fault = "**故障告警：{{taskName}}**\n> 任务：#{{taskId}}\n> 时间：{{time}}"
+	return
+}
+
+
 
 var notifyClient = &http.Client{Timeout: 12 * time.Second}
 
@@ -235,10 +253,86 @@ func NotifyTaskDone(taskID uint, name, status string) {
 	go func() {
 		title := fmt.Sprintf("扫描任务%s：%s", status, name)
 		content := fmt.Sprintf("任务 #%d\n状态：%s\n时间：%s", taskID, status, time.Now().Format("2006-01-02 15:04:05"))
+		// 用户自定义模板优先
+		if tpl := strings.TrimSpace(s.TplTaskDone); tpl != "" {
+			vars := map[string]string{
+				"taskId": fmt.Sprint(taskID), "taskName": name, "status": status,
+				"time": time.Now().Format("2006-01-02 15:04:05"),
+			}
+			content = RenderTpl(tpl, vars)
+		}
 		for k, v := range Broadcast(title, content) {
 			if strings.HasPrefix(v, "✗") {
 				fmt.Printf("[notify] %s 发送失败: %s\n", k, v)
 			}
 		}
 	}()
+}
+
+// RenderTpl 渲染通知模板：把 {{key}} 替换成变量值。
+// 用简单替换而不是 text/template，是因为运维人员写模板时不该被 Go 模板语法（{{if}} 等）绊住。
+func RenderTpl(tpl string, vars map[string]string) string {
+	out := tpl
+	for k, v := range vars {
+		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
+		out = strings.ReplaceAll(out, "{{ "+k+" }}", v)
+	}
+	return out
+}
+
+// ===== 事件通知（新资产 / 合规违规） =====
+// 与 NotifyTaskDone 一致：异步发送，失败只打日志，不影响主流程。
+
+// notifyByTemplate 取用户模板（空则用默认），渲染变量后广播
+func notifyByTemplate(kind string, vars map[string]string, title string) {
+	var s NotifySettings
+	if err := config.DB.First(&s, 1).Error; err != nil {
+		return
+	}
+	var tpl string
+	switch kind {
+	case "new_asset":
+		tpl = s.TplNewAsset
+		if strings.TrimSpace(tpl) == "" {
+			_, tpl, _, _ = DefaultTemplates()
+		}
+	case "violation":
+		tpl = s.TplViolation
+		if strings.TrimSpace(tpl) == "" {
+			_, _, tpl, _ = DefaultTemplates()
+		}
+	}
+	content := RenderTpl(tpl, vars)
+	log.Printf("[notify] 事件=%s 标题=%s 内容=%s", kind, title, strings.ReplaceAll(content, "\n", " | "))
+	go func() {
+		for k, v := range Broadcast(title, content) {
+			if strings.HasPrefix(v, "✗") {
+				log.Printf("[notify] %s 发送失败: %s", k, v)
+			}
+		}
+	}()
+}
+
+// NotifyNewAsset 本次扫描发现的新资产（任务结束时调用，按次汇总，避免刷屏）
+func NotifyNewAsset(taskID uint, taskName string, count int) {
+	var s NotifySettings
+	if err := config.DB.First(&s, 1).Error; err == nil && !s.OnNewAsset {
+		return
+	}
+	notifyByTemplate("new_asset", map[string]string{
+		"taskId": fmt.Sprint(taskID), "taskName": taskName,
+		"count": fmt.Sprint(count), "time": time.Now().Format("2006-01-02 15:04:05"),
+	}, fmt.Sprintf("发现新资产 %d 个：%s", count, taskName))
+}
+
+// NotifyViolation 确认违规（一键检测把疑似升为违规后调用）
+func NotifyViolation(taskID uint, taskName string, count int) {
+	var s NotifySettings
+	if err := config.DB.First(&s, 1).Error; err == nil && !s.OnViolation {
+		return
+	}
+	notifyByTemplate("violation", map[string]string{
+		"taskId": fmt.Sprint(taskID), "taskName": taskName,
+		"count": fmt.Sprint(count), "time": time.Now().Format("2006-01-02 15:04:05"),
+	}, fmt.Sprintf("确认合规违规 %d 条", count))
 }

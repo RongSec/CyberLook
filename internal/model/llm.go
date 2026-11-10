@@ -6,8 +6,7 @@ import "time"
 type LLMProfile struct {
 	ID       uint   `gorm:"primaryKey" json:"id"`
 	Name     string `gorm:"column:name;size:100" json:"name"`
-	Provider string `gorm:"column:provider;size:20;default:openai" json:"provider"` // openai | anthropic | ollama | azure
-	BaseURL  string `gorm:"column:base_url;size:500" json:"baseUrl"`
+		BaseURL  string `gorm:"column:base_url;size:500" json:"baseUrl"`
 	APIKey   string `gorm:"column:api_key;size:500" json:"-"`       // 不序列化
 	APIKeyHint string `gorm:"column:api_key_hint;size:50" json:"apiKeyHint"` // sk-xxx...abcd
 	Model    string `gorm:"column:model;size:100" json:"model"`
@@ -26,12 +25,22 @@ type LLMProfile struct {
 	CooldownSeconds int  `gorm:"column:cooldown_seconds;default:60" json:"cooldownSeconds"` // 熔断冷却秒数
 	TimeoutSeconds  int  `gorm:"column:timeout_seconds" json:"timeoutSeconds"`
 
-	// TLS 兼容（内网 LLM 网关常见需要）
-	TLSSkipVerify bool `gorm:"column:tls_skip_verify" json:"tlsSkipVerify"` // 跳过证书校验
+	// Provider API 协议：openai / openai-responses / anthropic / ollama
+	Provider string `gorm:"column:provider;size:20;default:openai" json:"provider"`
+
+	// AI 思考配置
+	// ThinkingType: "" = 不发送, "enabled" = 开启, "disabled" = 关闭
+	ThinkingType string `gorm:"column:thinking_type;size:10" json:"thinkingType"`
+	// ReasoningEffort: "" = 不发送, low/medium/high/xhigh/max
+	ReasoningEffort string `gorm:"column:reasoning_effort;size:10" json:"reasoningEffort"`
+
+	// 速率限制（0 = 不限）
+	RatePerSecond float64 `gorm:"column:rate_per_second;default:0" json:"ratePerSecond"`
+	RatePerMinute float64 `gorm:"column:rate_per_minute;default:0" json:"ratePerMinute"`
+
 	// ViaProxy 应用层代理地址（如 http://host.docker.internal:8898）
 	// 用途：Docker Desktop 等环境下 TLS 握手会被 VM 网络丢弃，此时让宿主机代理完成 TLS
 	ViaProxy string `gorm:"column:via_proxy;size:200" json:"viaProxy"`
-	TLSMinVersion string `gorm:"column:tls_min_version;size:10" json:"tlsMinVersion"` // ""=默认，tls1.0/tls1.2
 
 	// 运行时状态（不入库，由熔断器填充）
 	BreakerOpen   bool   `gorm:"-" json:"breakerOpen"`
@@ -72,8 +81,10 @@ type LLMConversation struct {
 	ProfileName  string    `gorm:"column:profile_name;size:100" json:"profileName"`
 	MessageCount int       `gorm:"column:message_count;default:0" json:"messageCount"`
 	TotalTokens  int       `gorm:"column:total_tokens;default:0" json:"totalTokens"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	// TaskID > 0 表示这是扫描任务自动产生的 AI 对话（同一个任务的识别记录都归在这一个会话里）
+	TaskID    uint      `gorm:"column:task_id;default:0" json:"taskId"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 func (LLMConversation) TableName() string { return "llm_conversations" }
@@ -85,6 +96,8 @@ type LLMMessage struct {
 	Role           string    `gorm:"column:role;size:20" json:"role"` // user / assistant
 	Content        string    `gorm:"column:content;type:text" json:"content"`
 	ToolCalls      string    `gorm:"column:tool_calls;type:text" json:"toolCalls"` // JSON 数组
+	// Meta 结构化附加数据（JSON）：如 http_trace 的请求/响应包，前端折叠成按钮 + 四栏弹窗
+	Meta string `gorm:"column:meta;type:text" json:"meta"`
 	Tokens         int       `gorm:"column:tokens;default:0" json:"tokens"`
 	CreatedAt      time.Time `json:"createdAt"`
 }

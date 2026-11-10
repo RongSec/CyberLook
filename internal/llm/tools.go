@@ -170,6 +170,13 @@ func Tools() []Tool {
 				"protocol": str("协议：HTTP 或 HTTPS"),
 			}, "ip", "port")),
 
+		t("get_service_changes", "查询服务的识别变更（旧 vs 新 title/fingerprint），用于判断是否为真实变更",
+			param(map[string]interface{}{
+				"ip":          str("IP 过滤，可选"),
+				"onlyChanged": boolean("只看有变更的，默认 true"),
+				"limit":       num("返回条数，默认 50"),
+			})),
+
 		t("get_ledger_diff", "台账比对：找出台账有但未扫描到、扫描到但台账没有的资产",
 			param(map[string]interface{}{
 				"limit": num("返回条数，默认 50"),
@@ -406,6 +413,8 @@ func Execute(name string, argsJSON string) string {
 			"server": r.Server, "layer": r.Layer, "confidence": r.Confidence,
 		})
 
+	case "get_service_changes":
+		return getServiceChanges(s("ip"), args["onlyChanged"], limit)
 	case "get_ledger_diff":
 		return ledgerDiff(limit)
 
@@ -1231,4 +1240,44 @@ func splitIPs(s string) []string {
 		out = append(out, cur)
 	}
 	return out
+}
+
+// getServiceChanges 查询识别变更
+func getServiceChanges(ip string, onlyChanged interface{}, limit int) string {
+	q := config.DB.Model(&model.Service{}).
+		Select("ip, port, protocol, title, prev_title, fingerprint, prev_fingerprint, title_source, status_code")
+	if ip != "" {
+		q = q.Where("ip::text ILIKE ?", "%"+ip+"%")
+	}
+	only := true
+	if b, ok := onlyChanged.(bool); ok {
+		only = b
+	}
+	if only {
+		q = q.Where("(prev_title != '' AND prev_title != title) OR (prev_fingerprint != '' AND prev_fingerprint != fingerprint)")
+	}
+	var items []model.Service
+	q.Order("ip, port").Limit(limit).Find(&items)
+
+	type changeItem struct {
+		IP              string `json:"ip"`
+		Port            int    `json:"port"`
+		Protocol        string `json:"protocol"`
+		Title           string `json:"title"`
+		PrevTitle       string `json:"prevTitle"`
+		Fingerprint     string `json:"fingerprint"`
+		PrevFingerprint string `json:"prevFingerprint"`
+		TitleSource     string `json:"titleSource"`
+		StatusCode      string `json:"statusCode"`
+	}
+	out := make([]changeItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, changeItem{
+			IP: it.IP, Port: it.Port, Protocol: it.Protocol,
+			Title: it.Title, PrevTitle: it.PrevTitle,
+			Fingerprint: it.Fingerprint, PrevFingerprint: it.PrevFingerprint,
+			TitleSource: it.TitleSource, StatusCode: it.StatusCode,
+		})
+	}
+	return jsonOut(map[string]interface{}{"count": len(out), "items": out})
 }

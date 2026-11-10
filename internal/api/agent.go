@@ -61,9 +61,13 @@ func AgentTasks(c *gin.Context) {
 // AgentProgress agent 上报进度（仅在执行任务期间调用）
 func AgentProgress(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	// 已被取消：直接告知 agent 终止
+	// 已结束（取消/完成/被判中断/失败）：告知 agent 终止本机扫描进程。
+	// 注意必须包含 stalled_ai：看门狗把分片判死并回收 IP 后，若不同时让节点停掉旧进程，
+	// 节点上会留着僵尸扫描，和新派下来的分片抢资源 → 双双变慢 → 再次被判中断（死循环）。
 	var at model.AgentTask
-	if err := config.DB.First(&at, id).Error; err == nil && at.Status == "cancelled" {
+	if err := config.DB.First(&at, id).Error; err == nil &&
+		(at.Status == "cancelled" || at.Status == "done" ||
+			at.Status == "done_ai" || at.Status == "stalled_ai" || at.Status == "failed") {
 		c.JSON(http.StatusOK, gin.H{"message": "cancelled", "cancelled": true})
 		return
 	}
@@ -95,7 +99,8 @@ func AgentProgress(c *gin.Context) {
 	_ = service.UpdateAgentProgress(uint(id), req.Total, req.Scanned, req.Progress, req.Eta, req.Message)
 	// 顺便缓存 agent 上报的终端日志
 	if req.Log != "" && at.NodeID > 0 {
-		config.DB.Model(&model.Node{}).Where("id = ?", at.NodeID).Update("terminal_log", req.Log)
+		updateNodeLog(at.NodeID, req.Log)
+		updateShardLog(at.ID, req.Log)
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "ok", "cancelled": false})
 }
@@ -112,7 +117,8 @@ func AgentFinish(c *gin.Context) {
 	var at model.AgentTask
 	_ = config.DB.First(&at, id).Error
 	if req.Log != "" && at.NodeID > 0 {
-		config.DB.Model(&model.Node{}).Where("id = ?", at.NodeID).Update("terminal_log", req.Log)
+		updateNodeLog(at.NodeID, req.Log)
+		updateShardLog(at.ID, req.Log)
 	}
 	_ = service.FinishAgentTask(uint(id), req.OK)
 	// 事件驱动：节点完成就下发下一批
@@ -307,4 +313,76 @@ func GetNodeLicenseStatus(c *gin.Context) {
 		out = append(out, row{ID: n.ID, Name: n.Name, HasLic: n.License != ""})
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// updateNodeLog 只在日志正文真的变化时才更新时间戳。
+// 扫描监控靠「日志多久没变化」判断卡死，agent 每 2 秒都会上报同一段日志，
+// 若能无条件刷新时间戳，就永远判不出卡死。
+func updateNodeLog(nodeID uint, logText string) {
+	var n model.Node
+	if err := config.DB.Select("id", "terminal_log").First(&n, nodeID).Error; err != nil {
+		return
+	}
+	if n.TerminalLog == logText {
+		return
+	}
+	config.DB.Model(&model.Node{}).Where("id = ?", nodeID).
+		Updates(map[string]interface{}{"terminal_log": logText, "terminal_log_at": time.Now()})
+}
+
+// updateShardLog 从节点累积日志里切出「本分片」的部分存到 agent_tasks.terminal_log。
+// agent 上报的是进程级累积日志（一次任务跑几百个分片都堆在一起），
+// 直接看节点日志会把不同分片混在一起，AI 诊断也会误读。
+func updateShardLog(shardID uint, logText string) {
+	marker := fmt.Sprintf("[agent-task #%d]", shardID)
+	lines := strings.Split(logText, "\n")
+	keep := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		if strings.Contains(ln, marker) {
+			// 去掉前缀，终端里只留扫描器原始输出
+			if i := strings.Index(ln, marker); i >= 0 {
+				ln = strings.TrimSpace(ln[i+len(marker):])
+			}
+			keep = append(keep, ln)
+		}
+	}
+	if len(keep) == 0 {
+		return
+	}
+	shardLog := strings.Join(keep, "\n")
+	if len(shardLog) > 200000 {
+		shardLog = shardLog[len(shardLog)-200000:]
+	}
+	config.DB.Model(&model.AgentTask{}).Where("id = ?", shardID).
+		Update("terminal_log", shardLog)
+
+	// 日志里已经出现结束标志 → 立刻判完成，不用等 15 分钟停滞检测。
+	// （tscan 没有独立完成信号，这是唯一可靠的"提前收尾"依据）
+	if hasFinishMark(shardLog) {
+		var at model.AgentTask
+		if err := config.DB.First(&at, shardID).Error; err == nil && at.Status == "running" {
+			go service.DiagnoseShard(at, "log-finish")
+		}
+	}
+}
+
+// hasFinishMark 判断日志里是否出现扫描结束的标志
+func hasFinishMark(logText string) bool {
+	for _, k := range []string{"扫描结束", "导出HTML文件成功", "回车退出", "全部完成"} {
+		if strings.Contains(logText, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// ShardLog 获取某个分片的终端回显（节点终端弹窗用）
+func ShardLog(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var at model.AgentTask
+	if err := config.DB.First(&at, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "分片不存在"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": at.ID, "node": at.NodeName, "ipRanges": at.IPRanges, "log": at.TerminalLog})
 }

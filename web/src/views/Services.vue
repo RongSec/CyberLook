@@ -2,12 +2,12 @@
   <div>
     <n-card title="应用服务">
       <p class="tip">本页只展示<b>已确认</b>的 Web 资产（在「资产处置」确认过的）；待处置的请到「资产处置」处理。</p>
-      <SearchBar :fields="splFields" @search="onSplSearch" @reset="onSplReset" />
+      <SearchBar :fields="splFieldsPlus" @search="onSplSearch" @reset="onSplReset" />
       <div class="filters" style="margin-top:12px">
         <n-tag round>{{ pagination.itemCount }} 条</n-tag>
-        <n-tag round>{{ pagination.itemCount }} 条</n-tag>
         <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" :conds="splConds" />
-        <n-button @click="exportUrls">导出 URL</n-button>
+        <n-button :loading="exporting" @click="exportUrls">导出 URL</n-button>
+        <n-button :loading="aiBatch" @click="reidentifyBatch">AI 批量识别</n-button>
         <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
           <template #trigger>
             <n-button type="error" :disabled="checked.length === 0">
@@ -80,8 +80,6 @@ const statusCodeOptions = [
 const columns = [
   { type: 'selection', width: 44, fixed: 'left' },
   { title: 'IP', key: 'ip', width: 140 },
-  { title: '部门', key: 'department', width: 130, ellipsis: { tooltip: true }, render: r => r.department || '—' },
-  { title: '负责人', key: 'owner', width: 150, render: r => renderOwners(r.owner) },
   { title: '端口', key: 'port', width: 80 },
   { title: '协议', key: 'protocol', width: 80 },
   {
@@ -98,6 +96,12 @@ const columns = [
   { title: '网站标题', key: 'title', ellipsis: { tooltip: true }, render: r => r.title || '-' },
   { title: '指纹', key: 'fingerprint', width: 150, ellipsis: { tooltip: true }, render: r => r.fingerprint || '-' },
   { title: 'Banner', key: 'banner', ellipsis: { tooltip: true } },
+  { title: '台账登记', key: 'ledger', width: 200,
+    render: r => h('div', { style: 'font-size:12px;line-height:1.5' }, [
+      h('div', { style: 'color:#15803d' }, r.systemName || (r.confirmed ? '（台账未填系统名）' : '—')),
+      h('div', { style: 'color:#6b7280;font-size:11px' },
+        [r.owner || '', r.department || ''].filter(Boolean).join(' · ') || '—')
+    ]) },
   { title: '最近发现', key: 'lastSeen', width: 160, render: r => fmt(r.lastSeen) },
   {
     title: '操作', key: 'actions', width: 170,
@@ -132,6 +136,14 @@ const exportCols = computed(() =>
     .filter(c => c.key && !['actions', 'op'].includes(c.key))
     .map(c => ({ key: c.key, label: c.title }))
 )
+
+const splFieldsPlus = computed(() => [
+  // 台账登记是聚合列，不能整体筛；拆成三个独立条件给后端
+  ...splFields.value.filter(f => f.key !== 'ledger' && f.key !== 'systemName' && f.key !== 'owner' && f.key !== 'department'),
+  { key: 'systemName', label: '系统名' },
+  { key: 'owner', label: '负责人' },
+  { key: 'department', label: '部门' },
+])
 
 const splFields = computed(() =>
   columns
@@ -169,22 +181,148 @@ async function load() {
       }
     })
     items.value = res.items
-    pagination.value = { page: res.page, pageSize: res.size, itemCount: res.total }
+    // 后端只返回 {total, items}，没有 page/size。之前取 res.page/res.size 恒为 undefined，
+    // 分页器变成「非受控」：点查询后数据已回到第 1 页，页码却还停在第 2 页。
+    // 这里以本地的 page/pageSize 为准（它们才是真正发给后端的值）。
+    pagination.value = { page: page.value, pageSize: pageSize.value, itemCount: res.total }
   } finally {
     loading.value = false
   }
 }
 
-function copyUrl(row) {
+const aiBatch = ref(false)
+
+// 历史「不清晰」标题批量重识别：AI 只在入库时触发，存量的靠这个补
+async function reidentifyBatch() {
+  aiBatch.value = true
+  try {
+    const r = await api.post('/services/reidentify?limit=100')
+    message.success(`已入队 ${r.queued} 条（候选 ${r.scanned} 条），后台识别中，稍后刷新即可看到更准确的标题与新变更标记`)
+  } catch (e) {
+    message.error(e.response?.data?.error || '提交失败')
+  } finally {
+    aiBatch.value = false
+  }
+}
+
+// 单条服务 → URL 文本（复制 URL 与导出 URL 共用同一口径，避免两处规则漂移）
+// 协议：protocol 含 https 则 https，否则 http；端口：非 80/443 才带 :port；结尾不加多余斜杠
+function buildUrl(row) {
   const proto = (row.protocol || '').toLowerCase().includes('https') ? 'https' : 'http'
-  const url = proto + '://' + row.ip + (row.port && row.port !== 80 && row.port !== 443 ? ':' + row.port : '')
-  navigator.clipboard.writeText(url).then(
-    () => message.success('已复制：' + url),
-    () => message.warning('复制失败，请手动复制：' + url)
-  )
+  return proto + '://' + row.ip + (row.port && row.port !== 80 && row.port !== 443 ? ':' + row.port : '')
+}
+
+function copyUrl(row) {
+  const url = buildUrl(row)
+  // 内网多为 http 访问，navigator.clipboard 只在安全上下文（https/localhost）可用，
+  // 之前直接调用会抛错导致按钮"失效"。这里先试 Clipboard API，失败回退 textarea + execCommand。
+  const fallback = () => {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (ok) message.success('已复制：' + url)
+      return ok
+    } catch (e) {
+      return false
+    }
+  }
+  // 直接走 execCommand（http 环境也能用）；Clipboard API 仅作为备选，不做安全上下文限制
+  if (!fallback()) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => message.success('已复制：' + url), () => message.warning('复制失败，请手动复制：' + url))
+    }
+  }
 }
 
 function search() { page.value = 1; load() }
+
+// ---------- 导出 URL（当前筛选条件下的全部 web 服务） ----------
+const exporting = ref(false)
+
+// 时间戳 YYYYMMDD-HHmm，用于文件名
+function tsStamp(d = new Date()) {
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+}
+
+// IPv4 按数值比较（否则 10.0.0.10 会排在 10.0.0.2 前面）；非 IPv4 退回原字符串
+function ipSortKey(ip) {
+  const s = String(ip || '')
+  const parts = s.split('.')
+  if (parts.length === 4 && parts.every(x => /^\d{1,3}$/.test(x))) {
+    return parts.map(x => x.padStart(3, '0')).join('.')
+  }
+  return s
+}
+
+// Blob 下载纯文本。内容带 UTF-8 BOM：URL 本身是纯 ASCII，理论上不需要，
+// 但用记事本/Excel 打开后再加工成含中文的清单时不至于乱码，成本仅 3 字节，故保留。
+function downloadText(text, filename) {
+  const blob = new Blob(['\ufeff' + text], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  // 立即 revoke 在部分浏览器会打断下载，延迟释放
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// 列表是后端分页（remote），只导出当前页会漏数据：
+// 用与 load() 完全相同的查询参数另取一次全量（后端 size 上限 5000）。
+async function exportUrls() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const res = await api.get('/services', {
+      params: {
+        page: 1, size: 5000, webOnly: 'true',
+        ...filters.value,
+        statusCodes: (filters.value.statusCodes || []).join(','),
+        confirmedOnly: 'true', // 与列表一致：应用服务只含已确认资产
+        conds: JSON.stringify(splConds.value)
+      }
+    })
+    const rows = res.items || []
+    const total = Number(res.total) || 0
+
+    // 去重（同一 URL 只留一条）后按 IP、端口升序
+    const seen = new Set()
+    const list = []
+    for (const r of rows) {
+      const url = buildUrl(r)
+      if (seen.has(url)) continue
+      seen.add(url)
+      list.push({ url, ip: ipSortKey(r.ip), port: Number(r.port) || 0 })
+    }
+    list.sort((a, b) => (a.ip === b.ip ? a.port - b.port : (a.ip < b.ip ? -1 : 1)))
+
+    if (list.length === 0) {
+      message.warning('当前筛选条件下没有可导出的 URL')
+      return
+    }
+    // 一行一条，CRLF 兼容 Windows 记事本
+    downloadText(list.map(x => x.url).join('\r\n'), `应用服务-URL-${tsStamp()}.txt`)
+    if (total > rows.length) {
+      message.warning(`已导出 ${list.length} 条 URL（共 ${total} 条，超出单次 5000 条上限，请缩小筛选范围）`)
+    } else {
+      message.success(`已导出 ${list.length} 条 URL`)
+    }
+  } catch (e) {
+    message.error(e.response?.data?.error || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 async function batchDelete() {
   if (checked.value.length === 0) { message.warning('请先选择服务'); return }
