@@ -38,6 +38,8 @@ type ScanTask struct {
 	Thread     int        `gorm:"column:thread;default:600" json:"thread"`
 	Timeout    int        `gorm:"column:timeout;default:3" json:"timeout"`
 	NoPing     bool       `gorm:"column:no_ping" json:"noPing"`
+	// AliveProbe 是否先做服务端存活探测（false = 直接把全部目标 IP 规划下发）
+	AliveProbe bool `gorm:"column:alive_probe" json:"aliveProbe"`
 	NoSmart    bool       `gorm:"column:no_smart" json:"noSmart"`
 	ExtraArgs  string     `gorm:"column:extra_args" json:"extraArgs"`
 	ReportPath string     `gorm:"column:report_path" json:"reportPath"`
@@ -80,8 +82,20 @@ type Service struct {
 	ContentLength int      `gorm:"column:content_length;default:0" json:"contentLength"`
 	// PageSimhash 当前页面内容指纹（SimHash 64 位）
 	PageSimhash uint64 `gorm:"column:page_simhash;default:0" json:"-"`
+	// PrevTitle / PrevFingerprint 上次识别的结果（用于对比新旧）
+	PrevTitle       string `gorm:"column:prev_title;size:500" json:"prevTitle"`
+	PrevFingerprint string `gorm:"column:prev_fingerprint;size:500" json:"prevFingerprint"`
+	// 上次的响应码/响应长度（待处置里展示「旧→新」）
+	PrevStatusCode    string `gorm:"column:prev_status_code" json:"prevStatusCode"`
+	PrevContentLength int    `gorm:"column:prev_content_length" json:"prevContentLength"`
+	// TitleSource 标题来源：tscan / fingerprint / ai
+	TitleSource string `gorm:"column:title_source;size:20" json:"titleSource"`
 	MissCount   int        `gorm:"column:miss_count;default:0" json:"missCount"`
 	Confirmed   bool       `gorm:"column:confirmed;default:false" json:"confirmed"`
+	// ConfirmedTitle 该端口确认时的标题基线（端口级）。
+	// 之前基线只有 assets.confirmed_title 一个值（IP 级），多端口 IP 必然互相误判成"新变更"，
+	// 而且按台账确认时对 source=scan 的资产不写基线 → 确认完立刻又变"新变更"，永远确认不掉。
+	ConfirmedTitle string `gorm:"column:confirmed_title" json:"confirmedTitle"`
 	FirstSeen   *time.Time `gorm:"column:first_seen" json:"firstSeen"`
 	LastSeen    *time.Time `gorm:"column:last_seen" json:"lastSeen"`
 	TaskID      uint       `gorm:"column:task_id;default:0;index" json:"taskId"`         // 首次发现它的任务
@@ -123,6 +137,10 @@ type ComplianceResult struct {
 	FixedAt    *time.Time `gorm:"column:fixed_at" json:"fixedAt"`
 	TaskID     uint       `gorm:"column:task_id;default:0;index" json:"taskId"`
 	LastTaskID uint       `gorm:"column:last_task_id;default:0;index" json:"lastTaskId"`
+	// Evidence 一键检测时实连端口抓到的响应（证明"那一刻确实开着"）
+	Evidence string `gorm:"column:evidence" json:"evidence"`
+	// Label 自定义标签，非空时覆盖显示的规则名（只影响展示，不影响检测匹配）
+	Label string `gorm:"column:label" json:"label"`
 }
 
 func (ComplianceResult) TableName() string { return "compliance_results" }
@@ -168,9 +186,12 @@ type Node struct {
 	Concurrency   int        `gorm:"column:concurrency;default:1000" json:"concurrency"`
 	LastHeartbeat *time.Time `gorm:"column:last_heartbeat" json:"lastHeartbeat"`
 	TerminalLog   string     `gorm:"column:terminal_log;type:text" json:"-"`
+	// TerminalLogAt 终端日志正文最后一次变化的时间（扫描监控用它判断日志是否还在刷新）
+	TerminalLogAt *time.Time `gorm:"column:terminal_log_at" json:"terminalLogAt"`
 	AgentVersion  string     `gorm:"column:agent_version" json:"agentVersion"`
 	Projects      string     `gorm:"column:projects;type:text" json:"projects"` // config.db 里的 project 列表（JSON 数组）
 	UpgradeReq    bool       `gorm:"column:upgrade_requested;default:false" json:"upgradeRequested"`
+	UninstallReq  bool       `gorm:"column:uninstall_requested;default:false" json:"uninstallRequested"`
 	License       string     `gorm:"column:license;type:text" json:"-"` // Tscan License 内容（不下发到前端）
 	CreatedAt     time.Time  `json:"createdAt"`
 }
@@ -195,6 +216,12 @@ type AgentTask struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	StartedAt  *time.Time `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
+	// AI 诊断：'' 未诊断 / done 已完成但没被结束 / stalled 真卡死
+	// TerminalLog 本分片自己的终端回显（从节点日志里按 [agent-task #id] 过滤出来）
+	TerminalLog   string     `gorm:"column:terminal_log;type:text" json:"-"`
+	AIVerdict     string     `gorm:"column:ai_verdict" json:"aiVerdict"`
+	AIVerdictNote string     `gorm:"column:ai_verdict_note" json:"aiVerdictNote"`
+	AIVerdictAt   *time.Time `gorm:"column:ai_verdict_at" json:"aiVerdictAt"`
 }
 
 func (AgentTask) TableName() string { return "agent_tasks" }
@@ -267,6 +294,9 @@ type SystemSettings struct {
 	GithubToken string `gorm:"column:github_token" json:"githubToken"`
 	Proxy      string `gorm:"column:proxy" json:"proxy"` // HTTP 代理，仅用于 GitHub 请求
 	Port       int    `gorm:"column:port;default:18888" json:"port"` // 服务端监听端口
+	// AllowedIPs IP 白名单（逗号分隔 CIDR），空 = 不限制
+	// 例：10.24.188.0/23,127.0.0.1
+	AllowedIPs string `gorm:"column:allowed_ips;size:500" json:"allowedIps"`
 }
 
 func (SystemSettings) TableName() string { return "system_settings" }

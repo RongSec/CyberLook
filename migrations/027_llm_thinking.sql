@@ -1,0 +1,8 @@
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS provider VARCHAR(20) DEFAULT 'openai';
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS thinking_type VARCHAR(10) DEFAULT '';
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS reasoning_effort VARCHAR(10) DEFAULT '';
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS rate_per_second DOUBLE PRECISION DEFAULT 0;
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS rate_per_minute DOUBLE PRECISION DEFAULT 0;
+-- 删掉不再需要的 TLS 字段
+ALTER TABLE llm_profiles DROP COLUMN IF EXISTS tls_skip_verify;
+ALTER TABLE llm_profiles DROP COLUMN IF EXISTS tls_min_version;

@@ -112,9 +112,7 @@ asset-platform/
 └── README.md
 ```
 
-## 资产从发现到标记的完整流程
-
-> GitHub 原生支持 mermaid，仓库首页可直接渲染下面的图。
+## 资产从发现到标记的完整流程（业务视角）
 
 ```mermaid
 flowchart TD
@@ -126,23 +124,18 @@ flowchart TD
     D --> E["服务 / 指纹识别"]
     E --> F{"存在 Web 服务?"}
     F -->|"是"| G["HTTP 探测<br/>标题 + 响应码 + Banner"]
-    F -->|"否"| H["仅记录端口"]
+    F -->|"否"| H["仅记录端口<br/>资产直接 confirmed"]
 
-    G --> I[("assets 表<br/>status = pending")]
+    G --> I[("assets<br/>status = pending")]
     H --> I
 
     I --> J["资产处置页<br/>待确认池"]
     J --> K{"人工判断"}
-    K -->|"确认归属"| L["填 部门 / 负责人 / 系统名<br/>（支持批量）"]
-    K -->|"误报或无关"| M["批量删除"]
+    K -->|"确认归属"| L["填 部门 / 负责人 / 系统名"]
+    K -->|"误报或无关"| M["删除记录"]
 
     L --> N[("status = confirmed")]
-    M --> Z["流程结束"]
-
-    N --> O["资产总览<br/>全量可检索"]
-    N --> P["应用服务<br/>仅已确认的 Web 资产"]
-    N --> Q["页面快照<br/>按间隔定期截图"]
-
+    N --> O["资产总览 / 应用服务 / 页面快照"]
     O --> R["台账比对<br/>红=台账无 绿=台账有 黄=页面变更"]
 
     style I fill:#FAEEDA,stroke:#BA7517
@@ -151,55 +144,251 @@ flowchart TD
     style R fill:#FBEAF0,stroke:#D4537E
 ```
 
-**几个关键状态说明**：
+---
 
-| 状态 | 位置 | 含义 |
-|---|---|---|
-| `pending` | 资产处置 | 扫描发现但未确认归属 |
-| `confirmed` | 资产总览 / 应用服务 | 已人工标注部门与负责人 |
-| 台账红/绿/黄 | 资产总览 | 与台账比对结果（无/有/页面变更） |
+## IP 流转：从 IP 段到分片到节点（全链路）
 
-## 一个 IP 的完整生命周期
+> 这一节对应代码：`internal/service/dispatch.go`、`internal/service/fault.go`、`internal/target/`。
+> 一句话：**IP 段 → 展开成 IP 列表 → 每 500 个一片做存活探测 → 存活的进 alivePool → 按 batch_size 切分片 → 派给空闲节点 → 失败的 IP 回池重派 → 池空 + 探完 + 无活跃分片 = 任务结束。**
 
-> 从发现 → 处置 → 长期维护 → 变更再发现，形成闭环。
+### 1. 目标展开
+
+| 环节 | 细节 |
+|---|---|
+| 输入字段 | `scan_tasks.ip_ranges`，一个字符串 |
+| 分隔符 | `,` `，` `;` `；` 换行 空格 `、` 都算 |
+| 支持的写法 | 单个 IP、CIDR（`10.24.1.0/24`）、区间（`10.24.1.1-10.24.1.20`） |
+| 展开函数 | `target.Resolve()` |
+| 结果落点 | 内存 `taskPipeline.totalIPs`（全量原始 IP，**不受排除段影响后再过滤**）+ `data/pipeline/<taskID>.json` 断点文件 |
+
+### 2. 流水线（pipeline）与存活探测
+
+每条运行中的任务在内存里有一条流水线：
+
+```go
+type taskPipeline struct {
+    totalIPs  []string // 展开后的全部 IP
+    offset    int      // 已经探测到第几个
+    alivePool []string // 已确认存活、还没下发的 IP
+    probing   bool     // 正在探测中（防止重复探测）
+    dispatching bool   // 正在调度（防止重复下发）
+    stopped   bool     // 流水线已废弃（重跑/停止/删除后旧协程必须退出）
+}
+```
+
+| 项 | 值 / 行为 |
+|---|---|
+| 探测粒度 | `probeSliceSize = 500`（每片 500 个 IP） |
+| 探测方式 | `scanner.AliveCheck.Probe()`（ICMP/TCP 存活） |
+| 存活结果 | 追加进 `alivePool`，然后 `offset += 500`，接着立刻触发下一轮调度 |
+| 关闭探测（`alive_probe=false`） | `offset` 直接置为满，**全部 IP 一次性进 alivePool**（用于禁 ping / 透明代理干扰的网段） |
+| 边探边扫 | 池子攒够 `max(batchSize/5, 10)` 就先发一批，不等整段探完（稀疏网段否则永远发不出去） |
+| 探测进度日志 | 每片开始/结束都写 `task_logs`：`[存活] 开始探测第 x-y 个…` |
+
+### 3. 切分片并下发
+
+| 项 | 细节 |
+|---|---|
+| 分片大小 | `scan_tasks.batch_size`（默认 100 个 IP；用户可改，30 左右更稳） |
+| 选节点 | `findIdleNodeExcluding()`：节点 `status=online` + **心跳 < 2 分钟**（`nodeAliveWindow`）+ 未被熔断 + **该节点在本任务里没有 pending/running 分片** |
+| 轮询 | 同一轮调度里每个节点最多拿一批（`usedNodes`），避免快的节点吃满、其它节点闲着 |
+| 落库 | 一条分片 = `agent_tasks` 一行，`ip_ranges` 是逗号拼接的 IP，`batch_no` 自增 |
+| 端口总数预估 | 下发时先按 `IP 数 × 端口数` 估一个 `total`，agent 上报真实值后覆盖 |
+| 并发上限 | 一节点一任务同时只有 1 个分片在跑（`findIdleNode` 的第 4 个条件） |
+
+### 4. 节点执行与回报
 
 ```mermaid
-flowchart TD
-    subgraph 发现
-        A1["台账导入<br/>（Excel 批量）"] --> J
-        A2["扫描发现<br/>（定时任务 / 手动）"] --> D{"该 IP 是否已在库?"}
-        D -->|"否"| E["新发现<br/>落 pending"]
-        D -->|"是"| F{"页面内容有变化?"}
-        F -->|"是"| G["标记「新变更」<br/>content_changed = true"]
-        F -->|"否"| H["跳过<br/>仅更新 last_seen"]
+sequenceDiagram
+    participant P as 平台
+    participant A as agent（节点）
+    P->>A: 分片写入 agent_tasks（pending）
+    A->>P: GET /api/agent/nodes/:id/tasks
+    P-->>A: 返回 pending 分片
+    loop 每 2 秒
+        A->>P: POST /api/agent/tasks/:id/progress {total,scanned,log}
+        P-->>A: {cancelled: true/false}
     end
+    A->>P: POST /api/agent/tasks/:id/finish {ok}
+    P->>P: 分片置 done/failed → 触发下一批调度
+```
 
-    subgraph 处置
-        E --> J["资产处置页<br/>待确认池"]
-        G --> J
-        J --> K{"人工判断"}
-        K -->|"确认归属"| L["填 部门 / 负责人 / 系统名<br/>（支持批量）"]
-        K -->|"误报或无关"| M["批量删除"]
-        L --> N[("status = confirmed")]
-        M --> Z["流程结束"]
-    end
+- 分片日志：agent 上报的是**进程级累积日志**，平台按 `[agent-task #id]` 标记切出**本分片**的日志（`updateShardLog`），终端弹窗看的就是它。
+- 停止信号：分片状态是 `cancelled` / `done` / `done_ai` / `stalled_ai` / `failed` 时，`/progress` 一律回 `cancelled:true`，agent 收到后杀掉本机扫描进程。
 
-    subgraph 长期维护
-        N --> O["资产总览<br/>全量可检索"]
-        N --> P["应用服务<br/>仅已确认 Web 资产"]
-        N --> Q["页面快照<br/>按间隔定期截图"]
-        O --> R["台账比对<br/>红=台账无 绿=台账有 黄=页面变更"]
-        Q --> S{"快照内容变化?"}
-    end
+### 5. 三种「IP 回收」路径
 
-    S -->|"是"| G
-    S -->|"否"| T["继续观察"]
+> 分片没跑完就把 IP 放回 `alivePool`，由下一次调度重新派给其它节点。这是任务能自愈的关键。
 
-    style E fill:#FAEEDA,stroke:#BA7517
-    style N fill:#EAF3DE,stroke:#639922
-    style J fill:#E6F1FB,stroke:#378ADD
-    style R fill:#FBEAF0,stroke:#D4537E
-    style G fill:#FBEAF0,stroke:#D4537E
+| 触发 | 判定逻辑 | IP 去向 | 分片最终状态 |
+|---|---|---|---|
+| **节点主动报失败** | `FinishAgentTask(ok=false)` | 回 `alivePool`，`retry_count + 1` | `cancelled`（不计失败） |
+| **节点掉线 / 熔断** | `RescheduleOrphanShards()` 每 30 秒巡检：心跳 > 2 分钟或已熔断 | 回 `alivePool` | `cancelled` |
+| **扫描停滞** | 看门狗 `checkStalledShards()` 每 30 秒：`scanned` 不增长 **且** 日志不刷新 超过阈值 | `retry_count < 2` 才回池；达到 2 次不再回池 | `stalled_ai`（≥2 次时按进度转 `done_ai` 或 `failed`） |
+
+**看门狗的两个判据**（缺一不可，两个都"死"才判中断）：
+
+1. **进度活性**：`scanned` 在过去 N 分钟内涨过 → 视为活着；
+2. **日志活性**：节点终端日志时间戳 `terminal_log_at` 在过去 N 分钟内变过 → 视为活着。
+
+阈值 N：普通任务 **15 分钟**；`port_mode=all`（全端口）**60 分钟**（单片 100×65535 次探测，正常就要 30~60 分钟）。
+
+### 6. 任务什么时候算「完成」
+
+`CheckTaskAllDone()` 三个条件必须同时满足：
+
+1. 存活探测全部结束：`probing == false` 且 `offset >= len(totalIPs)`
+2. 待下发池已空：`len(alivePool) == 0`
+3. 没有 pending/running 分片：`COUNT(agent_tasks WHERE status IN ('pending','running')) == 0`
+
+满足 → `scan_tasks.status = done`。
+
+特例：一个分片都没下发、且全部 IP 不可达 → 直接 `done`，日志写 `[存活] 全部 N 个 IP 均不可达，任务结束`。
+
+### 7. 断点续传
+
+| 项 | 细节 |
+|---|---|
+| 落盘文件 | `data/pipeline/<taskID>.json`（offset + 待下发池） |
+| 写入时机 | 每批下发后、每片探测后、IP 回收后 |
+| 恢复时机 | 服务启动时 `ensurePipeline()` 优先读文件（比 DB 的 `probe_offset` 更完整） |
+| 废弃保护 | 任务重跑/停止 → `pipeline.stopped = true`，旧协程拿到标记后退出，不会凭空再造一条流水线并行跑 |
+
+---
+
+## 状态流转：所有状态机
+
+### 1. 扫描任务 `scan_tasks.status`
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: 创建（仅保存）
+    pending --> running: 立即执行 / 到达 cron / 手动执行
+    running --> done: 池空+探完+无活跃分片
+    running --> failed: 调度异常（无可用节点等）
+    running --> stopped: 人工停止
+    done --> running: 重跑
+    stopped --> running: 重新执行（从断点或全新）
+    failed --> running: 重新执行
+```
+
+### 2. 分片 `agent_tasks.status`
+
+| 状态 | 谁写的 | 含义 | agent 是否被杀掉 |
+|---|---|---|---|
+| `pending` | 调度器 | 已下发，等节点领取 | — |
+| `running` | agent 首次上报进度 | 正在扫 | — |
+| `done` | agent `finish(ok=true)` | 正常跑完 | 是（防止进程残留） |
+| `done_ai` | 看门狗诊断 | 日志显示跑完但没收到结束信号，按完成收尾 | 是 |
+| `stalled_ai` | 看门狗诊断 | 判定卡死，IP 回收重派 | 是 |
+| `failed` | agent `finish(ok=false)` / 多次回收仍停滞 | 失败 | 是 |
+| `cancelled` | 人工停止 / 节点掉线回收 / 失败回收 | 已回收，**不计入失败**，IP 已回池 | 是 |
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: 调度器写入
+    pending --> running: agent 上报进度
+    running --> done: finish(ok=true)
+    running --> done_ai: 看门狗判「跑完未收尾」
+    running --> stalled_ai: 看门狗判「卡死」
+    running --> cancelled: 停止 / 节点掉线 / 失败转重派
+    pending --> cancelled: 未领取就被回收
+    stalled_ai --> [*]: 回收次数≥2 时按 done_ai / failed 收尾
+    failed --> [*]
+    done --> [*]
+```
+
+### 3. 节点 `nodes.status`
+
+| 状态 | 判定 |
+|---|---|
+| `online` | 每次心跳刷新 `last_heartbeat`，且 `status` 置 online |
+| `offline` | 心跳超时（派发时按 **2 分钟** 判定 `nodeAlive`，不看库里的 status，避免用到过期状态） |
+| 熔断 | 独立于 status：连续失败会进熔断期（`IsNodeFused`），熔断期内不派发 |
+
+### 4. 服务 `services`
+
+| 字段 | 流转 |
+|---|---|
+| `first_seen` | 首次扫到时写入，之后不再变 |
+| `last_seen` | 每次扫到都刷新 |
+| `miss_count` | 本轮没扫到 +1，**连续 3 次没扫到就删除该服务行**（`markMissingServices`） |
+| `confirmed` | 处置确认后置 true；**端口级**，确认基线写 `confirmed_title` |
+| `confirmed_title` | 该端口确认时的标题基线（迁移 039 新增） |
+| `title_source` | `tscan`（扫描器给的）/ `fingerprint`（指纹命中）/ `ai`（AI 识别写回） |
+| `prev_title` / `prev_fingerprint` / `prev_status_code` / `prev_content_length` | 发生变更时留旧值，待处置页展示「旧→新」 |
+| `page_simhash` | 当前页面内容 SimHash |
+
+### 5. 资产 `assets`（**一个 IP 一行**，`ip` 是唯一索引）
+
+| 字段 | 取值 / 流转 |
+|---|---|
+| `source` | `ledger`（台账导入）/ `scan`（扫描自动建） |
+| `status` | `pending`（有这个 IP 的待处置 web 端口）/ `confirmed`（已处置） |
+| `system_name` / `owner` / `department` | 人工确认时写入；**这三个字段非空即视为「有确认痕迹」** |
+| `confirmed_title` / `confirmed_simhash` | IP 级确认基线（端口级缺失时兜底） |
+| `content_changed` | 页面内容 SimHash 与确认基线汉明距离 > 16 时置 true；重新确认后清零 |
+
+**扫描时资产的建立规则**（`ingestService`）：
+
+- 新 IP + **非 web** 服务 → 建资产 `source=scan, status=confirmed`（主机不需要确认）
+- 新 IP + **web** 服务 → 建资产 `source=scan, status=pending`（进待处置）
+- 已有主机记录又新发现 web 服务、且该资产没填过归属 → `status` 从 confirmed 转回 `pending`
+
+### 6. 待处置页的四种呈现（判定顺序）
+
+`listDisposalItems()` 逐端口判定，**顺序不能乱**：
+
+| 顺序 | 条件 | 结果 |
+|---|---|---|
+| 1 | 该 IP 在 `assets` 里不存在 | `new` 新出现（红）；若该端口已确认则不显示 |
+| 2 | `assets.source = ledger` | 走台账口径：端口未确认 → `in_ledger`；已确认且有变更 → `changed`；已确认且无变化 → **不显示** |
+| 3 | 有确认痕迹（确认过标题/指纹，或填过归属） | 端口未确认 → `in_ledger`（已确认 IP 上的新端口）；已确认且有变更 → `changed`；无变化 → 不显示 |
+| 4 | 只有扫描自动建的主机记录（无任何归属） | `new` 新出现（红） |
+
+> `changed` 的两个独立来源：**标题与端口基线不同** 或 **`assets.content_changed = true`**。
+
+### 7. 新旧识别合并口径（重要）
+
+> 代码：`internal/scanner/merge.go` 的 `MergeIdentification()`。
+> 目标：**避免刷出无意义「新变更」，但真实变更必须暴露。**
+
+| 序号 | 条件 | 处理 |
+|---|---|---|
+| 1 | 旧值为空 | 用新值 |
+| 2 | 新值为空 | 用旧值（扫描器这次没拿到标题，不覆盖） |
+| 3 | 旧值是通用词、新值有信息量 | 用新值 |
+| 4 | **两边都是通用词**（Login / Loading…） | **保留旧值**，不标变更（纯抖动） |
+| 5 | **表意一致**（`titleSimilar`） | **保留旧值**，不标变更 |
+| 6 | **表意不一致** | **用新值**，标记「新变更」 |
+
+`titleSimilar` 的判定（三级，任一命中即算一致）：
+
+1. 归一化后相同 —— 去大小写/空格/标点，并剔掉「系统/平台/管理系统/登录/首页/admin…」等噪声词；
+2. 一方包含另一方，且长度比例 ≥ 0.5（例：`中化云盘` ⊂ `中化云盘 - 登录`）；
+3. 字符 3-gram Jaccard 相似度 ≥ 0.8。
+
+**页面内容变更**：`similarity.Changed(确认时 SimHash, 当前 SimHash, 16)` —— 汉明距离 > 16 即判定页面实质变更，
+写 `assets.content_changed = true`，待处置页标黄。阈值取 16 是实测结果：同一系统小改版约 10~14，完全不同系统约 28~35。
+
+### 8. 识别链路（AI 服务识别）
+
+```mermaid
+flowchart LR
+    A["服务入库<br/>title_source=tscan"] --> B{"L0 规则：标题是否清晰"}
+    B -->|"清晰"| Z["不动，结束（0 次 LLM）"]
+    B -->|"不清晰"| C{"L0.5 本地产品库<br/>(标题/指纹/Banner)"}
+    C -->|"命中"| Z2["直接用产品名"]
+    C -->|"未命中"| D["L1 抓请求响应包<br/>最多 4 跳"]
+    D --> E{"响应包再匹配本地库"}
+    E -->|"命中"| Z2
+    E -->|"未命中"| F["L2 一次 LLM<br/>title + product + category + sufficient"]
+    F -->|"拿到标题"| Z3["写回 title_source=ai"]
+    F -->|"sufficient=true"| Z4["信息够了但给不出名字，收手"]
+    F -->|"sufficient=false"| G["L3 浏览器渲染（限流 3 并发）"]
+    G --> H["L4 用渲染结果再调一次 LLM"]
+    H -->|"拿到标题"| Z3
+    H -->|"仍不行"| Z5["保持原值"]
 ```
 
 ## 架构说明
@@ -433,9 +622,26 @@ bash update.sh v0.0.3
 
 - 分布式端口/Web 扫描、资产台账、处置、合规检测、页面快照、定时任务、通知、在线升级
 
+## 扫描引擎
+
+v0.0.25 起默认使用自研引擎（`internal/portscan` + `internal/svcid`，全量 FingerprintHub 规则），
+不再依赖 TscanPlus。需要回退时给 agent 设置 `SCAN_ENGINE=tscan`。
+实测对比见 `docs/端口扫描对拍报告-2026-11-09.md`。
+
 ## 许可证
 
-MIT License — 详见 [LICENSE](LICENSE)
+**GPL-3.0** — 详见 [LICENSE](LICENSE)（GNU GENERAL PUBLIC LICENSE, Version 3, 29 June 2007）
+
+本项目按 GPL-3.0 开源，**不作商业用途**。由此可以合法使用同样采用 GPL-3.0 的第三方数据
+（如 Wappalyzer 系列规则库）；引入时须在 `THIRD_PARTY_NOTICES.md` 中登记来源与授权。
+
+当前随项目分发的规则数据：
+- `data/fingerprint/web_fingerprint_v4.json`、`service_fingerprint_v4.json` — FingerprintHub（0x727），**MIT**，
+  随目录附 `LICENSE.md`
+- 所有 Go 依赖均为 MIT / Apache-2.0 / BSD 类，**未引入 GPL 数据的 Go 模块**（详见 `THIRD_PARTY_NOTICES.md`）
+
+> 若将来需要以闭源/一体机形式交付客户，必须先移除 GPL 数据依赖并重新评估协议，
+> 因为 MIT 包装无法消除 GPL 数据集的 copyleft 义务。
 
 
 **使用前请遵守**：

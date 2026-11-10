@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"errors"
+	"log"
 	"time"
 
 	"asset-platform/internal/config"
@@ -34,6 +35,9 @@ func RegisterNode(name, ip, joinToken, version string) (*model.Node, string, err
 	}
 	updates := map[string]interface{}{
 		"ip": ip, "status": "online", "last_heartbeat": now, "token": nodeToken,
+		// 重新注册 = 全新安装，清掉卸载标记（否则新 agent 心跳一读就被自己卸载，
+		// 也会让"延迟删除"的任务误删刚装好的节点）
+		"uninstall_requested": false,
 	}
 	// agent 重启后上报的版本与中心一致，说明升级已完成，清除标记避免反复下发
 	if version != "" && version == config.LatestAgentVersion {
@@ -75,8 +79,56 @@ func ListNodes() []model.Node {
 }
 
 // DeleteNode 删除节点
-func DeleteNode(id uint) error {
-	return config.DB.Delete(&model.Node{}, id).Error
+// 顺序很重要：先下发卸载指令（uninstall_requested=true），等 agent 心跳取到后自清理退出，
+// 再删数据库行。直接删行会变成：agent 心跳 404 → 清掉本地凭据退出 → 计划任务把进程拉起来 →
+// 用已消费的一次性令牌重新注册失败 → 节点上永久残留进程和计划任务。
+// 返回 uninstallFirst=true 表示"在线节点，已下发卸载指令，稍后自动删除"。
+func DeleteNode(id uint) (uninstallFirst bool, err error) {
+	var node model.Node
+	if err := config.DB.First(&node, id).Error; err != nil {
+		return false, err
+	}
+	// 已离线（2 分钟无心跳）：agent 大概率不在了，直接删行
+	if node.LastHeartbeat == nil || node.LastHeartbeat.Before(time.Now().Add(-2*time.Minute)) {
+		return false, config.DB.Delete(&model.Node{}, id).Error
+	}
+	// 在线：先置卸载标记，agent 下次心跳读到后会自杀（停进程 + 删任务 + 删自己的文件）
+	if err := config.DB.Model(&model.Node{}).Where("id = ?", id).
+		Update("uninstall_requested", true).Error; err != nil {
+		return true, err
+	}
+	go removeAfterUninstall(id)
+	return true, nil
+}
+
+// removeAfterUninstall 等 agent 自清理退出后再删节点行。
+// agent 每 30 秒心跳一次，正常 1 分钟内就会读到标记并退出；
+// 心跳停 40 秒以上视为已退出。最多等 3 分钟，超时也删（避免残留死节点）。
+func removeAfterUninstall(id uint) {
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Second)
+		var node model.Node
+		if err := config.DB.First(&node, id).Error; err != nil {
+			return // 行已不存在
+		}
+		if !node.UninstallReq {
+			log.Printf("[node] 节点 %d 重新注册，取消延迟删除", id)
+			return // 期间被重新注册（RegisterNode 会清掉标记），不删
+		}
+		if node.LastHeartbeat == nil || node.LastHeartbeat.Before(time.Now().Add(-40*time.Second)) {
+			break // agent 已退出
+		}
+	}
+	var node model.Node
+	if err := config.DB.First(&node, id).Error; err != nil {
+		return
+	}
+	if !node.UninstallReq {
+		return
+	}
+	config.DB.Delete(&model.Node{}, id)
+	log.Printf("[node] 节点 %d 卸载完成，已从中心移除", id)
 }
 
 // GetNode 获取节点

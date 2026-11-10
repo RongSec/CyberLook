@@ -102,6 +102,24 @@
           <n-checkbox v-model:checked="form.onViolation">合规违规</n-checkbox>
           <n-checkbox v-model:checked="form.onFault">故障告警</n-checkbox>
         </n-space>
+        <p class="tip" style="margin-top:8px">
+          通知模板支持变量占位符：<code>{{taskId}}</code> <code>{{taskName}}</code> <code>{{status}}</code> <code>{{time}}</code>。
+          留空使用默认文案。企业微信/钉钉/飞书按各自报文格式原样放入 markdown 内容。
+        </p>
+        <n-grid :cols="2" :x-gap="16" style="margin-top:8px">
+          <n-grid-item>
+            <n-input v-model:value="form.tplTaskDone" type="textarea" :rows="4" placeholder="任务结束模板（留空=默认）" />
+          </n-grid-item>
+          <n-grid-item>
+            <n-input v-model:value="form.tplFault" type="textarea" :rows="4" placeholder="故障告警模板（留空=默认）" />
+          </n-grid-item>
+          <n-grid-item>
+            <n-input v-model:value="form.tplNewAsset" type="textarea" :rows="3" placeholder="发现新资产模板（留空=默认）" />
+          </n-grid-item>
+          <n-grid-item>
+            <n-input v-model:value="form.tplViolation" type="textarea" :rows="3" placeholder="合规违规模板（留空=默认）" />
+          </n-grid-item>
+        </n-grid>
       </n-card>
 
       <n-space justify="end" style="margin-top: 16px">
@@ -131,7 +149,8 @@ const testResultsMap = ref({})
 const form = ref({
   wecomWebhook: '', dingtalkWebhook: '', feishuWebhook: '', genericWebhook: '',
   emailSmtp: '', emailPort: 465, emailSsl: true, emailUser: '', emailPass: '', emailTo: '',
-  onTaskDone: true, onNewAsset: true, onViolation: true, onFault: true
+  onTaskDone: true, onNewAsset: true, onViolation: true, onFault: true,
+  tplTaskDone: '', tplNewAsset: '', tplViolation: '', tplFault: ''
 })
 
 async function load() {

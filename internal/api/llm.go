@@ -74,9 +74,11 @@ type llmProfileReq struct {
 	FailThreshold   int     `json:"failThreshold"`
 	CooldownSeconds int     `json:"cooldownSeconds"`
 	TimeoutSeconds  int     `json:"timeoutSeconds"`
-	TLSSkipVerify   bool    `json:"tlsSkipVerify"`
-	TLSMinVersion   string  `json:"tlsMinVersion"`
 	ViaProxy        string  `json:"viaProxy"`
+	ThinkingType    string  `json:"thinkingType"`
+	ReasoningEffort string  `json:"reasoningEffort"`
+	RatePerSecond   float64 `json:"ratePerSecond"`
+	RatePerMinute   float64 `json:"ratePerMinute"`
 }
 
 func keyHint(k string) string {
@@ -126,8 +128,9 @@ func CreateLlmProfile(c *gin.Context) {
 		Priority: req.Priority, Enabled: req.Enabled == nil || *req.Enabled,
 		PoolExclude: req.PoolExclude, FailThreshold: req.FailThreshold,
 		CooldownSeconds: req.CooldownSeconds, TimeoutSeconds: req.TimeoutSeconds,
-		TLSSkipVerify: req.TLSSkipVerify, TLSMinVersion: req.TLSMinVersion,
-		ViaProxy: req.ViaProxy,
+				ViaProxy: req.ViaProxy,
+		ThinkingType: req.ThinkingType, ReasoningEffort: req.ReasoningEffort,
+		RatePerSecond: req.RatePerSecond, RatePerMinute: req.RatePerMinute,
 	}
 	// Select("*") 强制写入零值字段，避免 gorm default 标签覆盖 false
 	if err := config.DB.Select("*").Create(&p).Error; err != nil {
@@ -198,9 +201,12 @@ func UpdateLlmProfile(c *gin.Context) {
 	if req.TimeoutSeconds > 0 {
 		updates["timeout_seconds"] = req.TimeoutSeconds
 	}
-	updates["tls_skip_verify"] = req.TLSSkipVerify
-	updates["tls_min_version"] = req.TLSMinVersion
 	updates["via_proxy"] = req.ViaProxy
+	updates["provider"] = req.Provider
+	updates["thinking_type"] = req.ThinkingType
+	updates["reasoning_effort"] = req.ReasoningEffort
+	updates["rate_per_second"] = req.RatePerSecond
+	updates["rate_per_minute"] = req.RatePerMinute
 
 	if err := config.DB.Model(&p).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

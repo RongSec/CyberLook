@@ -49,6 +49,9 @@ func ListServices(c *gin.Context) {
 				case "owner":
 					q = q.Where("EXISTS (SELECT 1 FROM assets a WHERE a.ip = services.ip AND a.owner::text ILIKE ?)", "%"+v+"%")
 					continue
+				case "systemName":
+					q = q.Where("EXISTS (SELECT 1 FROM assets a WHERE a.ip = services.ip AND a.system_name::text ILIKE ?)", "%"+v+"%")
+					continue
 				}
 				rest = append(rest, c)
 			}

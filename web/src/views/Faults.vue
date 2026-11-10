@@ -2,6 +2,25 @@
   <div>
     <n-card>
       <n-tabs type="line" animated>
+        <!-- 备份与恢复 -->
+        <n-tab-pane name="backup" tab="备份与恢复">
+          <div class="toolbar">
+            <span>每天
+              <n-input-number v-model:value="backupSet.hour" size="small" :min="0" :max="23" style="width:80px" />
+              点自动备份，保留
+              <n-input-number v-model:value="backupSet.keepDays" size="small" :min="1" :max="365" style="width:90px" />
+              天
+            </span>
+            <span style="display:flex;align-items:center;gap:4px">启用 <n-switch v-model:value="backupSet.enabled" /></span>
+            <n-button size="small" type="primary" @click="saveBackupSet">保存设置</n-button>
+            <n-button size="small" type="info" :loading="bkOp === 'run'" @click="runBackup">立即备份</n-button>
+            <span class="hint" v-if="backupDir">目录：{{ backupDir }}</span>
+          </div>
+          <p class="hint" style="margin-bottom:8px">恢复前会自动备份当前数据；恢复完成后如页面异常请刷新或重启服务。</p>
+          <n-data-table :columns="backupCols" :data="backups" size="small" :loading="backupLoading"
+            :pagination="{ pageSize: 20 }" />
+        </n-tab-pane>
+
         <!-- 故障 -->
         <n-tab-pane name="faults" tab="故障">
           <div class="toolbar">
@@ -38,10 +57,64 @@
 
 <script setup>
 import { ref, h, onMounted } from 'vue'
-import { NTag, NButton, NInputNumber, useMessage } from 'naive-ui'
+import { NTag, NButton, NInputNumber, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
 
 const message = useMessage()
+
+// ===== 备份与恢复 =====
+const backupSet = ref({ enabled: true, hour: 2, keepDays: 7 })
+const backups = ref([])
+const backupLoading = ref(false)
+const backupDir = ref('')
+const bkOp = ref('')
+
+async function loadBackupSet() {
+  try { backupSet.value = { ...backupSet.value, ...(await api.get('/backup/settings')) } } catch { /* ignore */ }
+}
+async function saveBackupSet() {
+  try { await api.put('/backup/settings', backupSet.value); message.success('备份设置已保存') }
+  catch (e) { message.error(e.response?.data?.error || '保存失败') }
+}
+async function loadBackups() {
+  backupLoading.value = true
+  try {
+    const r = await api.get('/backups')
+    backups.value = r.items || []
+    backupDir.value = r.dir || ''
+  } catch { /* ignore */ } finally { backupLoading.value = false }
+}
+async function runBackup() {
+  bkOp.value = 'run'
+  try { const r = await api.post('/backups/run'); message.success(`${r.name}（${Math.round(r.size / 1024)} KB）`); loadBackups() }
+  catch (e) { message.error(e.response?.data?.error || '备份失败') } finally { bkOp.value = '' }
+}
+async function restoreBackup(row) {
+  bkOp.value = 'restore-' + row.name
+  try {
+    const r = await api.post(`/backups/${encodeURIComponent(row.name)}/restore`)
+    message.success(r.message || '已恢复')
+  } catch (e) { message.error(e.response?.data?.error || '恢复失败') } finally { bkOp.value = '' }
+}
+async function deleteBackup(row) {
+  try { await api.delete(`/backups/${encodeURIComponent(row.name)}`); message.success('已删除'); loadBackups() }
+  catch (e) { message.error(e.response?.data?.error || '删除失败') }
+}
+const backupCols = [
+  { title: '文件', key: 'name' },
+  { title: '大小', key: 'size', width: 110, render: r => `${Math.max(1, Math.round(r.size / 1024))} KB` },
+  { title: '时间', key: 'modTime', width: 170 },
+  {
+    title: '操作', key: 'a', width: 170,
+    render: r => h('div', { style: 'display:flex;gap:6px' }, [
+      h(NButton, { size: 'small', text: true, type: 'primary', loading: bkOp.value === 'restore-' + r.name, onClick: () => restoreBackup(r) }, { default: () => '恢复' }),
+      h(NPopconfirm, { onPositiveClick: () => deleteBackup(r) }, {
+        trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
+        default: () => `确认删除备份 ${r.name}？`
+      })
+    ])
+  }
+]
 
 const kindFilter = ref(null)
 const faults = ref([])
@@ -153,6 +226,8 @@ function fmt(t) {
 }
 
 onMounted(() => {
+  loadBackupSet()
+  loadBackups()
   loadFaults()
   loadLogs()
   loadRetention()

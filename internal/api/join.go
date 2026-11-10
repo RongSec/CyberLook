@@ -195,6 +195,8 @@ echo "安装目录：$WORKDIR （请勿移动或删除，服务依赖此路径�
 echo "查看日志：journalctl -u weijian-agent -f"
 `, server, tk)
 	c.Header("Content-Type", "text/x-shellscript; charset=utf-8")
+	// 注意：shell 脚本不能加 BOM —— BOM 会粘在 #!/bin/bash 前面，
+	// bash 把它当成一条命令（"BOM#!/bin/bash: command not found"）。
 	c.String(http.StatusOK, script)
 }
 
@@ -209,8 +211,30 @@ func InstallPs1(c *gin.Context) {
 	script := fmt.Sprintf(`# 见你未见 - Windows 节点一键加入
 # 首次会弹一次 UAC，授权后全程自动；之后开机自启、崩溃自动拉起
 $ErrorActionPreference = "Stop"
+$ProgressPreference    = "SilentlyContinue"
 $Server = "%s"
 $Token  = "%s"
+
+# === 编码自愈 ===
+# 如果用 iwr -useb ... | iex 进来：iwr 返回的是 WebResponse 对象，管道交给 iex 时
+# 按 ToString() 转字符串，每个非 ASCII 字节都被换成 "?"（中文全废，BOM 也变成???）。
+# 那种损坏在进入 iex 之前就发生了，脚本自身无法还原 —— 只能丢掉重新取：
+# irm(Invoke-RestMethod) 直接返回字符串，按 Content-Type 的 charset=utf-8 解码，不丢字符。
+$probe = -join @([char]0x6D4B, [char]0x8BD5)
+if ("测试" -ne $probe) {
+    if ($env:WJ_HEAL -eq "1") {
+        Write-Host "Script encoding broken and auto-heal already tried once. Abort."
+        Read-Host "Press Enter to close"
+        return
+    }
+    $env:WJ_HEAL = "1"
+    Write-Host "Script text arrived garbled (iwr pipe). Refetching via Invoke-RestMethod ..."
+    $healUrl = $Server + "/api/nodes/install.ps1?token=" + $Token
+    $healSrc = Invoke-RestMethod -Uri $healUrl
+    & ([scriptblock]::Create($healSrc))
+    return
+}
+$env:WJ_HEAL = $null
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -243,10 +267,30 @@ if ($choice -ne "1" -and $choice -ne "2") { $choice = "2" }
 Write-Host "[1/4] 安装到 $Dir"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 Set-Location $Dir
+
+# 旧 agent 还在跑会占着 scope-agent.exe：覆盖时报「正由另一进程使用，无法访问」
+# 顺序很重要：先删旧计划任务（否则旧看门狗会把刚杀掉的进程再拉起来），再杀进程
+foreach ($tn in @("WeijianAgent", "WeijianAgentWatchdog")) {
+    try { schtasks /Delete /TN $tn /F 2>$null | Out-Null } catch { }
+}
+Get-Process scope-agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+Remove-Item $Exe -Force -ErrorAction SilentlyContinue
+if (Test-Path $Exe) {
+    Write-Host "❌ $Exe 仍被占用（杀进程没成功），请先手动结束 scope-agent.exe 再重跑"
+    Read-Host "按回车关闭"
+    return
+}
+
 Invoke-WebRequest -Uri "$Server/api/nodes/agent-binary?os=windows&token=$Token" -OutFile $Exe -UseBasicParsing
 if ($choice -eq "2") {
     Write-Host "      下载扫描引擎 TscanClient.exe ..."
-    Invoke-WebRequest -Uri "$Server/api/nodes/tscan-binary?os=windows&token=$Token" -OutFile $Tsc -UseBasicParsing
+    try {
+        Invoke-WebRequest -Uri "$Server/api/nodes/tscan-binary?os=windows&token=$Token" -OutFile $Tsc -UseBasicParsing
+    } catch {
+        Write-Host ("      ⚠ 扫描引擎下载失败（可能被占用）：" + $_.Exception.Message)
+        Write-Host "      节点仍可上线，但无法执行扫描任务"
+    }
 } else {
     Write-Host "      跳过扫描引擎（仅控制文件）"
     if (-not (Test-Path $Tsc)) {
@@ -274,16 +318,80 @@ $lines = @(
   "if not errorlevel 1 exit /b",
   "start """" /min ""$Exe"" -server $Server -name $Node -tscan ""$Tsc"""
 )
-Set-Content -Path $Bat -Value $lines -Encoding ASCII
+# 用系统 ANSI 编码写 .bat：ASCII 会把中文目录写成 "?"，任务起来找不到文件
+try { Set-Content -Path $Bat -Value $lines -Encoding Default } catch { Set-Content -Path $Bat -Value $lines -Encoding ASCII }
 
-$tr = [char]34 + $Bat + [char]34
-# 用当前管理员账户运行（/IT 交互式 → 不需要存密码），不再用 SYSTEM：
-# SYSTEM 是机器最高权限，对扫描节点来说权限过大。
-schtasks /Create /TN "WeijianAgent" /TR $tr /SC ONLOGON /IT /RL HIGHEST /F | Out-Null
-schtasks /Create /TN "WeijianAgentWatchdog" /TR $tr /SC MINUTE /MO 1 /IT /RL HIGHEST /F | Out-Null
+# 注册计划任务
+# 旧写法 schtasks /Create /TR $tr 的坑：路径含空格时 /TR 的引号会被二次包裹，
+# schtasks 报"参数无效"，任务建不出来 → 节点上线失败。
+# 改用 Register-ScheduledTask（参数按对象传递，路径含空格/中文都不会被拆坏）。
+# 身份仍用当前管理员账户，不用 SYSTEM（SYSTEM 权限过大）。
+$who = $env:USERDOMAIN + "\" + $env:USERNAME
+$TaskNames = @("WeijianAgent", "WeijianAgentWatchdog")
+$taskOK = $false
+foreach ($tn in $TaskNames) {
+    try {
+        if (Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction Stop
+        }
+    } catch {
+        Write-Host ("  旧任务 " + $tn + " 清理失败（继续）：" + $_.Exception.Message)
+    }
+}
+if (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue) {
+    $act = New-ScheduledTaskAction -Execute $Bat -WorkingDirectory $Dir
+    $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+    $trgWatch = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $watchOK = $false
+    # 看门狗每分钟触发一次：必须用 S4U（后台会话，无桌面）注册，
+    # 否则交互式会话下每分钟都会闪一个 cmd 黑窗（就是"老是弹窗"的来源）。
+    try {
+        $prnBg = New-ScheduledTaskPrincipal -UserId $who -LogonType S4U -RunLevel Highest
+        Register-ScheduledTask -TaskName "WeijianAgentWatchdog" -Action $act -Trigger $trgWatch -Settings $set -Principal $prnBg -Force -ErrorAction Stop | Out-Null
+        # 立刻试跑一次，确认后台会话真能起来（策略禁止 batch 登录会失败）
+        Start-ScheduledTask -TaskName "WeijianAgentWatchdog"
+        Start-Sleep -Seconds 4
+        $lr = (Get-ScheduledTaskInfo -TaskName "WeijianAgentWatchdog").LastTaskResult
+        if ($lr -eq 0 -or $lr -eq 267009) {
+            $watchOK = $true
+            Write-Host "  看门狗：后台会话运行（不会弹窗）"
+        } else {
+            Write-Host ("  后台会话不可用（LastTaskResult=0x" + ("{0:X}" -f $lr) + "），改用交互式")
+        }
+    } catch {
+        Write-Host ("  S4U 注册失败：" + $_.Exception.Message)
+    }
+    try {
+        if (-not $watchOK) {
+            $prnBg = New-ScheduledTaskPrincipal -UserId $who -LogonType Interactive -RunLevel Highest
+            Register-ScheduledTask -TaskName "WeijianAgentWatchdog" -Action $act -Trigger $trgWatch -Settings $set -Principal $prnBg -Force -ErrorAction Stop | Out-Null
+            Write-Host "  看门狗：交互式（每分钟会闪一下窗口）"
+        }
+        $trgL = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName "WeijianAgent" -Action $act -Trigger $trgL -Settings $set -Principal (New-ScheduledTaskPrincipal -UserId $who -LogonType Interactive -RunLevel Highest) -Force -ErrorAction Stop | Out-Null
+        $taskOK = $true
+    } catch {
+        Write-Host ("  计划任务注册失败：" + $_.Exception.Message)
+    }
+} else {
+    Write-Host "  当前系统无计划任务模块，跳过开机自启"
+}
+if (-not $taskOK) {
+    Write-Host "  警告：未注册计划任务，本次仍可上线，但重启后不会自启"
+}
 
 Write-Host "[4/4] 启动"
-schtasks /Run /TN "WeijianAgent" | Out-Null
+if ($taskOK) {
+    # 注册阶段试跑的进程交给计划任务接管：它挂在当前控制台下，关窗就死
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Start-ScheduledTask -TaskName "WeijianAgent"
+} else {
+    # 兜底：直接拉起（先看是否已在跑，避免双实例）
+    if (-not (Get-Process scope-agent -ErrorAction SilentlyContinue)) {
+        Start-Process -FilePath $Exe -ArgumentList @("-server",$Server,"-name",$Node,"-tscan",$Tsc) -WorkingDirectory $Dir -WindowStyle Hidden | Out-Null
+    }
+}
 Start-Sleep -Seconds 3
 $alive = Get-Process scope-agent -ErrorAction SilentlyContinue
 if ($alive) {
@@ -299,7 +407,12 @@ if ($alive) {
 }
 Read-Host "按回车关闭"
 `, server, tk)
+	// charset=utf-8 必须显式给：PS 5.1 的 irm/iwr 不带 charset 时按 ISO-8859-1 解码，中文全部乱码
 	c.Header("Content-Type", "text/plain; charset=utf-8")
+	// 不能加 BOM。实测（PS 5.1）：`iwr -useb ... | iex` 里 iwr 返回的是响应对象，
+	// 管道按 ToString() 转字符串时 BOM 会被拆成 3 个 "?"，首行变成 "???# ..." 直接报
+	// 「无法将"???#"项识别为 cmdlet」；中文也逐字节变 "?"。BOM 只对 `-File` 有用，
+	// 而平台给的是 irm 管道安装，靠 charset 头解码即可，因此这里不写 BOM。
 	c.String(http.StatusOK, script)
 }
 

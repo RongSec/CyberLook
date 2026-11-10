@@ -15,7 +15,10 @@
           :class="['conv-item', { active: c.id === currentConvId }]"
           @click="loadConversation(c.id)"
         >
-          <div class="conv-title">{{ c.title || '未命名' }}</div>
+          <div class="conv-title">
+            <n-tag v-if="c.taskId" size="tiny" type="info" round :bordered="false" style="margin-right:4px">任务</n-tag>
+            {{ c.title || '未命名' }}
+          </div>
           <div class="conv-meta">
             <span>{{ c.messageCount }} 条</span>
             <span v-if="c.totalTokens">{{ formatTokens(c.totalTokens) }}</span>
@@ -74,6 +77,16 @@
                 {{ t.tool }}
               </n-tag>
             </div>
+            <div v-if="traceOf(m)" style="margin-bottom:6px">
+              <n-button size="tiny" secondary type="info" @click="openTrace(traceOf(m))">
+                查看请求/响应包（{{ traceOf(m).hops.length }} 跳）
+              </n-button>
+            </div>
+            <div v-if="traceOf(m)" style="margin-bottom:6px">
+              <n-button size="tiny" secondary type="info" @click="openTrace(traceOf(m))">
+                查看请求/响应包（{{ traceOf(m).hops.length }} 跳）
+              </n-button>
+            </div>
             <div class="text" v-html="renderText(m.content)"></div>
           </div>
         </div>
@@ -97,6 +110,42 @@
         </n-button>
       </div>
     </n-card>
+
+    <!-- 请求响应包：四栏（最多 4 跳，覆盖 302 与二次跳转） -->
+    <n-modal v-model:show="showTrace" preset="card"
+      :title="`请求响应包 · ${traceData.target || ''}（${(traceData.hops || []).length} 跳）`"
+      style="width: 96vw; max-width: 1500px">
+      <div class="trace-grid">
+        <div v-for="h in (traceData.hops || []).slice(0, 4)" :key="h.index" class="trace-pane">
+          <div class="trace-h">第 {{ h.index }} 跳 · {{ h.responseLine }}</div>
+          <div class="trace-label">请求</div>
+          <pre class="trace-pre">{{ h.requestLine }}
+{{ h.requestHeaders }}</pre>
+          <div class="trace-label">响应</div>
+          <pre class="trace-pre">{{ h.responseLine }}
+{{ h.responseHeaders }}
+{{ h.body || h.bodyNote || '（空响应体）' }}</pre>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- 请求响应包：四栏（最多 4 跳，覆盖 302 与二次跳转） -->
+    <n-modal v-model:show="showTrace" preset="card"
+      :title="`请求响应包 · ${traceData.target || ''}（${(traceData.hops || []).length} 跳）`"
+      style="width: 96vw; max-width: 1500px">
+      <div class="trace-grid">
+        <div v-for="h in (traceData.hops || []).slice(0, 4)" :key="h.index" class="trace-pane">
+          <div class="trace-h">第 {{ h.index }} 跳 · {{ h.responseLine }}</div>
+          <div class="trace-label">请求</div>
+          <pre class="trace-pre">{{ h.requestLine }}
+{{ h.requestHeaders }}</pre>
+          <div class="trace-label">响应</div>
+          <pre class="trace-pre">{{ h.responseLine }}
+{{ h.responseHeaders }}
+{{ h.body || h.bodyNote || '（空响应体）' }}</pre>
+        </div>
+      </div>
+    </n-modal>
 
     <!-- 用量抽屉 -->
     <n-drawer v-model:show="showUsage" :width="560">
@@ -141,6 +190,23 @@ const dialog = useDialog()
 const router = useRouter()
 
 const input = ref('')
+const showTrace = ref(false)
+const traceData = ref({ target: '', hops: [] })
+
+// 消息 meta 里可能带 http_trace（完整请求/响应包），前端折叠成按钮
+function traceOf(m) {
+  if (!m || !m.meta) return null
+  try {
+    const o = typeof m.meta === 'string' ? JSON.parse(m.meta) : m.meta
+    if (o && o.kind === 'http_trace' && o.hops && o.hops.length) return o
+  } catch (e) { /* ignore */ }
+  return null
+}
+function openTrace(o) {
+  traceData.value = o
+  showTrace.value = true
+}
+
 const loading = ref(false)
 const messages = ref([])
 const conversations = ref([])
@@ -216,6 +282,7 @@ async function loadConversation(id) {
       role: m.role,
       content: m.content,
       toolCalls: m.toolCallsParsed || [],
+      meta: m.meta || '',   // http_trace 请求响应包（折叠成按钮）
     }))
     await scrollBottom()
   } catch (e) {
@@ -322,10 +389,19 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.assistant-page { height: calc(100vh - 100px); display: flex; gap: 12px; }
+/* 高度必须用「视口 - 头部 - 内容区上下 padding」，之前的 calc(100vh - 100px) 比实际可用高度大，
+   导致整个内容区出现外层滚动条，左侧会话栏跟着页面一起滚。 */
+.assistant-page {
+  height: calc(100vh - 142px);
+  height: calc(100dvh - 142px);
+  min-height: 420px;
+  display: flex; gap: 12px;
+  overflow: hidden;   /* 内部各自滚动，外层不再滚 */
+}
 
 .sidebar {
   width: 260px; flex-shrink: 0; display: flex; flex-direction: column;
+  height: 100%; overflow: hidden;   /* 列表自己滚，整栏固定 */
   background: #fafbfc; border-radius: 8px; border: 1px solid #eef0f3;
   transition: width .2s;
 }
@@ -342,10 +418,16 @@ onMounted(() => {
 .sidebar-foot { padding: 8px; border-top: 1px solid #eef0f3; }
 
 .chat-card { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* naive-ui 里这个类名是 n-card-content（单连字符），不是 n-card__content。
+   写错类名 → 规则从未生效 → 消息区不撑满、输入框贴在对话末尾（看着像在页面中间）。 */
+.chat-card :deep(.n-card-content) {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
 .header { display: flex; justify-content: space-between; align-items: center; }
 .title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
 .actions { display: flex; gap: 6px; align-items: center; }
-.messages { flex: 1; overflow-y: auto; padding: 8px 4px; min-height: 200px; }
+.messages { flex: 1; overflow-y: auto; padding: 8px 4px; min-height: 0; }
 .empty { text-align: center; padding: 40px 0; color: #888; }
 .empty-title { font-size: 15px; margin-bottom: 20px; }
 .samples { display: flex; flex-direction: column; gap: 8px; align-items: center; }
@@ -358,7 +440,21 @@ onMounted(() => {
 .msg.assistant .bubble { background: #f5f7fa; color: #333; }
 .tools { margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 .text :deep(code) { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 13px; }
-.input-area { display: flex; gap: 8px; align-items: flex-end; padding-top: 12px; border-top: 1px solid #eee; }
+.input-area { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; padding-top: 12px; border-top: 1px solid #eee; }
+
+.trace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.trace-pane { border: 1px solid rgba(128,128,128,.3); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.trace-h { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #4098fc; }
+.trace-label { font-size: 12px; color: rgba(128,128,128,1); margin: 6px 0 2px; }
+.trace-pre { margin: 0; padding: 8px; background: rgba(128,128,128,.12); color: inherit; border-radius: 6px; font-size: 12px;
+  line-height: 1.5; max-height: 32vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+
+.trace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.trace-pane { border: 1px solid rgba(128,128,128,.3); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.trace-h { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #4098fc; }
+.trace-label { font-size: 12px; color: rgba(128,128,128,1); margin: 6px 0 2px; }
+.trace-pre { margin: 0; padding: 8px; background: rgba(128,128,128,.12); color: inherit; border-radius: 6px; font-size: 12px;
+  line-height: 1.5; max-height: 32vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 
 .usage-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .stat { text-align: center; padding: 12px 8px; background: #f8fafc; border-radius: 8px; }

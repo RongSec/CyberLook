@@ -23,13 +23,15 @@ RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Versio
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei postgresql-client && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 
 COPY --from=go-builder /out/asset-server /app/asset-server
 COPY --from=web-builder /web/dist /app/web/dist
 COPY migrations /app/migrations
+# FingerprintHub 全量指纹规则（MIT）：web 3450 + service 11938
+COPY data/fingerprint /app/data/fingerprint
 # 分发的 agent 二进制与扫描引擎（供一键加入脚本下载）
 COPY --from=go-builder /out/scope-agent-linux /app/agent/scope-agent-linux
 COPY --from=go-builder /out/scope-agent-linux-arm64 /app/agent/scope-agent-linux-arm64

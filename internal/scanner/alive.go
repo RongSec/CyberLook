@@ -132,7 +132,7 @@ func (a *AliveCheck) Probe(ctx context.Context, ips []string, onProgress func(do
 //   192.0.2.1:443 OK 12ms
 //   192.0.2.1:445 FAIL 800ms（i/o timeout）
 // 用 80/443 判存活会把整个网段判成「全部在线」（实测 256/256 全存活）。
-var fastPorts = []string{"445", "22", "3389", "8080"}
+var fastPorts = []string{"445", "22", "3389", "8080", "443"}
 
 // 兜底端口：只开非常见服务的机器靠这些兜住
 var slowPorts = []string{"8443", "3306", "6379", "1433", "5432", "9200", "7001", "8888",

@@ -38,6 +38,28 @@
     </n-card>
   </div>
 
+    <n-card id="access" title="访问控制" style="margin-top: 16px">
+      <p class="muted" style="margin: 0 0 10px">
+        限制哪些 IP 可以访问本系统。留空 = 不限制（任何 IP 都可访问）。
+        支持 CIDR（如 <code>10.24.188.0/23</code>）和单 IP（如 <code>127.0.0.1</code>），多个用逗号分隔。
+      </p>
+      <n-alert type="warning" :bordered="false" style="margin-bottom: 12px">
+        注意：此限制仅作用于 HTTP API。主机层 SSH 等服务的访问控制由服务器防火墙（iptables）配置。
+        系统会自动放行本机和 Docker 网桥（容器访问），无需手动添加。
+      </n-alert>
+      <n-form-item label="允许访问的 IP / 网段（留空不限制）" label-placement="top">
+        <n-input
+          v-model:value="updateForm.allowedIps"
+          type="textarea"
+          :rows="3"
+          placeholder="例：10.24.188.0/23,10.0.0.5,192.168.1.0/24"
+        />
+      </n-form-item>
+      <n-space justify="end">
+        <n-button type="primary" @click="saveUpdateSettings">保存访问控制</n-button>
+      </n-space>
+    </n-card>
+
     <n-card id="upgrade" title="系统升级" style="margin-top: 16px">
       <p class="muted" style="margin: 0 0 10px">
         从 GitHub Release 拉取更新，支持代理（仅用于获取更新信息）。更新前自动备份，可一键回滚。
@@ -125,7 +147,7 @@ async function savePwd() {
 }
 
 // ===== 系统升级 =====
-const updateForm = ref({ githubRepo: '', githubToken: '', proxy: '', port: 18888 })
+const updateForm = ref({ githubRepo: '', githubToken: '', proxy: '', port: 18888, allowedIps: '' })
 const updateInfo = ref({ version: '', current: '', notes: '', publishedAt: '', hasUpdate: false, downloadUrl: '' })
 const curVersion = ref('0.0.1')
 const curBuild = ref('')
@@ -145,7 +167,7 @@ const rolling = ref(false)
 async function loadUpdateSettings() {
   try {
     const res = await api.get('/system/settings')
-    updateForm.value = { githubRepo: res.githubRepo || '', githubToken: '', proxy: res.proxy || '', port: res.port || 18888 }
+    updateForm.value = { githubRepo: res.githubRepo || '', githubToken: '', proxy: res.proxy || '', port: res.port || 18888, allowedIps: res.allowedIps || '' }
   } catch { /* ignore */ }
 }
 

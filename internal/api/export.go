@@ -29,8 +29,10 @@ var exportLabels = map[string]map[string]string{
 	"disposal": {"category": "类别", "ip": "IP", "webPort": "Web端口", "statusCode": "响应码",
 		"contentLength": "响应长度", "title": "网站标题", "ledger": "台账登记",
 		"fingerprint": "指纹", "createdAt": "发现时间"},
-	"compliance": {"ip": "IP", "port": "端口", "service": "服务", "status": "状态",
-		"ruleId": "规则ID", "detectedAt": "首次发现", "lastSeen": "最近发现", "fixedAt": "整改时间"},
+	"compliance": {"ip": "IP", "port": "端口", "ruleName": "规则", "service": "服务",
+		"department": "部门", "owner": "负责人", "systemName": "系统",
+		"status": "状态", "evidence": "确认响应",
+		"detectedAt": "首次发现", "lastSeen": "最近发现"},
 	"snapshots": {"id": "ID", "url": "URL", "title": "标题", "capturedAt": "截图时间"},
 	"departments": {"name": "部门", "owners": "预设负责人", "parentName": "上级部门"},
 	"nodes":       {"name": "节点名", "ip": "IP", "status": "状态", "lastHeartbeat": "最后心跳"},
@@ -149,6 +151,10 @@ func fetchExportRows(typ string, f map[string]string, conds []SearchCond) []map[
 			case "owner":
 				q = q.Where("EXISTS (SELECT 1 FROM assets a WHERE a.ip = services.ip AND a.owner::text ILIKE ?)", "%"+v+"%")
 				continue
+			case "systemName":
+				// 与 ListServices 口径一致：系统名在 assets 表，services 无此列 → EXISTS 关联
+				q = q.Where("EXISTS (SELECT 1 FROM assets a WHERE a.ip = services.ip AND a.system_name::text ILIKE ?)", "%"+v+"%")
+				continue
 			}
 			rest = append(rest, c)
 		}
@@ -209,27 +215,46 @@ func fetchExportRows(typ string, f map[string]string, conds []SearchCond) []map[
 			})
 		}
 	case "compliance":
-		var list []model.ComplianceResult
-		q := config.DB.Model(&model.ComplianceResult{})
-		if v := f["status"]; v != "" {
-			q = q.Where("status = ?", v)
+		type crow struct {
+			model.ComplianceResult
+			Service    string
+			RuleName   string
+			SystemName string
+			Owner      string
+			Department string
 		}
-		q.Order("id desc").Find(&list)
+		var list []crow
+		q := config.DB.Table("compliance_results AS cr").
+			Joins("LEFT JOIN assets a ON a.ip = cr.ip").
+			Joins("LEFT JOIN compliance_rules r ON r.id = cr.rule_id").
+			Joins("LEFT JOIN services s ON s.ip = cr.ip AND s.port = cr.port")
+		if v := f["status"]; v != "" {
+			q = q.Where("cr.status = ?", v)
+		}
+		q = ApplySearchConds(q, conds, map[string]string{
+			"ip": "host(cr.ip)", "port": "cr.port", "status": "cr.status",
+			"ruleName": "r.name", "service": "s.service",
+			"department": "a.department", "owner": "a.owner", "systemName": "a.system_name",
+			"detectedAt": "cr.detected_at", "lastSeen": "cr.last_seen",
+		})
+		q.Select(`cr.*, COALESCE(NULLIF(cr.label,''), r.name, '') AS rule_name,
+			COALESCE(s.service,'') AS service,
+			COALESCE(a.system_name,'') AS system_name, COALESCE(a.owner,'') AS owner,
+			COALESCE(a.department,'') AS department`).Order("cr.id desc").Scan(&list)
 		for _, r := range list {
-			st := "违规"
-			if r.Status == "fixed" {
-				st = "已整改"
-			}
-			// 服务名从 services 表按 IP+端口取
-			var svc model.Service
-			svcName := ""
-			if config.DB.Where("ip = ? AND port = ?", r.IP, r.Port).First(&svc).Error == nil {
-				svcName = svc.Service
+			st := map[string]string{
+				"suspected": "疑似违规",
+				"violation": "违规",
+				"fixed":     "已整改",
+			}[r.Status]
+			if st == "" {
+				st = r.Status
 			}
 			out = append(out, map[string]interface{}{
-				"ip": r.IP, "port": r.Port, "service": svcName, "status": st, "ruleId": r.RuleID,
+				"ip": r.IP, "port": r.Port, "ruleName": r.RuleName, "service": r.Service,
+				"department": r.Department, "owner": r.Owner, "systemName": r.SystemName,
+				"status": st, "evidence": r.Evidence,
 				"detectedAt": fmtTime(r.DetectedAt), "lastSeen": fmtTime(r.LastSeen),
-				"fixedAt": fmtTime(r.FixedAt),
 			})
 		}
 	case "snapshots":
@@ -360,8 +385,14 @@ func matchDisposalConds(it DisposalItem, conds []SearchCond) bool {
 				t = *it.LastSeen
 			}
 			actual = t.Format("2006-01-02 15:04:05")
-		case "ledgerSystem":
+		case "ledgerSystem", "systemName":
+			// 前端「台账登记」已拆成 systemName / owner / department 三个独立条件，
+			// ledgerSystem 仅为兼容旧参数保留，两者都取资产的系统名
 			actual = it.LedgerSystem
+		case "owner":
+			actual = it.LedgerOwner
+		case "department":
+			actual = it.LedgerDept
 		default:
 			continue
 		}

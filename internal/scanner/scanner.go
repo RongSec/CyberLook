@@ -1,6 +1,11 @@
 package scanner
 
 import (
+	"crypto/tls"
+	"io"
+	"net/http"
+	"regexp"
+	"time"
 	"sync"
 	"bytes"
 	"database/sql"
@@ -8,13 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
-
 	"asset-platform/internal/target"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -72,6 +73,10 @@ func StopScan(projectID string) bool {
 // RunPortScan 执行扫描：目标展开去重排除 → 写 host 文件 → 拼接命令 → 实时输出/入库 → 读 ipscan
 // onResult 为可选的实时结果回调（扫描过程中每发现新结果即回调，用于实时入库）
 func RunPortScan(targets, excludes []string, opts ScanOptions, logFn LogFunc, onResult func([]ScanResult)) ([]ScanResult, error) {
+	// 自研引擎：SCAN_ENGINE=builtin 时完全不调用 TscanPlus（灰度开关，默认仍走原链路）
+	if UseBuiltinEngine() {
+		return RunBuiltinPortScan(targets, excludes, opts, logFn, onResult)
+	}
 	if TscanClientPath == "" {
 		return nil, fmt.Errorf("TscanClient 路径未配置")
 	}
@@ -325,6 +330,36 @@ func readTable(dbPath, table, projectID string) ([]ScanResult, error) {
 		}
 		// 指纹：过滤安全特性 + 从响应体补充产品指纹
 		r.Fingerprint = enhanceFingerprint(cleanFingerprint(cleanNone(banner)), respBody)
+
+		// 二次识别 + 合并（只对 title 空/通用词的服务，避免过多请求）
+		needEnhance := isGenericTitle(r.Title) || r.Fingerprint == ""
+		if needEnhance && r.Protocol != "" {
+			newResult := identifyEnhanced(r.Protocol, r.IP, r.Port)
+			if newResult != nil {
+				// 合并 title
+				finalTitle, titleSrc, titleChanged := MergeIdentification(r.Title, newResult.Title)
+				if titleChanged {
+					// 保存旧值用于对比
+					if r.Title != "" {
+						// 旧值需要保存（用于对比）
+						_ = titleSrc
+					}
+				}
+				r.Title = finalTitle
+
+				// 合并 fingerprint
+				finalFP, _, fpChanged := MergeFingerprint(r.Fingerprint, newResult.Fingerprint)
+				if fpChanged {
+					// 保存旧值
+				}
+				r.Fingerprint = finalFP
+
+				// 补充 meta description（如果 title 还是空）
+				if r.Title == "" && newResult.MetaDesc != "" {
+					r.Title = newResult.MetaDesc
+				}
+			}
+		}
 		r.StatusCode = cleanStatus(statusCode)
 		if n, e := strconv.Atoi(strings.TrimSpace(lenBody)); e == nil {
 			r.ContentLength = n
@@ -548,4 +583,73 @@ func DeleteProjects(dbPath string, projects []string) error {
 		}
 	}
 	return nil
+}
+
+// identifyEnhanced 调 fingerprint 包做二次识别（只在需要时调用）
+func identifyEnhanced(protocol, ip string, port int) *IdentifyResult {
+	// 用内部 HTTP 客户端发请求
+	client := NewCompatClient(8 * time.Second)
+	scheme := "http"
+	if protocol == "HTTPS" || port == 443 || port == 8443 {
+		scheme = "https"
+	}
+	url := fmt.Sprintf("%s://%s:%d/", scheme, ip, port)
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	html := string(body)
+
+	result := &IdentifyResult{}
+	// title
+	if m := regexp.MustCompile(`(?i)<title[^>]*>([^<]+)</title>`).FindStringSubmatch(html); m != nil {
+		result.Title = strings.TrimSpace(m[1])
+	}
+	// meta description
+	if m := regexp.MustCompile(`(?i)<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)`).FindStringSubmatch(html); m != nil {
+		result.MetaDesc = strings.TrimSpace(m[1])
+	}
+	// fingerprint：从关键词提取
+	lower := strings.ToLower(html)
+	keywords := map[string]string{
+		"inspur": "浪潮", "浪潮": "浪潮",
+		"vmware": "VMware", "esxi": "ESXi",
+		"深信服": "深信服", "sangfor": "深信服",
+		"华为": "华为", "h3c": "H3C",
+		"hp": "HP", "ilo": "iLO",
+		"ibm": "IBM", "kong": "Kong",
+		"apache": "Apache", "nginx": "nginx",
+	}
+	var fps []string
+	for kw, name := range keywords {
+		if strings.Contains(lower, kw) {
+			already := false
+			for _, f := range fps {
+				if f == name { already = true; break }
+			}
+			if !already {
+				fps = append(fps, name)
+			}
+		}
+	}
+	result.Fingerprint = strings.Join(fps, ",")
+	return result
+}
+
+// IdentifyResult 识别结果
+type IdentifyResult struct {
+	Title    string
+	MetaDesc string
+	Fingerprint string
+}
+
+// NewCompatClient 兼容的 HTTP 客户端（简化版）
+func NewCompatClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		Timeout:   timeout,
+	}
 }

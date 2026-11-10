@@ -14,19 +14,6 @@ import (
 	"asset-platform/internal/model"
 )
 
-// legacyCiphers 内网老设备/网关可能只支持这些旧密码套件（Go 1.26 默认已移除）
-var legacyCiphers = []uint16{
-	tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-	tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-}
-
 // ---- 协议类型 ----
 
 type Message struct {
@@ -155,36 +142,14 @@ func ChatWithFailover(req ChatRequest, round int) (*CallResult, error) {
 	return nil, fmt.Errorf("所有 LLM 配置均失败，最后一个错误: %w", lastErr)
 }
 
-// buildClient 构造带 TLS 兼容的 HTTP 客户端
-//
-// 内网 LLM 网关（如 ai.sinochem.com）常只支持旧密码套件或不常见配置，
-// Go 1.26 默认已移除部分旧套件，需要显式指定。
+// buildClient 构造 HTTP 客户端
 func buildClient(p *model.LLMProfile) *http.Client {
 	timeout := time.Duration(p.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
-
-	tlsCfg := &tls.Config{
-		InsecureSkipVerify: p.TLSSkipVerify,
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS13,
-	}
-	// 只有明确要求时才降级到 TLS 1.0/1.1
-	switch strings.ToLower(p.TLSMinVersion) {
-	case "tls1.0", "tls1", "tls10":
-		tlsCfg.MinVersion = tls.VersionTLS10
-		tlsCfg.CipherSuites = legacyCiphers
-	case "tls1.1", "tls11":
-		tlsCfg.MinVersion = tls.VersionTLS11
-		tlsCfg.CipherSuites = legacyCiphers
-	case "", "tls1.2", "tls12":
-		// 默认 TLS 1.2 起步，但加旧套件以兼容部分网关
-		tlsCfg.CipherSuites = append(tlsCfg.CipherSuites, legacyCiphers...)
-	}
-
 	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 		Timeout:   timeout,
 	}
 }

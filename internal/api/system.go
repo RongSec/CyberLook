@@ -38,6 +38,7 @@ func SaveSystemSettings(c *gin.Context) {
 		"github_repo":  req.GithubRepo,
 		"proxy":        req.Proxy,
 		"port":         req.Port,
+		"allowed_ips":  req.AllowedIPs,
 		"updated_at":   time.Now(),
 	}
 	if req.GithubToken != "" {
@@ -47,6 +48,7 @@ func SaveSystemSettings(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	InvalidateWhitelist()
 	c.JSON(http.StatusOK, gin.H{"message": "已保存"})
 }
 
@@ -141,13 +143,22 @@ func SystemVersion(c *gin.Context) {
 	})
 }
 
+// SystemStats 系统资源占用（CPU/内存/运行中任务 + Go 运行时指标）
+// 前 5 个字段供页脚展示（service.GetSystemStats 用 gopsutil 采 CPU/内存）；
+// 后 4 个 Go 运行时字段供运维页使用，保留不删，避免老调用方拿不到字段。
 func SystemStats(c *gin.Context) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
+	sys := service.GetSystemStats()
 	c.JSON(http.StatusOK, gin.H{
-		"goroutines":  runtime.NumGoroutine(),
-		"heapAllocMB": m.HeapAlloc / 1024 / 1024,
-		"sysMB":       m.Sys / 1024 / 1024,
-		"gcCount":     m.NumGC,
+		"cpuPercent":   sys.CPUPercent,
+		"memUsedMB":    sys.MemUsedMB,
+		"memTotalMB":   sys.MemTotalMB,
+		"memPercent":   sys.MemPercent,
+		"runningTasks": sys.RunningTasks,
+		"goroutines":   runtime.NumGoroutine(),
+		"heapAllocMB":  m.HeapAlloc / 1024 / 1024,
+		"sysMB":        m.Sys / 1024 / 1024,
+		"gcCount":      m.NumGC,
 	})
 }

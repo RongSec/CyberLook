@@ -10,6 +10,9 @@ import (
 
 // RegisterRoutes 注册所有路由
 func RegisterRoutes(r *gin.Engine) {
+	// IP 白名单中间件（配置 ALLOWED_IPS 环境变量，留空则不限制）
+	r.Use(IPWhitelist())
+
 	// 公开接口
 	r.POST("/api/auth/login", Login)
 
@@ -155,7 +158,23 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.GET("/compliance/results", ListComplianceResults)
 		auth.POST("/compliance/check", RunComplianceCheck)
 		auth.DELETE("/compliance/results/:id", DeleteComplianceResult)
+		auth.PUT("/compliance/results/:id", UpdateComplianceResult)
 		auth.POST("/compliance/results/batch-delete", BatchDeleteComplianceResults)
+		// AI 识别（手动触发单个服务，用于验证识别链路）
+		auth.POST("/services/ai-identify", AIIdentifyService)
+		auth.POST("/services/reidentify", ReidentifyServices)
+		// 扫描监控 / AI 开关 / 备份恢复
+		auth.POST("/agent-tasks/:id/ai-diagnose", AIDiagnoseShard)
+		auth.GET("/agent-tasks/:id/diagnose-log", ShardDiagnoseLog)
+		auth.GET("/agent-tasks/:id/log", ShardLog)
+		auth.GET("/ai/settings", GetAISettings)
+		auth.PUT("/ai/settings", UpdateAISettings)
+		auth.GET("/backup/settings", GetBackupSettings)
+		auth.PUT("/backup/settings", UpdateBackupSettings)
+		auth.GET("/backups", ListBackups)
+		auth.POST("/backups/run", RunBackupNow)
+		auth.DELETE("/backups/:name", DeleteBackup)
+		auth.POST("/backups/:name/restore", RestoreBackup)
 
 		// 节点
 		auth.GET("/nodes", ListNodes)
@@ -198,6 +217,8 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/targets/preview", PreviewTargets)
 		auth.GET("/segments", ListSegments)
 		auth.POST("/segments", CreateSegment)
+		auth.POST("/segments/batch", BatchCreateSegments)
+		auth.POST("/excludes/batch", BatchCreateExcludes)
 		auth.PUT("/segments/:id", UpdateSegment)
 		auth.DELETE("/segments/:id", DeleteSegment)
 

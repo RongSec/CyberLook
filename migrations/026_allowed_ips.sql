@@ -1,0 +1,1 @@
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS allowed_ips VARCHAR(500) DEFAULT '';
