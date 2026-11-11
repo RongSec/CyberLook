@@ -1,18 +1,17 @@
 package main
 
 import (
-	"strings"
-	"path"
-	"fmt"
 	"asset-platform/internal/model"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"asset-platform/internal/api"
 	"asset-platform/internal/config"
-	"asset-platform/internal/scanner"
 	"asset-platform/internal/scheduler"
 	"asset-platform/internal/service"
 
@@ -52,11 +51,8 @@ func main() {
 		if err := service.InitDefaultUser(); err != nil {
 			log.Printf("[warn] 默认用户初始化失败: %v", err)
 		}
-		if cfg.TscanClientPath != "" {
-			scanner.SetTscanClientPath(cfg.TscanClientPath)
-		}
-		service.CleanupStaleRuns()   // 收尾上一轮残留的执行记录
-		service.StartFaultsCleanup() // 每日清理过期故障记录（默认 30 天）
+		service.CleanupStaleRuns()       // 收尾上一轮残留的执行记录
+		service.StartFaultsCleanup()     // 每日清理过期故障记录（默认 30 天）
 		service.CleanupOldFaults()       // 启动时先清一次
 		service.CleanupOrphanPipelines() // 清理崩溃残留的孤儿断点
 		// 只在「有运行中任务被中断」时才记录故障，正常启动/部署重启不是故障
