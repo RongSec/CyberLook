@@ -17,9 +17,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/asset-server ./cmd/server && \
-    GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux ./cmd/agent && \
-    GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
-    GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-windows.exe ./cmd/agent
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-amd64 ./cmd/agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-386 ./cmd/agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-mipsle ./cmd/agent && \
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-windows.exe ./cmd/agent
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
@@ -32,29 +34,15 @@ COPY --from=web-builder /web/dist /app/web/dist
 COPY migrations /app/migrations
 # FingerprintHub 全量指纹规则（MIT）：web 3450 + service 11938
 COPY data/fingerprint /app/data/fingerprint
-# 分发的 agent 二进制与扫描引擎（供一键加入脚本下载）
-COPY --from=go-builder /out/scope-agent-linux /app/agent/scope-agent-linux
+# 分发的 agent 二进制（内置自研扫描引擎，纯 Go 单文件；供一键加入脚本/节点自升级下载）
+COPY --from=go-builder /out/scope-agent-linux-amd64 /app/agent/scope-agent-linux-amd64
 COPY --from=go-builder /out/scope-agent-linux-arm64 /app/agent/scope-agent-linux-arm64
+COPY --from=go-builder /out/scope-agent-linux-386 /app/agent/scope-agent-linux-386
+COPY --from=go-builder /out/scope-agent-linux-mipsle /app/agent/scope-agent-linux-mipsle
 COPY --from=go-builder /out/scope-agent-windows.exe /app/agent/scope-agent-windows.exe
-# TscanClient 可选：仓库不提交其二进制（体积大），缺失时仍可构建；
-# 扫描功能需要用户自行放入 third_party/（见 README「扫描引擎准备」）
-# 只打包扫描引擎二进制（Linux + Windows），不打源码/tar.gz
-COPY third_party/tscanclient_linux/ /app/third_party/tscanclient_linux/
-COPY third_party/tscanclient_win/ /app/third_party/tscanclient_win/
-RUN mkdir -p /app/tscan && \
-    if [ -f /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 ]; then \
-        cp /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/tscan/TscanClient_Linux; \
-    fi && \
-    if [ -f /app/third_party/tscanclient_win/TscanClient_Win.exe ]; then \
-        cp /app/third_party/tscanclient_win/TscanClient_Win.exe /app/tscan/TscanClient_Win.exe; \
-    fi && \
-    if [ -f /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 ]; then \
-        cp /app/third_party/tscanclient_linux/TscanClient_Linux_Amd64 /app/third_party/tscanclient_linux/TscanClient; \
-    fi && \
-    chmod +x /app/agent/scope-agent-linux /app/agent/scope-agent-linux-arm64 2>/dev/null; \
-    chmod +x /app/tscan/TscanClient_Linux 2>/dev/null; \
-        chmod +x /app/third_party/tscanclient_linux/TscanClient 2>/dev/null; \
-    true
+# v0.0.27：不再分发 TscanClient（扫描引擎已内置于 scope-agent，单文件）。
+# third_party/ 整目录移除：引擎二进制/POC 库/License 全部不再需要。
+RUN chmod +x /app/agent/scope-agent-linux-* 2>/dev/null; true
 
 EXPOSE 8080
 CMD ["/app/asset-server"]

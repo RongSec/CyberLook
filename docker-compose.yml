@@ -45,7 +45,6 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen2.5-32b-instruct}
       PG_DSN: postgres://asset:${POSTGRES_PASSWORD:-asset123}@postgres:5432/asset_platform?sslmode=disable
       REDIS_ADDR: redis:6379
-      TSCANCLIENT_PATH: /app/third_party/tscanclient_linux/TscanClient
       # JWT_SECRET 不要写死在这里：首次启动会自动生成 32 字节随机密钥并保存到
       # /app/data/jwt.secret（已挂载到宿主机 ./data/files，重启不丢）。
       # 如需外部注入，改用 env_file 提供强随机值，不要用可猜测的字符串。
@@ -54,7 +53,8 @@ services:
       # 用 HOST_PROJECT_DIR 确保 updater 容器内路径与宿主机一致
       - ${HOST_PROJECT_DIR:-.}/data/files:/app/data
       - ${HOST_PROJECT_DIR:-.}/data/backup:/app/backup
-      - tscan-config:/app/third_party/tscanclient_linux/config
+      # v0.0.27：server 不再挂 tscan-config 卷（TscanPlus 已移除；
+      # 引擎审计库只在 agent 本地 exe 同目录 config/，见 agent 服务挂载）
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,14 +83,16 @@ services:
     container_name: asset-agent
     restart: always
     # network_mode: host
-    command: ["/app/scope-agent", "-server", "http://server:18888", "-name", "node-docker-1", "-tscan", "/app/tscanclient/TscanClient"]
+    command: ["/app/scope-agent", "-server", "http://server:18888", "-name", "node-docker-1"]
     volumes:
-      - agent-tscan-config:/app/tscanclient/config
+      # 引擎审计库持久化：agent exe 同目录 config/config.db（v0.0.27 起自研引擎写入）
+      - agent-tscan-config:/app/config
     depends_on:
       - server
 
 volumes:
   pg-data:
   redis-data:
-  tscan-config:
+  # tscan-config：v0.0.27 移除（server 不再需要 tscan 目录）。
+  # 服务器上执行 `docker volume rm asset-platform_tscan-config` 清理旧卷。
   agent-tscan-config:
