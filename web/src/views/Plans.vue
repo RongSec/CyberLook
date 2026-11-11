@@ -56,7 +56,7 @@
 
         <n-form-item label="扫描引擎">
           <n-select v-model:value="form.engine" :options="engineOptions" style="width: 220px" />
-          <span class="switch-tip">自研引擎：connect 扫描 + FingerprintHub 全量指纹；TscanPlus：原扫描器（兼容回退）</span>
+          <span class="switch-tip">自研引擎：connect 扫描 + FingerprintHub 全量指纹，流式上报（v0.0.27 起唯一引擎）</span>
         </n-form-item>
 
         <n-form-item label="分片大小">
@@ -111,15 +111,12 @@
           <n-switch v-model:value="form.aliveProbe" /> <span class="switch-tip">开启 = 平台先探测存活、只下发存活 IP；关闭 = 直接把全部目标 IP 分批下发</span>
         </n-form-item>
         <n-form-item label="禁用存活探测(-np)">
-          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">自研引擎：connect 扫描天然不发 ICMP（等价 -np）；TscanPlus：加 -np 跳过 ICMP/ARP 探测</span>
+          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">自研引擎：connect 扫描天然不发 ICMP（等价 -np，仅作记录）</span>
         </n-form-item>
         <n-form-item label="禁用启发式扫描">
-          <n-switch v-model:value="form.noSmart" /> <span class="switch-tip">自研引擎：按给定端口全扫，无启发式裁剪（等价 -nosmart）；TscanPlus：加 -nosmart</span>
+          <n-switch v-model:value="form.noSmart" /> <span class="switch-tip">自研引擎：按给定端口全扫，无启发式裁剪（等价 -nosmart，仅作记录）</span>
         </n-form-item>
-        <n-form-item label="额外参数">
-          <n-input v-model:value="form.extraArgs" placeholder="可选，如 -pa 8080,9000" />
-        </n-form-item>
-        <n-form-item label="命令预览">
+        <n-form-item label="执行参数">
           <n-code :code="previewCmd" language="bash" word-wrap />
         </n-form-item>
         <n-form-item label="定时执行">
@@ -335,8 +332,7 @@ const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const showCreate = ref(false)
 const creating = ref(false)
 const engineOptions = [
-  { label: '自研引擎（默认）', value: 'builtin' },
-  { label: 'TscanPlus（回退兼容）', value: 'tscan' },
+  { label: '自研引擎（唯一引擎）', value: 'builtin' },
 ]
 const form = ref({ name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
 const nodes = ref([])
@@ -395,7 +391,8 @@ function buildCron() {
 }
 
 const previewCmd = computed(() => {
-  const parts = ['TscanClient']
+  // v0.0.27：引擎内置于 agent（无外部二进制），这里展示等价执行参数
+  const parts = ['[自研引擎]']
   parts.push('-m ' + (form.value.modules.length ? form.value.modules.join(',') : 'port'))
   if (form.value.name) parts.push(`-pr "${form.value.name}"`)
   parts.push('-hf <目标IP列表>')
@@ -407,7 +404,6 @@ const previewCmd = computed(() => {
   if (form.value.noPing) parts.push('-np')
   if (form.value.noSmart) parts.push('-nosmart')
   if (form.value.extraArgs) parts.push(form.value.extraArgs)
-  parts.push('-nocolor')
   return parts.join(' ')
 })
 
