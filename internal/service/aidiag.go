@@ -132,18 +132,15 @@ func heuristicVerdict(at model.AgentTask, logText string) (string, string) {
 		return "", ""
 	}
 	low := strings.ToLower(logText)
-	// TscanClient 收尾时会有这些行
-	for _, k := range []string{"扫描完成", "扫描结束", "scan finished", "all done"} {
+	// 自研引擎收尾行：「[自研引擎] 扫描结束 …」
+	for _, k := range []string{"扫描结束", "扫描完成", "scan finished", "all done"} {
 		if strings.Contains(low, strings.ToLower(k)) {
 			return ShardAIDone, fmt.Sprintf("进度 %d%%，日志出现完成标识：%s", pct, k)
 		}
 	}
-	// 每个 IP 都打完「Ip扫描结束」也算结束
-	if at.IPRanges != "" {
-		ips := len(strings.Split(at.IPRanges, ","))
-		if ips > 0 && strings.Count(logText, "Ip扫描结束") >= ips {
-			return ShardAIDone, fmt.Sprintf("进度 %d%%，全部 %d 个 IP 均有结束标识", pct, ips)
-		}
+	// 取消收尾：部分结果已照常上报，分片按结束处理
+	if strings.Contains(logText, "已取消，保留") {
+		return ShardAIDone, fmt.Sprintf("进度 %d%%，扫描已取消收尾（保留部分结果）", pct)
 	}
 	return ShardAIDone, fmt.Sprintf("端口已扫 %d%%", pct)
 }

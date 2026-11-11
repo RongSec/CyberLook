@@ -1,10 +1,10 @@
 package api
 
 import (
-	"strings"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"asset-platform/internal/config"
@@ -68,7 +68,8 @@ func AgentProgress(c *gin.Context) {
 	if err := config.DB.First(&at, id).Error; err == nil &&
 		(at.Status == "cancelled" || at.Status == "done" ||
 			at.Status == "done_ai" || at.Status == "stalled_ai" || at.Status == "failed") {
-		c.JSON(http.StatusOK, gin.H{"message": "cancelled", "cancelled": true})
+		c.JSON(http.StatusOK, gin.H{"message": "cancelled", "cancelled": true,
+			"cmd": gin.H{"action": "none"}})
 		return
 	}
 	var req struct {
@@ -102,7 +103,10 @@ func AgentProgress(c *gin.Context) {
 		updateNodeLog(at.NodeID, req.Log)
 		updateShardLog(at.ID, req.Log)
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "ok", "cancelled": false})
+	// cmd：调控指令通道骨架（保留字段形状供后续扩展；当前恒为 none。
+	// 运行期调速/暂停已按 2026-11-11 评审移除，取消走 cancelled 字段既有链路。）
+	c.JSON(http.StatusOK, gin.H{"message": "ok", "cancelled": false,
+		"cmd": gin.H{"action": "none"}})
 }
 
 // AgentFinish agent 完成子任务
@@ -302,9 +306,9 @@ func GetNodeLicense(c *gin.Context) {
 // GetNodeLicenseStatus 查询各节点 License 是否已配置（不返回内容）
 func GetNodeLicenseStatus(c *gin.Context) {
 	type row struct {
-		ID      uint   `json:"id"`
-		Name    string `json:"name"`
-		HasLic  bool   `json:"hasLicense"`
+		ID     uint   `json:"id"`
+		Name   string `json:"name"`
+		HasLic bool   `json:"hasLicense"`
 	}
 	var nodes []model.Node
 	config.DB.Select("id", "name", "license").Find(&nodes)

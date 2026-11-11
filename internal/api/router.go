@@ -1,9 +1,9 @@
 package api
 
 import (
+	"asset-platform/internal/middleware"
 	"asset-platform/internal/version"
 	"net/http"
-	"asset-platform/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,7 +32,6 @@ func RegisterRoutes(r *gin.Engine) {
 	r.GET("/api/nodes/install.sh", InstallSh)
 	r.GET("/api/nodes/install.ps1", InstallPs1)
 	r.GET("/api/nodes/agent-binary", AgentBinary)
-	r.GET("/api/nodes/tscan-binary", TscanBinary)
 
 	// agent 长连接（SSE 唤醒）与子任务上报（agent 调用，不依赖 JWT）
 	r.GET("/api/agent/stream/:id", AgentAuth(), AgentStream)
@@ -138,6 +137,7 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/tasks/:id/resume", ResumeTask)
 		auth.POST("/tasks/:id/restart", RestartTask)
 		auth.POST("/tasks/:id/stop", StopTask)
+		auth.POST("/tasks/:id/control", TaskControl)
 		auth.DELETE("/tasks/:id", DeleteTask)
 		auth.POST("/tasks/batch-delete", BatchDeleteTasks)
 		auth.GET("/tasks/:id/log", TaskLog)

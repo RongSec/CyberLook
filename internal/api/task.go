@@ -1,10 +1,10 @@
 package api
 
 import (
-	"os"
-	"log"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -71,7 +71,7 @@ func CreateTask(c *gin.Context) {
 	in := service.TaskInput{
 		Name: req.Name, IPRanges: req.IPRanges, PortMode: req.PortMode, Ports: req.Ports,
 		AliveProbe: aliveProbe,
-		Cron: req.Cron, TemplateID: req.TemplateID, Modules: req.Modules, Engine: req.Engine, Finger: req.Finger,
+		Cron:       req.Cron, TemplateID: req.TemplateID, Modules: req.Modules, Engine: req.Engine, Finger: req.Finger,
 		Thread: req.Thread, Timeout: req.Timeout, NoPing: req.NoPing, NoSmart: req.NoSmart,
 		ExtraArgs: req.ExtraArgs, NodeIDs: req.NodeIDs, BatchSize: req.BatchSize,
 	}
@@ -250,7 +250,7 @@ func UpdateTask(c *gin.Context) {
 	}
 	if err := config.DB.Model(&task).Updates(map[string]interface{}{
 		"name": req.Name, "ip_ranges": req.IPRanges, "modules": req.Modules,
-		"engine": req.Engine,
+		"engine":    req.Engine,
 		"port_mode": req.PortMode, "ports": req.Ports, "thread": req.Thread,
 		"timeout": req.Timeout, "finger": req.Finger, "no_ping": req.NoPing,
 		"no_smart": req.NoSmart, "extra_args": req.ExtraArgs, "cron": req.Cron,
@@ -299,6 +299,28 @@ func RunTask(c *gin.Context) {
 		_ = service.ExecuteTask(uint(id))
 	}()
 	c.JSON(http.StatusOK, gin.H{"message": "任务已提交执行"})
+}
+
+// TaskControl 任务实时调控入口（v0.0.27 骨架）。
+// 评审决定（2026-11-11）：**不做运行期动态调速/暂停**——节点并发由节点配置静态决定。
+// 当前仅支持 action=cancel，且收敛进既有 StopTask 链路（分片置 cancelled →
+// agent 心跳收到 cancelled:true → 取消本机扫描、部分结果照常入库），不新增分片状态。
+func TaskControl(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var req struct {
+		Action string `json:"action"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.Action != "cancel" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "当前仅支持 action=cancel（调速/暂停已按评审移除）"})
+		return
+	}
+	if err := service.StopTask(uint(id)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	tasklog.Append(uint(id), "任务已被调控取消")
+	c.JSON(http.StatusOK, gin.H{"message": "已取消"})
 }
 
 // StopTask 停止正在运行的任务
