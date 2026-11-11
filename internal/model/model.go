@@ -4,54 +4,54 @@ import "time"
 
 // Asset 资产主表（台账 + 扫描发现，IP 为关联键）
 type Asset struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	IP         string    `gorm:"column:ip;uniqueIndex" json:"ip"`
-	SystemName string    `gorm:"column:system_name" json:"systemName"`
-	Owner      string    `gorm:"column:owner" json:"owner"`
-	Department string    `gorm:"column:department" json:"department"`
-	Source     string    `gorm:"column:source;default:scan" json:"source"`
-	Status         string    `gorm:"column:status;default:pending" json:"status"`
-	ConfirmedTitle string    `gorm:"column:confirmed_title" json:"confirmedTitle"`
+	ID             uint   `gorm:"primaryKey" json:"id"`
+	IP             string `gorm:"column:ip;uniqueIndex" json:"ip"`
+	SystemName     string `gorm:"column:system_name" json:"systemName"`
+	Owner          string `gorm:"column:owner" json:"owner"`
+	Department     string `gorm:"column:department" json:"department"`
+	Source         string `gorm:"column:source;default:scan" json:"source"`
+	Status         string `gorm:"column:status;default:pending" json:"status"`
+	ConfirmedTitle string `gorm:"column:confirmed_title" json:"confirmedTitle"`
 	// ConfirmedSimhash 确认时的页面内容指纹（SimHash 64 位），用于判断后续是否改版
 	ConfirmedSimhash uint64 `gorm:"column:confirmed_simhash;default:0" json:"-"`
 	// ContentChanged 后续扫描发现页面内容实质变化
-	ContentChanged bool `gorm:"column:content_changed;default:false" json:"contentChanged"`
+	ContentChanged bool      `gorm:"column:content_changed;default:false" json:"contentChanged"`
 	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 func (Asset) TableName() string { return "assets" }
 
 // ScanTask 扫描任务
 type ScanTask struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	Name       string     `gorm:"column:name" json:"name"`
-	IPRanges   string     `gorm:"column:ip_ranges" json:"ipRanges"` // 换行/逗号分隔的 IP/CIDR/范围
-	PortMode   string     `gorm:"column:port_mode;default:top100" json:"portMode"`
-	Ports      string     `gorm:"column:ports" json:"ports"`
-	Cron       string     `gorm:"column:cron" json:"cron"`
-	Status     string     `gorm:"column:status;default:pending" json:"status"`
-	NodeID     *uint      `gorm:"column:node_id" json:"nodeId"`
-	TemplateID *uint      `gorm:"column:template_id" json:"templateId"`
-	Modules    string     `gorm:"column:modules;default:port" json:"modules"`
-	Engine     string     `gorm:"column:engine;default:builtin" json:"engine"` // builtin=自研引擎（默认）/ tscan=TscanPlus
-	Finger     string     `gorm:"column:finger;default:tiny" json:"finger"`
-	Thread     int        `gorm:"column:thread;default:600" json:"thread"`
-	Timeout    int        `gorm:"column:timeout;default:3" json:"timeout"`
-	NoPing     bool       `gorm:"column:no_ping" json:"noPing"`
+	ID         uint   `gorm:"primaryKey" json:"id"`
+	Name       string `gorm:"column:name" json:"name"`
+	IPRanges   string `gorm:"column:ip_ranges" json:"ipRanges"` // 换行/逗号分隔的 IP/CIDR/范围
+	PortMode   string `gorm:"column:port_mode;default:top100" json:"portMode"`
+	Ports      string `gorm:"column:ports" json:"ports"`
+	Cron       string `gorm:"column:cron" json:"cron"`
+	Status     string `gorm:"column:status;default:pending" json:"status"`
+	NodeID     *uint  `gorm:"column:node_id" json:"nodeId"`
+	TemplateID *uint  `gorm:"column:template_id" json:"templateId"`
+	Modules    string `gorm:"column:modules;default:port" json:"modules"`
+	Engine     string `gorm:"column:engine;default:builtin" json:"engine"` // 已废弃：v0.0.27 起引擎唯一（自研）。字段保留兼容存量任务数据，任意值都走自研引擎
+	Finger     string `gorm:"column:finger;default:tiny" json:"finger"`
+	Thread     int    `gorm:"column:thread;default:600" json:"thread"`
+	Timeout    int    `gorm:"column:timeout;default:3" json:"timeout"`
+	NoPing     bool   `gorm:"column:no_ping" json:"noPing"`
 	// AliveProbe 是否先做服务端存活探测（false = 直接把全部目标 IP 规划下发）
-	AliveProbe bool `gorm:"column:alive_probe" json:"aliveProbe"`
-	NoSmart    bool       `gorm:"column:no_smart" json:"noSmart"`
-	ExtraArgs  string     `gorm:"column:extra_args" json:"extraArgs"`
-	ReportPath string     `gorm:"column:report_path" json:"reportPath"`
-	BatchSize  int        `gorm:"column:batch_size;default:100" json:"batchSize"` // 每批下发的 IP 数
-	ProbeOffset int       `gorm:"column:probe_offset;default:0" json:"probeOffset"` // 流水线探测进度（已探测到第几个原始 IP）
-	TotalIPs    int       `gorm:"column:total_ips;default:0" json:"totalIps"`       // 目标展开后的 IP 总数（用于判断探测是否完成）
-	AliveCount  int       `gorm:"column:alive_count;default:0" json:"aliveCount"`   // 存活探测累计命中数
-	NodeIDs    string     `gorm:"column:node_ids" json:"nodeIds"` // ""=本机, "all"=全部节点, "1,2"=指定
-	CreatedAt  time.Time  `json:"createdAt"`
-	StartedAt  *time.Time `json:"startedAt"`
-	FinishedAt *time.Time `json:"finishedAt"`
+	AliveProbe  bool       `gorm:"column:alive_probe" json:"aliveProbe"`
+	NoSmart     bool       `gorm:"column:no_smart" json:"noSmart"`
+	ExtraArgs   string     `gorm:"column:extra_args" json:"extraArgs"`
+	ReportPath  string     `gorm:"column:report_path" json:"reportPath"`
+	BatchSize   int        `gorm:"column:batch_size;default:100" json:"batchSize"`   // 每批下发的 IP 数
+	ProbeOffset int        `gorm:"column:probe_offset;default:0" json:"probeOffset"` // 流水线探测进度（已探测到第几个原始 IP）
+	TotalIPs    int        `gorm:"column:total_ips;default:0" json:"totalIps"`       // 目标展开后的 IP 总数（用于判断探测是否完成）
+	AliveCount  int        `gorm:"column:alive_count;default:0" json:"aliveCount"`   // 存活探测累计命中数
+	NodeIDs     string     `gorm:"column:node_ids" json:"nodeIds"`                   // ""=本机, "all"=全部节点, "1,2"=指定
+	CreatedAt   time.Time  `json:"createdAt"`
+	StartedAt   *time.Time `json:"startedAt"`
+	FinishedAt  *time.Time `json:"finishedAt"`
 }
 
 func (ScanTask) TableName() string { return "scan_tasks" }
@@ -70,17 +70,17 @@ func (ScanSnapshot) TableName() string { return "scan_snapshots" }
 
 // Service 应用服务（跨快照聚合）
 type Service struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	AssetID     *uint      `gorm:"column:asset_id" json:"assetId"`
-	IP          string     `gorm:"column:ip" json:"ip"`
-	Port        int        `gorm:"column:port" json:"port"`
-	Protocol    string     `gorm:"column:protocol" json:"protocol"`
-	Service     string     `gorm:"column:service" json:"service"`
-	Banner      string     `gorm:"column:banner" json:"banner"`
-	Title       string     `gorm:"column:title" json:"title"`
-	Fingerprint string     `gorm:"column:fingerprint" json:"fingerprint"`
-	StatusCode  string     `gorm:"column:status_code" json:"statusCode"`
-	ContentLength int      `gorm:"column:content_length;default:0" json:"contentLength"`
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	AssetID       *uint  `gorm:"column:asset_id" json:"assetId"`
+	IP            string `gorm:"column:ip" json:"ip"`
+	Port          int    `gorm:"column:port" json:"port"`
+	Protocol      string `gorm:"column:protocol" json:"protocol"`
+	Service       string `gorm:"column:service" json:"service"`
+	Banner        string `gorm:"column:banner" json:"banner"`
+	Title         string `gorm:"column:title" json:"title"`
+	Fingerprint   string `gorm:"column:fingerprint" json:"fingerprint"`
+	StatusCode    string `gorm:"column:status_code" json:"statusCode"`
+	ContentLength int    `gorm:"column:content_length;default:0" json:"contentLength"`
 	// PageSimhash 当前页面内容指纹（SimHash 64 位）
 	PageSimhash uint64 `gorm:"column:page_simhash;default:0" json:"-"`
 	// PrevTitle / PrevFingerprint 上次识别的结果（用于对比新旧）
@@ -91,16 +91,16 @@ type Service struct {
 	PrevContentLength int    `gorm:"column:prev_content_length" json:"prevContentLength"`
 	// TitleSource 标题来源：tscan / fingerprint / ai
 	TitleSource string `gorm:"column:title_source;size:20" json:"titleSource"`
-	MissCount   int        `gorm:"column:miss_count;default:0" json:"missCount"`
-	Confirmed   bool       `gorm:"column:confirmed;default:false" json:"confirmed"`
+	MissCount   int    `gorm:"column:miss_count;default:0" json:"missCount"`
+	Confirmed   bool   `gorm:"column:confirmed;default:false" json:"confirmed"`
 	// ConfirmedTitle 该端口确认时的标题基线（端口级）。
 	// 之前基线只有 assets.confirmed_title 一个值（IP 级），多端口 IP 必然互相误判成"新变更"，
 	// 而且按台账确认时对 source=scan 的资产不写基线 → 确认完立刻又变"新变更"，永远确认不掉。
-	ConfirmedTitle string `gorm:"column:confirmed_title" json:"confirmedTitle"`
-	FirstSeen   *time.Time `gorm:"column:first_seen" json:"firstSeen"`
-	LastSeen    *time.Time `gorm:"column:last_seen" json:"lastSeen"`
-	TaskID      uint       `gorm:"column:task_id;default:0;index" json:"taskId"`         // 首次发现它的任务
-	LastTaskID  uint       `gorm:"column:last_task_id;default:0;index" json:"lastTaskId"` // 最近一次扫到它的任务
+	ConfirmedTitle string     `gorm:"column:confirmed_title" json:"confirmedTitle"`
+	FirstSeen      *time.Time `gorm:"column:first_seen" json:"firstSeen"`
+	LastSeen       *time.Time `gorm:"column:last_seen" json:"lastSeen"`
+	TaskID         uint       `gorm:"column:task_id;default:0;index" json:"taskId"`          // 首次发现它的任务
+	LastTaskID     uint       `gorm:"column:last_task_id;default:0;index" json:"lastTaskId"` // 最近一次扫到它的任务
 }
 
 func (Service) TableName() string { return "services" }
@@ -290,11 +290,11 @@ func (Department) TableName() string { return "departments" }
 
 // SystemSettings 系统设置（单行）：GitHub 仓库 + 代理（仅用于获取更新）
 type SystemSettings struct {
-	ID         uint   `gorm:"primaryKey;column:id" json:"-"`
-	GithubRepo string `gorm:"column:github_repo" json:"githubRepo"` // 形如 owner/repo
+	ID          uint   `gorm:"primaryKey;column:id" json:"-"`
+	GithubRepo  string `gorm:"column:github_repo" json:"githubRepo"` // 形如 owner/repo
 	GithubToken string `gorm:"column:github_token" json:"githubToken"`
-	Proxy      string `gorm:"column:proxy" json:"proxy"` // HTTP 代理，仅用于 GitHub 请求
-	Port       int    `gorm:"column:port;default:18888" json:"port"` // 服务端监听端口
+	Proxy       string `gorm:"column:proxy" json:"proxy"`             // HTTP 代理，仅用于 GitHub 请求
+	Port        int    `gorm:"column:port;default:18888" json:"port"` // 服务端监听端口
 	// AllowedIPs IP 白名单（逗号分隔 CIDR），空 = 不限制
 	// 例：10.24.188.0/23,127.0.0.1
 	AllowedIPs string `gorm:"column:allowed_ips;size:500" json:"allowedIps"`

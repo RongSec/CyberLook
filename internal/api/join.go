@@ -1,17 +1,18 @@
 package api
 
 import (
-	"log"
-
-	"asset-platform/internal/config"
-	"asset-platform/internal/model"
-	"regexp"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"regexp"
 	"sync"
 	"time"
+
+	"asset-platform/internal/config"
+	"asset-platform/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -74,6 +75,7 @@ func serverBase(c *gin.Context) string {
 }
 
 // InstallSh Linux 一键加入脚本（systemd 常驻 + 开机自启 + 崩溃重启）
+// v0.0.27：扫描引擎已内置于 scope-agent（纯 Go 自研，无 CGO），不再分发外部扫描器二进制。
 func InstallSh(c *gin.Context) {
 	tk := c.Query("token")
 	if !PeekJoinToken(tk) {
@@ -104,25 +106,12 @@ ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64) ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
-  *) echo "不支持的架构: $ARCH"; exit 1 ;;
+  i386|i686) ARCH=386 ;;
+  mips|mipsel|mipsle) ARCH=mipsle ;;
+  *) echo "不支持的架构: $ARCH（支持 amd64/arm64/386/mipsle）"; exit 1 ;;
 esac
 
-echo ""
-echo "请选择安装内容："
-echo "  1) 仅控制文件 —— scope-agent（约 11MB），适合已装过扫描引擎的机器"
-echo "  2) 全部安装   —— scope-agent + TscanClient（约 45MB），首次加入选这个"
-CHOICE=""
-if [ -r /dev/tty ]; then
-  printf "输入 1 或 2 [默认 2]: "
-  read -r CHOICE < /dev/tty || true
-fi
-[ -z "$CHOICE" ] && CHOICE=2
-case "$CHOICE" in
-  1|2) ;;
-  *) echo "无效选择，按默认 2（全部安装）处理"; CHOICE=2 ;;
-esac
-
-echo "[1/4] 安装到 $WORKDIR （架构 $ARCH）"
+echo "[1/3] 安装到 $WORKDIR （架构 $ARCH）"
 mkdir -p "$WORKDIR" && cd "$WORKDIR" || {
   echo "❌ 无法进入目录 $WORKDIR"; exit 1;
 }
@@ -138,7 +127,8 @@ if ! { : > .weijian_write_test; } 2>/dev/null; then
 fi
 rm -f .weijian_write_test
 
-echo "      下载控制文件 scope-agent ..."
+# 扫描引擎已内置：单个 scope-agent 二进制即可执行全部扫描任务
+echo "      下载控制文件 scope-agent（内置自研扫描引擎）..."
 if ! curl -fsSL "$SERVER/api/nodes/agent-binary?os=linux&arch=$ARCH&token=$TOKEN" -o scope-agent.part; then
   echo "❌ 下载 scope-agent 失败"
   echo "   排查：curl -v -o /tmp/a \"$SERVER/api/nodes/agent-binary?os=linux&arch=$ARCH&token=$TOKEN\""
@@ -147,21 +137,8 @@ if ! curl -fsSL "$SERVER/api/nodes/agent-binary?os=linux&arch=$ARCH&token=$TOKEN
 fi
 mv -f scope-agent.part scope-agent
 chmod +x scope-agent
-if [ "$CHOICE" = "2" ]; then
-  echo "      下载扫描引擎 TscanClient ..."
-  if ! curl -fsSL "$SERVER/api/nodes/tscan-binary?os=linux&arch=$ARCH&token=$TOKEN" -o TscanClient.part; then
-    echo "❌ 下载 TscanClient 失败"; rm -f TscanClient.part; exit 1
-  fi
-  mv -f TscanClient.part TscanClient
-  chmod +x TscanClient
-else
-  echo "      跳过扫描引擎（仅控制文件）"
-  if [ ! -x "$WORKDIR/TscanClient" ]; then
-    echo "      注意：本机没有 TscanClient，节点可上线但无法执行扫描任务"
-  fi
-fi
 
-echo "[2/4] 写入 systemd 服务（清除旧凭据，确保用本令牌重新注册）"
+echo "[2/3] 写入 systemd 服务（清除旧凭据，确保用本令牌重新注册）"
 rm -f "$WORKDIR/agent.json" "$WORKDIR/agent.token"
 cat > "$UNIT" <<EOF
 [Unit]
@@ -172,7 +149,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/scope-agent -server $SERVER -name $NODE -token $TOKEN -tscan $WORKDIR/TscanClient
+ExecStart=$WORKDIR/scope-agent -server $SERVER -name $NODE -token $TOKEN
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0
@@ -181,11 +158,9 @@ StartLimitIntervalSec=0
 WantedBy=multi-user.target
 EOF
 
-echo "[3/4] 启用开机自启"
+echo "[3/3] 启用开机自启并启动"
 systemctl daemon-reload
 systemctl enable weijian-agent >/dev/null 2>&1
-
-echo "[4/4] 启动"
 systemctl restart weijian-agent
 sleep 3
 systemctl --no-pager --lines=0 status weijian-agent || true
@@ -210,6 +185,7 @@ func InstallPs1(c *gin.Context) {
 	server := serverBase(c)
 	script := fmt.Sprintf(`# 见你未见 - Windows 节点一键加入
 # 首次会弹一次 UAC，授权后全程自动；之后开机自启、崩溃自动拉起
+# v0.0.27：扫描引擎已内置于 scope-agent.exe，单文件安装
 $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"
 $Server = "%s"
@@ -254,15 +230,7 @@ if ($Dir -match '(?i)\\(System32|SysWOW64|Windows)$' -or -not $Dir) {
     Write-Host "当前目录为系统目录，改用 $Dir"
 }
 $Exe = Join-Path $Dir "scope-agent.exe"
-$Tsc = Join-Path $Dir "TscanClient.exe"
 $Node = $env:COMPUTERNAME
-
-Write-Host ""
-Write-Host "请选择安装内容："
-Write-Host "  1) 仅控制文件 —— scope-agent.exe（约 11MB），适合已装过扫描引擎的机器"
-Write-Host "  2) 全部安装   —— scope-agent.exe + TscanClient.exe（约 46MB），首次加入选这个"
-$choice = Read-Host "输入 1 或 2 [默认 2]"
-if ($choice -ne "1" -and $choice -ne "2") { $choice = "2" }
 
 Write-Host "[1/4] 安装到 $Dir"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
@@ -282,26 +250,13 @@ if (Test-Path $Exe) {
     return
 }
 
+Write-Host "      下载 scope-agent.exe（内置自研扫描引擎，单文件）..."
 Invoke-WebRequest -Uri "$Server/api/nodes/agent-binary?os=windows&token=$Token" -OutFile $Exe -UseBasicParsing
-if ($choice -eq "2") {
-    Write-Host "      下载扫描引擎 TscanClient.exe ..."
-    try {
-        Invoke-WebRequest -Uri "$Server/api/nodes/tscan-binary?os=windows&token=$Token" -OutFile $Tsc -UseBasicParsing
-    } catch {
-        Write-Host ("      ⚠ 扫描引擎下载失败（可能被占用）：" + $_.Exception.Message)
-        Write-Host "      节点仍可上线，但无法执行扫描任务"
-    }
-} else {
-    Write-Host "      跳过扫描引擎（仅控制文件）"
-    if (-not (Test-Path $Tsc)) {
-        Write-Host "      注意：本机没有 TscanClient.exe，节点可上线但无法执行扫描任务"
-    }
-}
 
 Write-Host "[2/4] 首次注册（消耗加入令牌，生成本地凭据 agent.json）"
 Remove-Item (Join-Path $Dir "agent.json") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $Dir "agent.token") -Force -ErrorAction SilentlyContinue
-$p = Start-Process -FilePath $Exe -ArgumentList @("-server",$Server,"-name",$Node,"-token",$Token,"-tscan",$Tsc) -WorkingDirectory $Dir -WindowStyle Hidden -PassThru
+$p = Start-Process -FilePath $Exe -ArgumentList @("-server",$Server,"-name",$Node,"-token",$Token) -WorkingDirectory $Dir -WindowStyle Hidden -PassThru
 Start-Sleep -Seconds 6
 if (Test-Path (Join-Path $Dir "agent.json")) {
     Write-Host ("  已注册：" + (Get-Content (Join-Path $Dir 'agent.json')))
@@ -316,7 +271,7 @@ $lines = @(
   "cd /d ""$Dir""",
   "tasklist /FI ""IMAGENAME eq scope-agent.exe"" 2>NUL | find /I ""scope-agent.exe"" >NUL",
   "if not errorlevel 1 exit /b",
-  "start """" /min ""$Exe"" -server $Server -name $Node -tscan ""$Tsc"""
+  "start """" /min ""$Exe"" -server $Server -name $Node"
 )
 # 用系统 ANSI 编码写 .bat：ASCII 会把中文目录写成 "?"，任务起来找不到文件
 try { Set-Content -Path $Bat -Value $lines -Encoding Default } catch { Set-Content -Path $Bat -Value $lines -Encoding ASCII }
@@ -389,7 +344,7 @@ if ($taskOK) {
 } else {
     # 兜底：直接拉起（先看是否已在跑，避免双实例）
     if (-not (Get-Process scope-agent -ErrorAction SilentlyContinue)) {
-        Start-Process -FilePath $Exe -ArgumentList @("-server",$Server,"-name",$Node,"-tscan",$Tsc) -WorkingDirectory $Dir -WindowStyle Hidden | Out-Null
+        Start-Process -FilePath $Exe -ArgumentList @("-server",$Server,"-name",$Node) -WorkingDirectory $Dir -WindowStyle Hidden | Out-Null
     }
 }
 Start-Sleep -Seconds 3
@@ -416,7 +371,27 @@ Read-Host "按回车关闭"
 	c.String(http.StatusOK, script)
 }
 
-// AgentBinary 下载 agent 二进制
+// agentBinaryName 按 os/arch 给出容器内 agent 二进制路径。
+// 出包脚本 scripts/build-agents.sh 产出全 5 平台（linux: amd64/arm64/386/mipsle + windows: amd64）。
+// 找不到对应架构文件时回退 amd64（老镜像/手工部署常见只有 amd64）。
+func agentBinaryName(osType, arch string) (string, string) {
+	if osType == "windows" {
+		return "/app/agent/scope-agent-windows.exe", "scope-agent-windows.exe"
+	}
+	base := "/app/agent/scope-agent-linux-"
+	switch arch {
+	case "arm64":
+		return base + "arm64", "scope-agent-linux-arm64"
+	case "386":
+		return base + "386", "scope-agent-linux-386"
+	case "mipsle":
+		return base + "mipsle", "scope-agent-linux-mipsle"
+	default: // amd64
+		return base + "amd64", "scope-agent-linux-amd64"
+	}
+}
+
+// AgentBinary 下载 agent 二进制（内置自研扫描引擎，单文件即全部）
 // 支持两种认证：
 //   - 首次安装：一次性加入令牌（?token=）
 //   - 节点升级：节点自身凭据（?nodeId= + X-Node-Token 头）
@@ -440,33 +415,15 @@ func AgentBinary(c *gin.Context) {
 		return
 	}
 	osType := c.DefaultQuery("os", "linux")
-	arch := c.DefaultQuery("arch", "amd64") // amd64 / arm64
-	path := "/app/agent/scope-agent-linux"
-	if osType == "windows" {
-		path = "/app/agent/scope-agent-windows.exe"
-	} else if arch == "arm64" {
-		path = "/app/agent/scope-agent-linux-arm64"
-	}
-	c.FileAttachment(path, fmt.Sprintf("scope-agent-%s-%s", osType, arch))
-}
-
-// TscanBinary 下载 TscanClient
-func TscanBinary(c *gin.Context) {
-	tk := c.Query("token")
-	if !PeekJoinToken(tk) {
-		c.String(http.StatusForbidden, "令牌无效或已过期")
-		return
-	}
-	osType := c.DefaultQuery("os", "linux")
-	arch := c.DefaultQuery("arch", "amd64") // amd64 / arm64
-	path := "/app/tscan/TscanClient_Linux"
-	name := "TscanClient"
-	if osType == "windows" {
-		path = "/app/tscan/TscanClient_Win.exe"
-		name = "TscanClient.exe"
-	} else if arch == "arm64" {
-		path = "/app/tscan/TscanClient_Linux_ARM64"
-		name = "TscanClient"
+	arch := c.DefaultQuery("arch", "amd64") // amd64 / arm64 / 386 / mipsle
+	path, name := agentBinaryName(osType, arch)
+	// 兼容历史命名（老镜像里是 scope-agent-linux 无架构后缀）
+	if fi, err := os.Stat(path); err != nil || fi.IsDir() {
+		if osType != "windows" && arch == "amd64" {
+			if fi2, e2 := os.Stat("/app/agent/scope-agent-linux"); e2 == nil && !fi2.IsDir() {
+				path = "/app/agent/scope-agent-linux"
+			}
+		}
 	}
 	c.FileAttachment(path, name)
 }

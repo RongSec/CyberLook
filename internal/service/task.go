@@ -1,9 +1,11 @@
 package service
 
 import (
-	"log"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,7 +41,7 @@ type TaskInput struct {
 	NoSmart    bool
 	ExtraArgs  string
 	NodeIDs    string
-	BatchSize  int    // 每批下发的 IP 数（0=默认 100）
+	BatchSize  int // 每批下发的 IP 数（0=默认 100）
 }
 
 // CreateTask 创建扫描任务
@@ -50,7 +52,7 @@ func CreateTask(in TaskInput) (*model.ScanTask, error) {
 		Modules: in.Modules, Engine: in.Engine, Finger: in.Finger,
 		Thread: in.Thread, Timeout: in.Timeout, NoPing: in.NoPing, NoSmart: in.NoSmart,
 		AliveProbe: in.AliveProbe,
-		ExtraArgs: in.ExtraArgs, NodeIDs: in.NodeIDs, BatchSize: in.BatchSize,
+		ExtraArgs:  in.ExtraArgs, NodeIDs: in.NodeIDs, BatchSize: in.BatchSize,
 	}
 	if task.Modules == "" {
 		task.Modules = "port"
@@ -106,12 +108,21 @@ func DeleteTask(id uint) error {
 	return config.DB.Delete(&model.ScanTask{}, id).Error
 }
 
+// reportsDir 扫描报告 HTML 的输出目录（原为 TscanClient 工作目录；
+// 自研引擎不再写 HTML 报告，这里仅作历史报告的清理锚点，恒为空目录/不存在）
+func reportsDir() string {
+	if d := os.Getenv("DATA_DIR"); d != "" {
+		return filepath.Join(d, "reports")
+	}
+	return "data/reports"
+}
+
 // removeTaskReports 删除任务关联的报告文件（含同名前缀历史文件）
 func removeTaskReports(reportPath, projectID string) {
 	if reportPath != "" {
 		_ = os.Remove(reportPath)
 	}
-	workDir := filepath.Dir(scanner.TscanClientPath)
+	workDir := reportsDir()
 	if projectID != "" {
 		matches, _ := filepath.Glob(filepath.Join(workDir, projectID+"-*.html"))
 		for _, m := range matches {
@@ -122,7 +133,7 @@ func removeTaskReports(reportPath, projectID string) {
 
 // findTaskReport 找任务本次生成的 HTML 报告（取最新）
 func findTaskReport(projectID string) string {
-	workDir := filepath.Dir(scanner.TscanClientPath)
+	workDir := reportsDir()
 	matches, _ := filepath.Glob(filepath.Join(workDir, projectID+"-*.html"))
 	if len(matches) == 0 {
 		return ""
@@ -133,7 +144,7 @@ func findTaskReport(projectID string) string {
 
 // CleanOldReports 清理 N 天前的扫描报告文件，返回删除数量
 func CleanOldReports(days int) int {
-	workDir := filepath.Dir(scanner.TscanClientPath)
+	workDir := reportsDir()
 	matches, _ := filepath.Glob(filepath.Join(workDir, "*.html"))
 	cutoff := time.Now().AddDate(0, 0, -days)
 	removed := 0
@@ -169,8 +180,8 @@ func BatchDeleteAssets(ids []uint) error {
 	return nil
 }
 
-// ExecuteTask 执行扫描任务：调 TscanClient → 结果入库（快照/服务/资产）
-// StopTask 停止任务：本机执行则杀进程，节点分片则标记取消
+// ExecuteTask 执行扫描任务：调自研引擎（流式）→ 结果入库（快照/服务/资产）
+// StopTask 停止任务：取消本机扫描，节点分片标记取消（agent 心跳收到 cancelled 后取消本机扫描）
 func StopTask(taskID uint) error {
 	var task model.ScanTask
 	if err := config.DB.First(&task, taskID).Error; err != nil {
@@ -201,7 +212,7 @@ func ExecuteTask(taskID uint) error {
 	ports := task.Ports
 	switch task.PortMode {
 	case "top100":
-		ports = "" // TscanClient 默认 Top100
+		ports = "" // 默认 Top100（引擎空串即 Top100）
 	case "all":
 		ports = "1-65535"
 	}
@@ -209,14 +220,17 @@ func ExecuteTask(taskID uint) error {
 	opts := scanner.ScanOptions{
 		ProjectID: taskProjectID(task),
 		Modules:   task.Modules, Finger: task.Finger,
-		Ports:     ports, Thread: task.Thread, Timeout: task.Timeout * 1000, // 秒→毫秒（与 agent 侧一致）
+		Ports: ports, Thread: task.Thread, Timeout: task.Timeout * 1000, // 秒→毫秒（与 agent 侧一致）
 		NoPing: task.NoPing, NoSmart: task.NoSmart,
 		ExtraArgs: task.ExtraArgs,
 	}
-	// 引擎选择：任务级 task.Engine 优先，未指定时走全局默认（SCAN_ENGINE 环境变量）
+	// 引擎选择：字段保留兼容老任务数据；v0.0.27 起引擎唯一（自研），路由已收敛
 	if task.Engine != "" {
 		opts.Engine = task.Engine
 	}
+	// 本地执行路径的取消：StopTask → scanner.StopScan(taskProjectID) 直接命中
+	// 本进程扫描句柄（同 ProjectID），无需轮询器；部分结果已由 ingestServicesLive
+	// 流式入库，取消只负责收敛状态。
 	results, err := scanner.RunPortScan(targets, ExcludeRangeStrings(), opts, func(line string, isProgress bool) {
 		if isProgress {
 			tasklog.SetProgress(task.ID, line)
@@ -227,7 +241,13 @@ func ExecuteTask(taskID uint) error {
 	if err != nil {
 		tasklog.Append(task.ID, "[错误] "+err.Error())
 		tasklog.SetProgress(task.ID, "")
-		config.DB.Model(&task).Updates(map[string]interface{}{"status": "failed", "finished_at": time.Now()})
+		status := "failed"
+		// 取消（StopTask/调控取消）导致的提前结束按 stopped 收敛，部分结果保留
+		if errors.Is(err, context.Canceled) {
+			status = "stopped"
+			tasklog.AppendTS(task.ID, "[本机] 扫描已取消，保留部分结果 %d 条", len(results))
+		}
+		config.DB.Model(&task).Updates(map[string]interface{}{"status": status, "finished_at": time.Now()})
 		return err
 	}
 	tasklog.SetProgress(task.ID, "") // 扫描结束清空进度条
