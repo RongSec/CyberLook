@@ -7,6 +7,8 @@
 //   - 吞吐靠"高并发 + 短超时"：filtered 端口是超时主导，吞吐 ≈ 并发数 / 超时；
 //     4096 并发 × 500ms 约 8000 探针/秒，已超过 TscanPlus 实测的 864~5044/秒。
 //   - 关闭端口会立刻回 RST（ECONNREFUSED），这类不受超时影响，可跑满并发。
+//   - 流式发现（v0.0.27）：开放端口经 OnOpen **发现即回调**（不等全部扫完），
+//     供上层流水线（识别工作池）即时消费。
 package portscan
 
 import (
@@ -27,7 +29,11 @@ type Options struct {
 	Timeout     time.Duration // 单端口超时，默认 500ms
 	// OnProgress 每完成一批回调（done=已完成探针数，total=总探针数，open=已发现开放数）
 	OnProgress func(done, total int64, open int64)
-	ProgressEvery time.Duration // 进度回调间隔，默认 2s
+	// ProgressEvery 进度回调间隔，默认 2s
+	ProgressEvery time.Duration
+	// OnOpen 发现开放端口即回调（在扫描 worker 内调用，**实现必须并发安全**）。
+	// 缓冲满时形成背压（该 worker 暂停接活），属预期保护。
+	OnOpen func(ip string, port int)
 }
 
 // Result 一个开放端口
@@ -58,6 +64,7 @@ func (s Stats) PPS() float64 {
 }
 
 // Scan 对 targets × ports 做全连接扫描，返回开放端口（按 IP、端口排序）。
+// ctx 取消时返回**已拿到的部分结果** + ctx.Err()（调用方照常消费部分结果）。
 func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Result, Stats, error) {
 	if len(targets) == 0 || len(ports) == 0 {
 		return nil, Stats{}, fmt.Errorf("目标和端口不能为空")
@@ -104,6 +111,13 @@ func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Re
 					results = append(results, Result{IP: j.ip, Port: j.port, RTT: rtt})
 					mu.Unlock()
 					atomic.AddInt64(&open, 1)
+					if opt.OnOpen != nil {
+						select {
+						case <-ctx.Done(): // 已取消：不再投喂，结果集以已收集为准
+						default:
+							opt.OnOpen(j.ip, j.port)
+						}
+					}
 				} else if isRefused(err) {
 					atomic.AddInt64(&closed, 1)
 				} else if isTimeout(err) {
@@ -133,18 +147,17 @@ func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Re
 		}()
 	}
 
-	// 投递任务
+	// 投递任务（ctx 取消即停）
 	var cancelled bool
+dispatch:
 	for _, ip := range targets {
 		for _, p := range ports {
-			jobs <- job{ip: ip, port: p}
-			if ctx.Err() != nil {
+			select {
+			case jobs <- job{ip: ip, port: p}:
+			case <-ctx.Done():
 				cancelled = true
-				break
+				break dispatch
 			}
-		}
-		if cancelled {
-			break
 		}
 	}
 	close(jobs)
@@ -157,7 +170,7 @@ func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Re
 	st.Closed = atomic.LoadInt64(&closed)
 	st.Filtered = atomic.LoadInt64(&filtered)
 	st.Errors = atomic.LoadInt64(&errs)
-	if cancelled {
+	if cancelled || ctx.Err() != nil {
 		return results, st, ctx.Err()
 	}
 
