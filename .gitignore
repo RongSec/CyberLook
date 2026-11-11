@@ -65,3 +65,6 @@ jwt.secret
 # 断点文件
 data/pipeline/
 third_party/tscanclient_win/config/CheckKB-CVEs.csv
+
+# 多平台出包产物
+dist/

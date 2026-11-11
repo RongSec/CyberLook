@@ -9,6 +9,44 @@
 
 ---
 
+## [0.0.27] - 2026-11-11（彻底替换 TscanPlus：自研引擎流式化）
+
+### 新增
+
+- **流式扫描引擎**（自研引擎成为唯一引擎）：扫描发现开放端口即刻投喂识别工作池
+  （默认 32 并发，`IDENT_CONCURRENCY` 可配），识别完成进聚合器——攒满 200 条或
+  300ms 未发即 flush 上报。此前是「全部端口扫完 → 逐个识别 → 一次性回调」，
+  首条结果可见时间从分钟级提前到秒级；agent 侧 `postResults` 逻辑零改动复用。
+- **审计本地落库（仅 agent）**：每批扫描结果旁路写入 agent 本地
+  `config/config.db`（ipscan/urlscan 表，沿用原 TscanPlus 表列子集），供事后排查
+  上报链路；写库失败只记日志、绝不影响扫描。任务 ingest 完成后由平台清理指令
+  按 Project 删行，防止占满磁盘。「节点管理 → 数据库管理」入口原样可用。
+- **实时进度规范**：引擎每秒 ≤1 行进度（探针 done/total、当前 pps、开放数、
+  已识别数），格式兼容既有解析（`(a/b)`、`N%`、`[已用:剩余]`）。
+- **规则/探针索引包级缓存**：FingerprintHub 全量载入（约 1.4s）只付一次代价，
+  按文件 mtime 自动失效（rules-update 换库后下一任务即生效）。
+- **多平台出包**：agent 覆盖 linux amd64/arm64/386/mipsle(softfloat) + windows amd64
+  （纯 Go 无 CGO，麒麟等低版本 gcc 环境无关）；`scripts/build-agents.sh` 一键产出。
+- **任务调控接口** `POST /api/tasks/:id/control`（当前仅 `cancel`，收敛进既有停止链路）。
+
+### 优化
+
+- **取消即保留部分结果**：节点收到取消指令后引擎立即收敛，取消前已识别的批次
+  照常 flush 入库，不再丢弃整轮扫描（旧 tscan 链路 kill 进程即全丢）。
+- 心跳/进度、SSE 唤醒、分片调度等控制面协议不变；`/progress` 响应新增 `cmd`
+  字段（当前恒为 none，为后续调控留通道）。
+
+### 移除
+
+- **TscanPlus 彻底移除**：删除 TscanClient 执行链（os/exec 启动、PTY、500ms
+  轮询 config.db）、`identifyEnhanced` 旧识别链、`tscan-binary` 分发路由、
+  install.sh/install.ps1 的扫描器下载步骤、`third_party/` 整目录（引擎二进制/
+  POC 库/License 全部不再需要）、节点 License 配置 UI、`SCAN_ENGINE` 环境变量、
+  `-engine-db` flag；`creack/pty` 依赖随 tidy 移除。
+  v0.0.27 起**仅自研引擎**；`task.engine` 字段保留兼容存量数据（任意值均走自研）。
+
+---
+
 ## [0.0.26] - 2026-11-10（扫描引擎修复）
 
 ### 修复
