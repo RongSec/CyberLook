@@ -51,8 +51,7 @@ const groups = [
       { method: 'GET', path: '/api/nodes/agent-binary', desc: '下载控制文件二进制（按架构）', auth: '需登录' },
       { method: 'GET', path: '/api/nodes/install.ps1', desc: 'Windows 安装脚本', auth: '需登录' },
       { method: 'GET', path: '/api/nodes/install.sh', desc: 'Linux 安装脚本', auth: '需登录' },
-      { method: 'POST', path: '/api/nodes/register', desc: '节点注册', auth: '需登录' },
-      { method: 'GET', path: '/api/nodes/tscan-binary', desc: '下载 TscanClient 扫描引擎', auth: '需登录' }
+      { method: 'POST', path: '/api/nodes/register', desc: '节点注册', auth: '需登录' }
     ]
   },
   {
@@ -221,6 +220,7 @@ const groups = [
       { method: 'POST', path: '/tasks/:id/run', desc: '立即执行任务', auth: '需登录' },
       { method: 'GET', path: '/tasks/:id/runs', desc: '任务执行历史', auth: '需登录' },
       { method: 'POST', path: '/tasks/:id/stop', desc: '停止任务', auth: '需登录' },
+      { method: 'POST', path: '/tasks/:id/control', desc: '任务调控（当前仅 cancel，收敛进停止链路）', auth: '需登录' },
       { method: 'POST', path: '/tasks/batch-delete', desc: '批量删除资产', auth: '需登录' },
       { method: 'GET', path: '/tasks/scheduled', desc: '定时任务列表', auth: '需登录' }
     ]
