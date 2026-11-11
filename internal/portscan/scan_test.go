@@ -46,16 +46,16 @@ func listenN(t *testing.T, n int) ([]int, func()) {
 	}
 }
 
-// TestFixedConcurrencyIsBufferedChannel 固定 worker 池：OnOpen 在 worker 协程内同步调用，
-// 用「OnOpen 同时在途计数」验证实际并发 ≤ Concurrency（=3）。
+// TestFixedConcurrencyIsBufferedChannel limiter 形态：OnOpen 在探针协程内同步调用，
+// 用「OnOpen 同时在途计数」验证实际并发 ≤ Concurrency（=10，即 limiter 下限）。
 func TestFixedConcurrencyIsBufferedChannel(t *testing.T) {
-	ports, cleanup := listenN(t, 12)
+	ports, cleanup := listenN(t, 40)
 	defer cleanup()
 
 	var mu sync.Mutex
 	cur, max := 0, 0
 	_, _, err := Scan(context.Background(), []string{"127.0.0.1"}, ports, Options{
-		Concurrency: 3,
+		Concurrency: 10, // = MinLimit（控制器并发下限，产品口径 10..8000）
 		Timeout:     time.Second,
 		OnOpen: func(ip string, p int) {
 			mu.Lock()
@@ -73,8 +73,8 @@ func TestFixedConcurrencyIsBufferedChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan 失败: %v", err)
 	}
-	if max > 3 {
-		t.Errorf("实际并发 %d 超过设定 3（信号量失效？）", max)
+	if max > 10 {
+		t.Errorf("实际并发 %d 超过设定 10（limiter 失效？）", max)
 	}
 }
 

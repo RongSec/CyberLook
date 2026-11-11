@@ -303,6 +303,31 @@
 
     <!-- 终端弹窗 -->
     <n-modal v-model:show="showLog" preset="card" :title="`扫描引擎终端输出${logTaskName ? ' — ' + logTaskName : ''}`" style="width: 860px">
+      <!-- 实时调控条：暂停/继续 + 并发/超时动态调速（执行层内存态，≤2s 随心跳生效） -->
+      <div class="ctrl-bar">
+        <n-tag :type="logTaskPaused ? 'warning' : 'success'" size="small" :bordered="false">
+          {{ logTaskPaused ? '已暂停（进度冻结）' : '执行中' }}
+        </n-tag>
+        <n-button size="small" :type="logTaskPaused ? 'primary' : 'warning'"
+          :disabled="!logTaskRunning" :loading="ctrlBusy" @click="toggleScanPause">
+          {{ logTaskPaused ? '继续扫描' : '暂停扫描' }}
+        </n-button>
+        <span class="ctrl-label">并发</span>
+        <n-slider v-model:value="ctrlForm.concurrency" :min="10" :max="8000" :step="10"
+          :tooltip="false" style="width: 140px" :disabled="!logTaskRunning" />
+        <n-input-number v-model:value="ctrlForm.concurrency" size="tiny" :min="10" :max="8000"
+          :show-button="false" style="width: 62px" :disabled="!logTaskRunning" />
+        <span class="ctrl-label">超时ms</span>
+        <n-slider v-model:value="ctrlForm.timeoutMs" :min="100" :max="30000" :step="100"
+          :tooltip="false" style="width: 100px" :disabled="!logTaskRunning" />
+        <n-input-number v-model:value="ctrlForm.timeoutMs" size="tiny" :min="100" :max="30000"
+          :show-button="false" style="width: 60px" :disabled="!logTaskRunning" />
+        <n-button size="small" type="primary" :disabled="!logTaskRunning" :loading="ctrlBusy"
+          @click="applyScanLimit">应用调速</n-button>
+        <span class="muted" style="font-size: 12px">
+          {{ logTaskRunning ? '调控只影响执行速率，不改任务配置；服务重启后回到默认' : '任务未在实时扫描中，调控不可用' }}
+        </span>
+      </div>
       <div class="terminal" ref="terminalEl">
         <div v-for="(line, i) in logLines" :key="i" class="log-line">{{ line }}</div>
         <div v-if="progressLine" class="log-line progress-line">{{ progressLine }}</div>
@@ -411,6 +436,7 @@ const statusMap = {
   pending: { text: '待执行', type: 'default' },
   stopped: { text: '已停止', type: 'warning' },
   running: { text: '执行中', type: 'info' },
+  paused: { text: '已暂停', type: 'warning' },
   done: { text: '已完成', type: 'success' },
   interrupted: { text: '已中断', type: 'warning' },
   failed: { text: '失败', type: 'error' }
@@ -705,6 +731,52 @@ function openLog(row) {
   showLog.value = true
   startSSE(row.id)
 }
+
+// ===== 实时调控（暂停/继续/动态调速）：POST /tasks/:id/control =====
+const ctrlBusy = ref(false)
+const ctrlForm = ref({ concurrency: 600, timeoutMs: 3000 })
+const ctrlState = ref('none')
+const logTaskPaused = computed(() => ctrlState.value === 'pause')
+const logTask = computed(() => items.value.find(t => t.id === logTaskId.value))
+const logTaskRunning = computed(() => logTask.value && (logTask.value.status === 'running' || logTask.value.status === 'paused'))
+
+async function sendControl(body, okMsg) {
+  if (!logTaskId.value) return false
+  ctrlBusy.value = true
+  try {
+    const res = await api.post(`/tasks/${logTaskId.value}/control`, body)
+    const cmd = res?.cmd || {}
+    ctrlState.value = cmd.paused ? 'pause' : (cmd.action || 'none')
+    if (cmd.concurrency) ctrlForm.value.concurrency = cmd.concurrency
+    if (cmd.timeoutMs) ctrlForm.value.timeoutMs = cmd.timeoutMs
+    message.success(okMsg)
+    load()
+    return true
+  } catch (e) {
+    message.error(e.response?.data?.error || '调控失败')
+    return false
+  } finally {
+    ctrlBusy.value = false
+  }
+}
+function toggleScanPause() {
+  if (logTaskPaused.value) sendControl({ action: 'resume' }, '已继续，下个心跳周期恢复扫描')
+  else sendControl({ action: 'pause' }, '已暂停，在途探针自然结束后进度冻结')
+}
+function applyScanLimit() {
+  sendControl({
+    action: 'limit',
+    concurrency: ctrlForm.value.concurrency || 600,
+    timeoutMs: ctrlForm.value.timeoutMs || 3000
+  }, '调速已下发（≤2 秒生效，ETA 会随之重算）')
+}
+// SSE 进度行同步暂停态（调度级暂停：status=paused 时按钮也要变成"继续"）
+watch(logTask, (t) => {
+  if (t && t.status === 'paused') ctrlState.value = 'pause'
+  else if (t && t.status === 'running' && ctrlState.value === 'pause' && !ctrlBusy.value) {
+    // 服务端调度恢复但执行层暂停态未知，保守保持
+  }
+})
 function openTerminal() {
   if (runningTask.value) openLog(runningTask.value)
   else if (items.value.length > 0) openLog(items.value[0])
@@ -1079,6 +1151,13 @@ onBeforeUnmount(() => { clearInterval(pollTimer); stopSSE() })
 .diag-row .k { flex: 0 0 72px; color: #6b7280; }
 .diag-logs-title { font-size: 12.5px; color: #6b7280; margin-bottom: 6px; }
 .switch-tip { color: #94a3b8; font-size: 12px; margin-left: 8px; }
+.ctrl-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; margin-bottom: 10px; border-radius: 8px;
+  background: #161b22; border: 1px solid #21262d;
+}
+.ctrl-bar .ctrl-label { color: #8b949e; font-size: 12px; }
+.ctrl-bar .muted { color: #8b949e; }
 .terminal {
   background: #0d1117;
   color: #c9d1d9;

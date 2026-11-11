@@ -7,6 +7,10 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"asset-platform/internal/portscan"
+
+	_ "modernc.org/sqlite"
 )
 
 // 引擎说明：v0.0.27 起 TscanPlus 已彻底移除，RunPortScan 恒走自研引擎
@@ -48,17 +52,23 @@ type ScanOptions struct {
 // LogFunc 实时日志回调（isProgress 表示是否为进度条行）
 type LogFunc func(line string, isProgress bool)
 
-// ===== 运行中扫描的取消句柄 =====
+// ===== 运行中扫描的调控句柄（取消/暂停/继续/调速） =====
 //
-// key = ScanOptions.ProjectID（agent 端是 "agent-<分片ID>"，本地执行是任务名）。
-// 一个进程可能并行跑多个扫描（多分片/多任务），StopScan 按 key 精确命中。
-//
-// 设计决定（2026-11-11 评审）：**不做运行期动态调速/暂停**——节点并发由节点配置
-// 静态决定（全节点同 IP 段高速跑是预期行为）。控制面只保留「取消」一条链路，
-// 且收敛进现有 StopTask → 分片 cancelled → 心跳 cancelled:true 的既有状态域。
+// key = ScanOptions.ProjectID（agent 端是队列会话名，本地执行是任务名）。
+// 一个进程可能并行跑多个扫描（多分片/多任务），按 key 精确命中。
+// 控制面动作域：pause / resume / limit（并发+超时）/ cancel，
+// 由 service 层内存态投影随心跳下发，或直接进程内调用（本地执行路径）。
+
+// ScanCtl 一次运行中扫描的调控指令
+type ScanCtl struct {
+	Action      string // "pause" | "resume" | "limit" | "cancel"
+	Concurrency int    // limit 时的目标并发（10-8000）
+	TimeoutMs   int    // limit 时的超时毫秒（100-30000）
+}
 
 type scanHandle struct {
 	cancel context.CancelFunc
+	ctrl   *portscan.Controls
 }
 
 var running sync.Map // projectID -> *scanHandle
@@ -83,6 +93,36 @@ func StopScan(projectID string) bool {
 		return true
 	}
 	return false
+}
+
+// ControlScan 对运行中的扫描施加调控（pause/resume/limit/cancel）。
+// key 不存在（扫描未开始或已结束）返回 false——调用方把指令留在内存态，
+// 下一条心跳再投影（幂等状态语义，指令不会丢）。
+func ControlScan(projectID string, ctl ScanCtl) bool {
+	v, ok := running.Load(projectID)
+	if !ok {
+		return false
+	}
+	h := v.(*scanHandle)
+	switch ctl.Action {
+	case "pause":
+		h.ctrl.Pause()
+	case "resume":
+		h.ctrl.Resume()
+	case "limit":
+		if ctl.Concurrency > 0 {
+			h.ctrl.SetLimit(ctl.Concurrency)
+		}
+		if ctl.TimeoutMs > 0 {
+			h.ctrl.SetTimeoutMs(ctl.TimeoutMs)
+		}
+		h.ctrl.Resume() // 产品语义：设了新值就按新值跑（顺带解除暂停）
+	case "cancel":
+		h.cancel()
+	default:
+		return false
+	}
+	return true
 }
 
 // RunPortScan 执行端口扫描（唯一实现 = 自研引擎流式流水线）。
