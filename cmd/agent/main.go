@@ -72,11 +72,18 @@ type taskDetail struct {
 	NodeConf  nodeConf  `json:"nodeConf"`
 }
 
-// ctrlCmd 平台随心跳响应下发的调控指令**通道骨架**（保留字段形状供后续扩展）。
-// 2026-11-11 评审：运行期动态调速/暂停不做（节点并发由节点配置静态决定），
-// 平台当前恒下发 {"action":"none"}；取消走 cancelled 字段的既有链路。
+// ctrlCmd 平台随心跳响应下发的调控指令（**幂等状态投影**，非事件）。
+// action: none|pause|resume|limit —— agent 每次心跳把当前全量态应用到引擎句柄：
+//   - pause → Controls.Pause()（许可清零，扫描挂起、分片保持占用、进度冻结）
+//   - resume/none → Controls.Resume()（none=服务端无调控态；重启后也能解除旧暂停，保证收敛）
+//   - limit → SetLimit+SetTimeoutMs（下一个探针即生效）
+// 引擎句柄未注册（扫描还没进 RunBuiltinPortScan）时 ControlScan 返回 false，
+// 无所谓——下一条心跳再投影。取消（cancel）不在这里：走 cancelled 字段既有链路。
 type ctrlCmd struct {
-	Action string `json:"action"` // 目前恒为 none
+	Action      string `json:"action"`
+	Paused      bool   `json:"paused"`
+	Concurrency int    `json:"concurrency"`
+	TimeoutMs   int    `json:"timeoutMs"`
 }
 
 // shardRun 运行中分片：取消句柄
@@ -665,6 +672,7 @@ func runAgentTask(at AgentTask) {
 		defer wg.Done()
 		tk := time.NewTicker(2 * time.Second)
 		defer tk.Stop()
+		appliedPaused := false // 本地已应用的暂停态（与服务端投影对齐，避免重复打日志）
 		for range tk.C {
 			mu.Lock()
 			done := finished
@@ -693,8 +701,28 @@ func runAgentTask(at AgentTask) {
 				doCancel() // 唯一取消入口：重试 StopScan 直至命中引擎句柄
 				return
 			}
-			// cmd（调控指令通道骨架）当前恒为 none：运行期调速/暂停已按 2026-11-11
-			// 评审移除，取消走上面的 cancelled 字段既有链路。字段保留供后续扩展。
+			// 应用调控指令（幂等状态投影 → ControlScan；句柄未注册时 false，下条心跳再试）
+			c := cmd.Cmd
+			switch {
+			case c.Paused || c.Action == "pause":
+				if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{Action: "pause"}) && !appliedPaused {
+					log.Printf("[agent-task #%d] 调控：扫描已暂停（许可清零，在途探针自然结束）", at.ID)
+					appliedPaused = true
+				}
+			case c.Action == "limit":
+				if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{
+					Action: "limit", Concurrency: c.Concurrency, TimeoutMs: c.TimeoutMs}) && appliedPaused {
+					log.Printf("[agent-task #%d] 调控：限速 %d/%dms 并解除暂停", at.ID, c.Concurrency, c.TimeoutMs)
+					appliedPaused = false
+				}
+			default: // none/resume：若本地处于暂停态，恢复
+				if appliedPaused {
+					if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{Action: "resume"}) {
+						log.Printf("[agent-task #%d] 调控：扫描已恢复", at.ID)
+						appliedPaused = false
+					}
+				}
+			}
 		}
 	}()
 

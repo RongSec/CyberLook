@@ -301,26 +301,66 @@ func RunTask(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "任务已提交执行"})
 }
 
-// TaskControl 任务实时调控入口（v0.0.27 骨架）。
-// 评审决定（2026-11-11）：**不做运行期动态调速/暂停**——节点并发由节点配置静态决定。
-// 当前仅支持 action=cancel，且收敛进既有 StopTask 链路（分片置 cancelled →
-// agent 心跳收到 cancelled:true → 取消本机扫描、部分结果照常入库），不新增分片状态。
+// TaskControl 任务实时调控（用户拍板：取消 + 实时进度 + 动态调速）。
+// body: {"action":"pause|resume|limit|cancel","concurrency":10-8000,"timeoutMs":100-30000}
+// 语义：
+//   - pause/resume/limit 写**内存调控态**（service.TaskCtrl），不改任务配置、不动调度状态机；
+//     agent 执行的任务由该任务下一条 /progress 心跳响应投影（cmd 字段）带下去，
+//     本地执行的任务由 ExecuteTask 轮询器进程内直调（都 ≤2s 生效）。
+//   - cancel 收敛进既有 StopTask 链路（分片置 cancelled → 心跳 cancelled:true），
+//     不新增状态。
+//   - 进程重启后调控态回到默认（执行中、按任务参数速率）——可接受：重启本身即打断扫描。
 func TaskControl(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	var task model.ScanTask
+	if err := config.DB.First(&task, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
+		return
+	}
+	if task.Status != "running" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "只有运行中的任务可以调控"})
+		return
+	}
 	var req struct {
-		Action string `json:"action"`
+		Action      string `json:"action"`
+		Concurrency int    `json:"concurrency"`
+		TimeoutMs   int    `json:"timeoutMs"`
 	}
-	_ = c.ShouldBindJSON(&req)
-	if req.Action != "cancel" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "当前仅支持 action=cancel（调速/暂停已按评审移除）"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
-	if err := service.StopTask(uint(id)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	switch req.Action {
+	case "pause":
+		service.SetTaskPause(uint(id), true)
+		tasklog.AppendTS(uint(id), "[调控] 扫描已暂停（节点保持占用，进度冻结；许可清零，在途探针自然结束后归零）")
+	case "resume":
+		service.SetTaskPause(uint(id), false)
+		tasklog.AppendTS(uint(id), "[调控] 扫描已继续")
+	case "limit":
+		if req.Concurrency < 10 || req.Concurrency > 8000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "并发需在 10-8000 之间"})
+			return
+		}
+		if req.TimeoutMs < 100 || req.TimeoutMs > 30000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "超时需在 100-30000ms 之间"})
+			return
+		}
+		service.SetTaskLimit(uint(id), req.Concurrency, req.TimeoutMs)
+		tasklog.AppendTS(uint(id), "[调控] 并发=%d 超时=%dms 已下发（下个心跳 ≤2s 生效）", req.Concurrency, req.TimeoutMs)
+	case "cancel":
+		if err := service.StopTask(uint(id)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		tasklog.Append(uint(id), "任务已被调控取消")
+		c.JSON(http.StatusOK, gin.H{"message": "已取消"})
+		return
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action 仅支持 pause/resume/limit/cancel"})
 		return
 	}
-	tasklog.Append(uint(id), "任务已被调控取消")
-	c.JSON(http.StatusOK, gin.H{"message": "已取消"})
+	c.JSON(http.StatusOK, gin.H{"message": "已下发", "cmd": service.TaskCtrlSnapshot(uint(id))})
 }
 
 // StopTask 停止正在运行的任务

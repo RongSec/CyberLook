@@ -69,7 +69,7 @@ func AgentProgress(c *gin.Context) {
 		(at.Status == "cancelled" || at.Status == "done" ||
 			at.Status == "done_ai" || at.Status == "stalled_ai" || at.Status == "failed") {
 		c.JSON(http.StatusOK, gin.H{"message": "cancelled", "cancelled": true,
-			"cmd": gin.H{"action": "none"}})
+			"cmd": service.TaskCtrlCmd{Action: "none"}})
 		return
 	}
 	var req struct {
@@ -103,10 +103,10 @@ func AgentProgress(c *gin.Context) {
 		updateNodeLog(at.NodeID, req.Log)
 		updateShardLog(at.ID, req.Log)
 	}
-	// cmd：调控指令通道骨架（保留字段形状供后续扩展；当前恒为 none。
-	// 运行期调速/暂停已按 2026-11-11 评审移除，取消走 cancelled 字段既有链路。）
+	// 控制指令随心跳响应投影（幂等状态：pause/resume/limit；agent 每次应用当前全量态）。
+	// 取消仍走上面的 cancelled 字段（StopTask 把分片置 cancelled → 这里返回 cancelled:true）。
 	c.JSON(http.StatusOK, gin.H{"message": "ok", "cancelled": false,
-		"cmd": gin.H{"action": "none"}})
+		"cmd": service.TaskCtrlSnapshot(at.TaskID)})
 }
 
 // AgentFinish agent 完成子任务

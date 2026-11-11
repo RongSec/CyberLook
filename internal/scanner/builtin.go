@@ -130,14 +130,15 @@ const (
 
 // RunBuiltinPortScan 用自研引擎跑一轮流式扫描。
 // onResult 会被**多次**调用（每 flush 一批，批次 ≤200 条），返回值为全量累积结果。
-// opts.ProjectID 同时作为审计库 Project 键与取消句柄键。
+// opts.ProjectID 同时作为审计库 Project 键与调控句柄键。
 func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogFunc, onResult func([]ScanResult)) ([]ScanResult, error) {
-	// 取消句柄**入口即注册**（评审拍板：唯一取消入口 = StopScan(ProjectID)；
-	// 先注册再干任何慢活，调用方重试 StopScan 必然命中，无注册竞态）
+	// 调控句柄**入口即注册**（取消唯一入口 StopScan；暂停/调速同一 Controls。
+	// 先注册再干任何慢活——目标展开/规则载入——调用方重试必然命中，无竞态）。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ctrl := portscan.NewControls(4096, 1500) // 初值随后按任务参数 SetLimit/SetTimeoutMs 校正
 	if opts.ProjectID != "" {
-		registerScan(opts.ProjectID, &scanHandle{cancel: cancel})
+		registerScan(opts.ProjectID, &scanHandle{cancel: cancel, ctrl: ctrl})
 		defer unregisterScan(opts.ProjectID)
 	}
 
@@ -167,6 +168,11 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	}
 	if timeoutMs <= 0 {
 		timeoutMs = 1500
+	}
+	// 按任务参数校正调控句柄初值（此后 /control 可继续动态改）
+	ctrl.SetLimit(conc)
+	if timeoutMs >= portscan.MinTimeoutMs {
+		ctrl.SetTimeoutMs(timeoutMs)
 	}
 
 	// ===== ScanOptions 语义映射 =====
@@ -275,7 +281,7 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	t0 := time.Now()
 	var lastProgNs atomic.Int64
 	lastProgNs.Store(t0.UnixNano())
-	st, serr := runStreamingScan(ctx, ips, ports, conc, timeoutMs, workers, identCh, resCh,
+	st, serr := runStreamingScan(ctx, ctrl, ips, ports, conc, timeoutMs, workers, identCh, resCh,
 		func(done, tot, open int64) {
 			// 每秒 ≤1 次进度行
 			now := time.Now().UnixNano()
@@ -311,7 +317,8 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 }
 
 // runStreamingScan 调 portscan.Scan 并把 OnOpen 接进流水线；返回统计与错误。
-func runStreamingScan(ctx context.Context, ips []string, ports []int,
+// ctrl 为运行期调控句柄（/control 的 pause/resume/limit 直接作用其上）。
+func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string, ports []int,
 	conc, timeoutMs, workers int, identCh chan<- portscan.Result, resCh chan<- ScanResult,
 	onProgress func(done, total, open int64)) (portscan.Stats, error) {
 
@@ -319,6 +326,7 @@ func runStreamingScan(ctx context.Context, ips []string, ports []int,
 		Concurrency:   conc,
 		Timeout:       time.Duration(timeoutMs) * time.Millisecond,
 		ProgressEvery: time.Second,
+		Controls:      ctrl,
 		OnOpen: func(ip string, port int) {
 			if workers == 0 {
 				// 纯端口模式：不进识别池，直接产出裸 TCP 结果

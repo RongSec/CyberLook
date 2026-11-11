@@ -228,9 +228,39 @@ func ExecuteTask(taskID uint) error {
 	if task.Engine != "" {
 		opts.Engine = task.Engine
 	}
-	// 本地执行路径的取消：StopTask → scanner.StopScan(taskProjectID) 直接命中
-	// 本进程扫描句柄（同 ProjectID），无需轮询器；部分结果已由 ingestServicesLive
-	// 流式入库，取消只负责收敛状态。
+	// 本地执行路径：取消由 StopTask → scanner.StopScan(taskProjectID) 直接命中
+	// （同 ProjectID）；暂停/调速由下面的轮询器 1.5s 投影到同一 Controls 句柄。
+	stopPoll := make(chan struct{})
+	defer close(stopPoll)
+	go func() {
+		t := time.NewTicker(1500 * time.Millisecond)
+		defer t.Stop()
+		appliedPaused := false
+		for {
+			select {
+			case <-stopPoll:
+				return
+			case <-t.C:
+				cmd := TaskCtrlSnapshot(task.ID)
+				switch {
+				case cmd.Paused && !appliedPaused:
+					if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{Action: "pause"}) {
+						tasklog.AppendTS(task.ID, "[调控] 本机扫描已挂起（许可清零，在途探针自然结束）")
+						appliedPaused = true
+					}
+				case !cmd.Paused && appliedPaused:
+					if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{Action: "resume"}) {
+						tasklog.AppendTS(task.ID, "[调控] 本机扫描已恢复")
+						appliedPaused = false
+					}
+				}
+				if !cmd.Paused && cmd.Action == "limit" && (cmd.Concurrency > 0 || cmd.TimeoutMs > 0) {
+					scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{
+						Action: "limit", Concurrency: cmd.Concurrency, TimeoutMs: cmd.TimeoutMs})
+				}
+			}
+		}
+	}()
 	results, err := scanner.RunPortScan(targets, ExcludeRangeStrings(), opts, func(line string, isProgress bool) {
 		if isProgress {
 			tasklog.SetProgress(task.ID, line)
@@ -251,6 +281,7 @@ func ExecuteTask(taskID uint) error {
 		return err
 	}
 	tasklog.SetProgress(task.ID, "") // 扫描结束清空进度条
+	ClearTaskCtrl(task.ID)           // 执行收敛：内存调控态归零（rerun 用干净状态）
 	if err := ingestResults(task.ID, results); err != nil {
 		config.DB.Model(&task).Updates(map[string]interface{}{"status": "failed", "finished_at": time.Now()})
 		return err

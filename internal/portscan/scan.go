@@ -7,8 +7,10 @@
 //   - 吞吐靠"高并发 + 短超时"：filtered 端口是超时主导，吞吐 ≈ 并发数 / 超时；
 //     4096 并发 × 500ms 约 8000 探针/秒，已超过 TscanPlus 实测的 864~5044/秒。
 //   - 关闭端口会立刻回 RST（ECONNREFUSED），这类不受超时影响，可跑满并发。
-//   - 流式发现（v0.0.27）：开放端口经 OnOpen **发现即回调**（不等全部扫完），
+//   - 流式发现：开放端口经 OnOpen **发现即回调**（不等全部扫完），
 //     供上层流水线（识别工作池）即时消费。
+//   - 运行期调控（Controls）：动态并发（10..8000）/动态超时/暂停/继续，
+//     atomic 目标 + sync.Cond 挂起唤醒（无 busy-wait）；与 ctx 取消正交。
 package portscan
 
 import (
@@ -25,8 +27,8 @@ import (
 
 // Options 扫描参数
 type Options struct {
-	Concurrency int           // 并发连接数，默认 4096
-	Timeout     time.Duration // 单端口超时，默认 500ms
+	Concurrency int           // 初始并发连接数，默认 4096
+	Timeout     time.Duration // 初始单端口超时，默认 500ms
 	// OnProgress 每完成一批回调（done=已完成探针数，total=总探针数，open=已发现开放数）
 	OnProgress func(done, total int64, open int64)
 	// ProgressEvery 进度回调间隔，默认 2s
@@ -34,6 +36,9 @@ type Options struct {
 	// OnOpen 发现开放端口即回调（在扫描 worker 内调用，**实现必须并发安全**）。
 	// 缓冲满时形成背压（该 worker 暂停接活），属预期保护。
 	OnOpen func(ip string, port int)
+	// Controls 运行期调控句柄；nil = 内部按 Concurrency/Timeout 自建
+	// （默认行为与固定并发等价）。传入后可在扫描期间 SetLimit/SetTimeoutMs/Pause/Resume。
+	Controls *Controls
 }
 
 // Result 一个开放端口
@@ -64,6 +69,10 @@ func (s Stats) PPS() float64 {
 }
 
 // Scan 对 targets × ports 做全连接扫描，返回开放端口（按 IP、端口排序）。
+//
+// 并发形态：派发协程每投一个探针前先向 Controls limiter 领许可（暂停=0 许可时
+// 挂起在 cond 上，非 busy-wait），探针协程结束即归还——在途探针数恒 ≤ 当前 limit，
+// 调高 SetLimit 立刻被下一个 acquire 用上，调低自然收敛，无需重建 worker 池。
 // ctx 取消时返回**已拿到的部分结果** + ctx.Err()（调用方照常消费部分结果）。
 func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Result, Stats, error) {
 	if len(targets) == 0 || len(ports) == 0 {
@@ -78,59 +87,47 @@ func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Re
 	if opt.ProgressEvery <= 0 {
 		opt.ProgressEvery = 2 * time.Second
 	}
+	// 初始许可 = min(Concurrency, MaxLimit)：limiter 是唯一并发约束，
+	// 不预建 worker 池——派发协程逐个领许可、探针协程结束即归还，
+	// 在途探针数恒 ≤ 当前 limit（调高立即用满、调低自然收敛、暂停=0 挂起）。
+	ctrl := opt.Controls
+	if ctrl == nil {
+		initLimit := opt.Concurrency
+		if initLimit > MaxLimit {
+			initLimit = MaxLimit
+		}
+		ctrl = NewControls(initLimit, int(opt.Timeout/time.Millisecond))
+	}
 
 	total := int64(len(targets)) * int64(len(ports))
 	st := Stats{Targets: len(targets), Ports: len(ports)}
 
-	type job struct {
-		ip   string
-		port int
-	}
-	jobs := make(chan job, opt.Concurrency*2)
 	var mu sync.Mutex
 	results := make([]Result, 0, 256)
 	var done, open, closed, filtered, errs int64
 
-	start := time.Now()
-	var wg sync.WaitGroup
-	for i := 0; i < opt.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			d := net.Dialer{Timeout: opt.Timeout}
-			for j := range jobs {
-				if ctx.Err() != nil {
-					return
-				}
-				t0 := time.Now()
-				conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(j.ip, strconv.Itoa(j.port)))
-				if err == nil {
-					_ = conn.Close()
-					rtt := time.Since(t0)
-					mu.Lock()
-					results = append(results, Result{IP: j.ip, Port: j.port, RTT: rtt})
-					mu.Unlock()
-					atomic.AddInt64(&open, 1)
-					if opt.OnOpen != nil {
-						select {
-						case <-ctx.Done(): // 已取消：不再投喂，结果集以已收集为准
-						default:
-							opt.OnOpen(j.ip, j.port)
-						}
-					}
-				} else if isRefused(err) {
-					atomic.AddInt64(&closed, 1)
-				} else if isTimeout(err) {
-					atomic.AddInt64(&filtered, 1)
-				} else {
-					atomic.AddInt64(&errs, 1)
-				}
-				atomic.AddInt64(&done, 1)
+	// ctx 取消 → 持续唤醒 cond，让挂在 acquire 上的派发协程及时看到 ctx 退出
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-stopWatch:
+			return
+		}
+		for {
+			ctrl.wakeAll()
+			select {
+			case <-stopWatch:
+				return
+			case <-time.After(30 * time.Millisecond):
 			}
-		}()
-	}
+		}
+	}()
 
-	// 进度上报
+	start := time.Now()
+
+	// 进度上报（派发期间就要跑：暂停/长尾时上层靠它观察 pps→0）
 	progDone := make(chan struct{})
 	if opt.OnProgress != nil {
 		go func() {
@@ -147,20 +144,53 @@ func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Re
 		}()
 	}
 
-	// 投递任务（ctx 取消即停）
+	var wg sync.WaitGroup
 	var cancelled bool
 dispatch:
 	for _, ip := range targets {
 		for _, p := range ports {
-			select {
-			case jobs <- job{ip: ip, port: p}:
-			case <-ctx.Done():
+			if ctx.Err() != nil {
 				cancelled = true
 				break dispatch
 			}
+			if !ctrl.acquire(ctx) { // 暂停期间挂在这里；取消返回 false
+				cancelled = true
+				break dispatch
+			}
+			wg.Add(1)
+			go func(ip string, p int) {
+				defer wg.Done()
+				defer ctrl.release()
+				t0 := time.Now()
+				// 超时在 dial 前读当前值：SetTimeout 运行期生效（下一个探针即变）
+				d := net.Dialer{Timeout: time.Duration(ctrl.TimeoutMs()) * time.Millisecond}
+				conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(p)))
+				if err == nil {
+					_ = conn.Close()
+					rtt := time.Since(t0)
+					mu.Lock()
+					results = append(results, Result{IP: ip, Port: p, RTT: rtt})
+					mu.Unlock()
+					atomic.AddInt64(&open, 1)
+					if opt.OnOpen != nil {
+						select {
+						case <-ctx.Done(): // 已取消：不再投喂，结果集以已收集为准
+						default:
+							opt.OnOpen(ip, p)
+						}
+					}
+				} else if isRefused(err) {
+					atomic.AddInt64(&closed, 1)
+				} else if isTimeout(err) {
+					atomic.AddInt64(&filtered, 1)
+				} else {
+					atomic.AddInt64(&errs, 1)
+				}
+				atomic.AddInt64(&done, 1)
+			}(ip, p)
 		}
 	}
-	close(jobs)
+
 	wg.Wait()
 	close(progDone)
 
