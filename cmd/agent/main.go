@@ -1,12 +1,9 @@
 package main
 
 import (
-	"runtime"
-	"asset-platform/internal/version"
-	"path/filepath"
-	"syscall"
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,20 +13,22 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"asset-platform/internal/scanner"
+	"asset-platform/internal/version"
 )
 
 var (
 	serverURL = flag.String("server", "", "中心服务地址，如 http://10.1.1.1:8080")
 	nodeName  = flag.String("name", "", "节点名称（唯一）")
 	token     = flag.String("token", "default-token", "注册 token")
-	tscanPath = flag.String("tscan", "", "TscanClient 二进制路径（默认同目录查找）")
 )
 
 var nodeID uint
@@ -59,7 +58,7 @@ type AgentTask struct {
 	Status   string `json:"status"`
 	Total    int    `json:"total"`
 	Progress int    `json:"progress"`
-	Message  string `json:"message"` // "cleanup:[...]" = 清理 config.db 的 project
+	Message  string `json:"message"` // "cleanup:[...]" = 清理审计库的 project
 }
 
 type nodeConf struct {
@@ -73,7 +72,19 @@ type taskDetail struct {
 	NodeConf  nodeConf  `json:"nodeConf"`
 }
 
-var running sync.Map
+// ctrlCmd 平台随心跳响应下发的调控指令**通道骨架**（保留字段形状供后续扩展）。
+// 2026-11-11 评审：运行期动态调速/暂停不做（节点并发由节点配置静态决定），
+// 平台当前恒下发 {"action":"none"}；取消走 cancelled 字段的既有链路。
+type ctrlCmd struct {
+	Action string `json:"action"` // 目前恒为 none
+}
+
+// shardRun 运行中分片：取消句柄
+type shardRun struct {
+	cancel context.CancelFunc
+}
+
+var running sync.Map // agentTaskID -> *shardRun
 
 // ringBuf 保存最近 N 行日志，定期上报给中心用于「节点终端」展示
 type ringBuf struct {
@@ -169,9 +180,8 @@ func agentReq(method, url string, body []byte) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
-// selfVersion 自身二进制的版本（SHA256 前 8 位）
+// selfVersion 自身二进制的版本（数字版本号）
 func selfVersion() string {
-	// 版本号用数字型（0.0.1），不再用哈希
 	return version.Version
 }
 
@@ -251,7 +261,7 @@ func selfUpgrade(target string) {
 	}
 
 	// Linux/Mac：原子替换当前进程
-	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+	if err := syscallExec(exe); err != nil {
 		log.Printf("[agent] 重启失败: %v（watchdog 会拉起）", err)
 	}
 }
@@ -279,23 +289,20 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stderr, logRing))
 	myVersion = selfVersion()
 	loadNodeToken()
+	// 审计落库仅 agent 进程启用：config/config.db 与 scope-agent 同目录
+	// （下载 exe 到哪、审计库就生成到哪；不可写自动回退 ./config/）
+	scanner.EnableAudit()
 	// 所有日志带主机名前缀，便于在中心端区分是哪个节点在执行
 	if hn, err := os.Hostname(); err == nil && hn != "" {
 		log.SetPrefix("[" + hn + "] ")
 		log.Printf("[agent] 启动，主机名=%s", hn)
 	}
 	if *serverURL == "" || *nodeName == "" {
-		fmt.Println("用法: scope-agent -server http://中心IP:8080 -name 节点名 [-token xxx] [-tscan /path/to/TscanClient]")
+		fmt.Println("用法: scope-agent -server http://中心IP:8080 -name 节点名 [-token xxx]")
 		os.Exit(1)
 	}
 	*serverURL = strings.TrimRight(*serverURL, "/")
-	if *tscanPath == "" {
-		*tscanPath = findTscanClient()
-	}
-	if *tscanPath == "" {
-		log.Println("[warn] 未找到 TscanClient，请用 -tscan 指定路径")
-	}
-	scanner.SetTscanClientPath(*tscanPath)
+	log.Printf("[agent] 扫描引擎：自研（portscan+svcid，进程内执行，无需外部二进制）；审计库=%s", scanner.EngineDBPath())
 
 	// 注册失败自动重试（服务端可能还没就绪）
 	for i := 1; i <= 60; i++ {
@@ -314,8 +321,8 @@ func main() {
 	log.Printf("[agent] 已建立唤醒通道，空闲时不轮询（有任务服务端会主动唤醒）")
 
 	go heartbeatLoop()
-	go streamLoop()          // SSE 长连接：有任务时被唤醒
-	go fetchAndRun()         // 启动时拉一次（处理重启前遗留任务）
+	go streamLoop()  // SSE 长连接：有任务时被唤醒
+	go fetchAndRun() // 启动时拉一次（处理重启前遗留任务）
 
 	select {}
 }
@@ -346,20 +353,6 @@ func countPortsIn(ports string) int {
 		return 100
 	}
 	return n
-}
-
-func findTscanClient() string {
-	candidates := []string{
-		"./TscanClient", "./TscanClient.exe",
-		"./third_party/TscanClient", "./third_party/TscanClient_Linux_Amd64",
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			abs, _ := os.Getwd()
-			return abs + "/" + strings.TrimPrefix(p, "./")
-		}
-	}
-	return ""
 }
 
 func localIP() string {
@@ -411,46 +404,12 @@ func heartbeatLoop() {
 	}
 }
 
-// doHeartbeat 心跳上报版本，并按服务端指令自更新
-// syncLicense 拉取分配给本节点的 Tscan License 并写入 config/License.lic
-func syncLicense() {
-	if tscanPath == nil || *tscanPath == "" {
-		return
-	}
-	url := fmt.Sprintf("%s/api/agent/nodes/%d/license", *serverURL, nodeID)
-	resp, err := agentReq("GET", url, nil)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	var d struct {
-		Content string `json:"content"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&d) != nil || strings.TrimSpace(d.Content) == "" {
-		return
-	}
-	dir := filepath.Join(filepath.Dir(*tscanPath), "config")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	target := filepath.Join(dir, "License.lic")
-	// 内容相同就不重写，避免每次心跳都落盘
-	if cur, err := os.ReadFile(target); err == nil && string(cur) == d.Content {
-		return
-	}
-	if err := os.WriteFile(target, []byte(d.Content), 0o644); err == nil {
-		log.Printf("[license] 已写入 %s（%d 字节）", target, len(d.Content))
-	}
-}
-
+// doHeartbeat 心跳上报版本，并按服务端指令自更新/卸载。
+// 心跳还带上审计库的 project 列表（节点「数据库管理」用）。
 func doHeartbeat() {
-	// 心跳顺便带上 config.db 的 project 列表（节点「数据库管理」用）
 	var projects []string
-	if *tscanPath != "" {
-		dbPath := filepath.Join(filepath.Dir(*tscanPath), "config", "config.db")
-		if list, err := scanner.ListProjects(dbPath); err == nil {
-			projects = list
-		}
+	if list, err := scanner.ListProjects(scanner.EngineDBPath()); err == nil {
+		projects = list
 	}
 	if projects == nil {
 		projects = []string{}
@@ -486,7 +445,6 @@ func doHeartbeat() {
 		log.Printf("[agent] 收到卸载指令，开始清理...")
 		selfUninstall()
 	}
-	syncLicense()
 }
 
 // selfUninstall 自清理：停止进程 + 删除服务/计划任务 + 删除文件
@@ -506,7 +464,7 @@ Set-Location -Path $env:TEMP
 taskkill /F /IM scope-agent.exe 2>$null
 schtasks /Delete /TN "WeijianAgent" /F 2>$null
 schtasks /Delete /TN "WeijianAgentWatchdog" /F 2>$null
-# 只删 agent 自己的文件，TscanClient.exe 等用户文件保留
+# 只删 agent 自己的文件，用户文件保留
 foreach ($f in @("scope-agent.exe", "start-agent.bat", "agent.json", "agent.token")) {
     Remove-Item -Force -LiteralPath (Join-Path $Dir $f) -ErrorAction SilentlyContinue
 }
@@ -587,51 +545,28 @@ func fetchAndRun() {
 		return
 	}
 	for _, at := range list {
-		if _, loaded := running.LoadOrStore(at.ID, true); loaded {
+		if _, loaded := running.LoadOrStore(at.ID, &shardRun{}); loaded {
 			continue // 已在执行
 		}
 		go runAgentTask(at)
 	}
 }
 
-var (
-	// 每个 IP 扫描结束都会打一行
-	ipDoneRe = regexp.MustCompile(`Ip扫描结束[:：]\s*(\S+)`)
-	// 进度条形如：端口扫描  21% [████░░] (283200/1279104) [3m4s:10m23s]
-	pctRe    = regexp.MustCompile(`(\d{1,3})\s*%`)
-	portRe   = regexp.MustCompile(`\((\d+)\s*/\s*(\d+)\)`)
-	// 进度条尾部 [已用:剩余]，如 [2m36s:10m54s]
-	etaRe = regexp.MustCompile(`\[[0-9hms]+:([0-9hms]+)\]`)
-	durRe = regexp.MustCompile(`(\d+)([hms])`)
-)
-
-// parseDurationSec 把 10m54s / 1h2m3s / 45s 转成秒
-func parseDurationSec(s string) int {
-	total := 0
-	for _, m := range durRe.FindAllStringSubmatch(s, -1) {
-		n, _ := strconv.Atoi(m[1])
-		switch m[2] {
-		case "h":
-			total += n * 3600
-		case "m":
-			total += n * 60
-		case "s":
-			total += n
-		}
-	}
-	return total
-}
-
-// runAgentTask 执行子任务，执行期间每 2 秒上报进度
+// runAgentTask 执行子任务。
+//
+// 控制面（v0.0.27）：
+//   - 取消：每次心跳响应带 cancelled=true → taskCtx cancel → 引擎立即收敛，
+//     已拿到的部分结果照常 flush 上报后 reportFinish；
+//   - cmd 字段为调控通道骨架（当前恒为 none；运行期调速/暂停已按评审移除）。
 func runAgentTask(at AgentTask) {
 	defer running.Delete(at.ID)
 
-	// 清理指令：删除 config.db 的指定 project
+	// 清理指令：删除审计库的指定 project
 	if strings.HasPrefix(at.Message, "cleanup:") {
 		var projects []string
 		_ = json.Unmarshal([]byte(strings.TrimPrefix(at.Message, "cleanup:")), &projects)
-		if len(projects) > 0 && *tscanPath != "" {
-			dbPath := filepath.Join(filepath.Dir(*tscanPath), "config", "config.db")
+		if len(projects) > 0 {
+			dbPath := scanner.EngineDBPath()
 			if err := scanner.DeleteProjects(dbPath, projects); err == nil {
 				log.Printf("[agent-task #%d] 已清理 %d 个 project: %v", at.ID, len(projects), projects)
 			} else {
@@ -663,7 +598,7 @@ func runAgentTask(at AgentTask) {
 	}
 	timeout := conf.Timeout
 	if timeout <= 0 {
-		// 兜底用任务的 timeout。注意：任务的 timeout 是「秒」，TscanClient -time 是「毫秒」
+		// 兜底用任务的 timeout。任务的 timeout 是「秒」，引擎按毫秒处理
 		timeout = task.Timeout * 1000
 		if timeout <= 0 {
 			timeout = 1500
@@ -686,16 +621,42 @@ func runAgentTask(at AgentTask) {
 		ExtraArgs: task.ExtraArgs,
 	}
 
+	// 取消 = 唯一入口 scanner.StopScan(opts.ProjectID)（评审拍板，不给 RunPortScan 塞 ctx）。
+	// 引擎句柄在 RunBuiltinPortScan 入口即注册；心跳早于注册时靠重试兜底，
+	// 平台取消→agent 生效预算 <5s（重试每 200ms；扫描返回后重试自动停止）。
+	scanReturned := make(chan struct{})
+	var closeOnce sync.Once
+	closeReturned := func() { closeOnce.Do(func() { close(scanReturned) }) }
+	defer closeReturned()
+	doCancel := func() {
+		go func() {
+			for i := 0; i < 60; i++ {
+				if scanner.StopScan(opts.ProjectID) {
+					return // 句柄命中，引擎正在收敛
+				}
+				select {
+				case <-scanReturned:
+					return // 扫描已结束（可能压根没注册过句柄），无需再停
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+		}()
+	}
+	h := &shardRun{cancel: doCancel}
+	if v, ok := running.Load(at.ID); ok {
+		v.(*shardRun).cancel = doCancel
+		h = v.(*shardRun)
+	} else {
+		running.Store(at.ID, h)
+	}
+
 	var mu sync.Mutex
-	// total 的初始值＝IP 数 × 端口数。
-	// 之前直接用 IP 数，Linux 上有进度条会被覆盖成真实端口数，
-	// 但 Windows 走普通管道、拿不到进度条，total 就永远停在 IP 数，
-	// 于是「6 个 IP」被显示成「待扫描 6 个端口」，扫完还立刻判定完成。
+	// total 的初始值＝IP 数 × 端口数（端口维度，与平台分母口径一致）。
 	scanned, total := 0, len(targets)*countPortsIn(opts.Ports)
-	doneIPs := map[string]bool{}
 	lastPct := -1
 	etaSec := 0
 	finished := false
+	cancelledByServer := false
 	reportCount := 0
 
 	var wg sync.WaitGroup
@@ -714,7 +675,7 @@ func runAgentTask(at AgentTask) {
 			}
 			pct := 0
 			if lp >= 0 {
-				pct = lp                     // 优先用 TscanClient 输出的百分比
+				pct = lp
 			} else if t > 0 {
 				pct = s * 100 / t
 			}
@@ -722,32 +683,25 @@ func runAgentTask(at AgentTask) {
 				pct = 100
 			}
 			reportCount++
-			if reportProgressWithLog(at.ID, t, s, pct, eta, "扫描中", reportCount%2 == 1) {
-				log.Printf("[agent-task #%d] 收到取消指令，终止扫描", at.ID)
-				scanner.StopScan(opts.ProjectID)
+			cmd := reportProgressWithLog(at.ID, t, s, pct, eta, "扫描中", reportCount%2 == 1)
+			if cmd.Cancelled {
+				log.Printf("[agent-task #%d] 收到取消指令，终止扫描（保留部分结果）", at.ID)
 				mu.Lock()
+				cancelledByServer = true
 				finished = true
 				mu.Unlock()
+				doCancel() // 唯一取消入口：重试 StopScan 直至命中引擎句柄
 				return
 			}
+			// cmd（调控指令通道骨架）当前恒为 none：运行期调速/暂停已按 2026-11-11
+			// 评审移除，取消走上面的 cancelled 字段既有链路。字段保留供后续扩展。
 		}
 	}()
 
+	// 流式扫描：onResult 每批（≤200 条）实时回传；引擎内部已按批回调，这里直接转发
 	results, err := scanner.RunPortScan(targets, fetchExcludes(), opts, func(line string, isProgress bool) {
-		// TscanClient Free 模式没有进度条，用「Ip扫描结束:<ip>」统计已完成 IP 数
-		if m := ipDoneRe.FindStringSubmatch(line); len(m) == 2 {
-			mu.Lock()
-			doneIPs[m[1]] = true
-			// 注意：不要在这里覆盖 scanned —— scanned 是「端口维度」，由进度条 (a/b) 维护
-			// 之前写成 scanned = len(doneIPs) 会把 25 万端口数打回 0，导致进度恒为 0
-			mu.Unlock()
-		}
-		// 跳过存活探测阶段：它的 b 是「批大小」（如 10000），不是端口总数
-		// 若不跳过，自定义端口任务会被污染成 total=10000（实际只有 2 个端口）
-		if isProgress && !strings.Contains(line, "存活探测") {
-			// 进度行里的 (已扫/总数) 是端口维度
-			// TscanClient 多阶段切换时 b 会跳变（存活探测 10000 → 端口扫描 98 → 全量 1279104）
-			// 两个值都取历史最大值，避免 total 被小阶段覆盖、进度回退
+		if isProgress {
+			// 引擎进度行格式：「(done/total) ... [已用:剩余]」
 			if m := portRe.FindStringSubmatch(line); len(m) == 3 {
 				if a, err1 := strconv.Atoi(m[1]); err1 == nil {
 					if b, err2 := strconv.Atoi(m[2]); err2 == nil && b > 0 {
@@ -772,7 +726,6 @@ func runAgentTask(at AgentTask) {
 				}
 			}
 			if m := etaRe.FindStringSubmatch(line); len(m) == 2 {
-				// 不做区间过滤：早期算出的长耗时（如 91h）会随样本增加自然回落
 				if sec := parseDurationSec(m[1]); sec > 0 {
 					mu.Lock()
 					etaSec = sec
@@ -780,10 +733,9 @@ func runAgentTask(at AgentTask) {
 				}
 			}
 		}
-		// 原生输出：进度条每帧都原样打印，不做过滤
 		log.Printf("[agent-task #%d] %s", at.ID, line)
 	}, func(batch []scanner.ScanResult) {
-		// 扫描过程中实时回传，按 200 条分批，避免单次请求过大超时
+		// 实时回传（引擎聚合器已按 ≤200 条分批，这里再兜一层切片防超限）
 		for i := 0; i < len(batch); i += 200 {
 			end := i + 200
 			if end > len(batch) {
@@ -795,29 +747,35 @@ func runAgentTask(at AgentTask) {
 
 	mu.Lock()
 	finished = true
+	wasCancelled := cancelledByServer
 	mu.Unlock()
 	wg.Wait()
 
 	if err != nil {
+		if wasCancelled || strings.Contains(err.Error(), "context canceled") {
+			// 取消：**不报 finish、不改分片状态**（平台 StopTask 已把分片置 cancelled、
+			// 主任务置 stopped，agent 只负责停扫描并收尾；补报会把 cancelled 判成 done）。
+			// 部分结果照常上传：引擎回调里已 flush 的批次不重发（results 与回调同源）。
+			log.Printf("[agent-task #%d] 已取消，保留 %d 条部分结果（已随流式回调上报）", at.ID, len(results))
+			return
+		}
 		log.Printf("[agent-task #%d] 失败: %v", at.ID, err)
 		reportFinish(at.ID, false)
 		return
 	}
-	reportProgress(at.ID, total, total, 100, "完成")
+	reportProgressPlain(at.ID, total, total, 100, "完成")
 	reportFinish(at.ID, true)
-	// 分批上传，防止结果集过大导致 timeout
-	for i := 0; i < len(results); i += 200 {
-		end := i + 200
-		if end > len(results) {
-			end = len(results)
-		}
-		postResults(task.ID, results[i:end])
-	}
-	log.Printf("[agent-task #%d] 完成，%d 条结果", at.ID, len(results))
+	log.Printf("[agent-task #%d] 完成，%d 条结果（实时流式已上报）", at.ID, len(results))
 }
 
-// reportProgressWithLog 上报进度；withLog=true 时附带最近日志
-func reportProgressWithLog(id uint, total, scanned, pct, eta int, msg string, withLog bool) bool {
+// progressResp 心跳响应：取消标记 + 调控指令（幂等状态）
+type progressResp struct {
+	Cancelled bool    `json:"cancelled"`
+	Cmd       ctrlCmd `json:"cmd"`
+}
+
+// reportProgressWithLog 上报进度；withLog=true 时附带最近日志。返回服务端指令。
+func reportProgressWithLog(id uint, total, scanned, pct, eta int, msg string, withLog bool) progressResp {
 	payload := map[string]interface{}{
 		"total": total, "scanned": scanned, "progress": pct, "eta": eta, "message": msg,
 	}
@@ -827,31 +785,23 @@ func reportProgressWithLog(id uint, total, scanned, pct, eta int, msg string, wi
 	body, _ := json.Marshal(payload)
 	resp, err := agentReq("POST", fmt.Sprintf("%s/api/agent/tasks/%d/progress", *serverURL, id), body)
 	if err != nil {
-		return false
+		return progressResp{}
 	}
 	defer resp.Body.Close()
-	var r struct {
-		Cancelled bool `json:"cancelled"`
-	}
+	var r progressResp
 	_ = json.NewDecoder(resp.Body).Decode(&r)
-	return r.Cancelled
+	return r
 }
 
-// reportProgress 上报进度，返回 true 表示服务端要求取消
-func reportProgress(id uint, total, scanned, pct int, msg string) bool {
+// reportProgressPlain 简单进度上报（收尾用）
+func reportProgressPlain(id uint, total, scanned, pct int, msg string) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"total": total, "scanned": scanned, "progress": pct, "eta": 0, "message": msg,
 	})
 	resp, err := agentReq("POST", fmt.Sprintf("%s/api/agent/tasks/%d/progress", *serverURL, id), body)
-	if err != nil {
-		return false
+	if err == nil {
+		resp.Body.Close()
 	}
-	defer resp.Body.Close()
-	var r struct {
-		Cancelled bool `json:"cancelled"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&r)
-	return r.Cancelled
 }
 
 func reportFinish(id uint, ok bool) {
@@ -889,6 +839,32 @@ func postResults(taskID uint, results []scanner.ScanResult) {
 		b, _ := io.ReadAll(resp.Body)
 		log.Printf("[agent] 结果上报被拒绝（HTTP %d）: %s", resp.StatusCode, string(b))
 	}
+}
+
+var (
+	// 进度条形如：进度 21% (283200/1279104) [3m4s:10m23s]
+	pctRe  = regexp.MustCompile(`(\d{1,3})\s*%`)
+	portRe = regexp.MustCompile(`\((\d+)\s*/\s*(\d+)\)`)
+	// 进度条尾部 [已用:剩余]，如 [2m36s:10m54s]
+	etaRe = regexp.MustCompile(`\[([0-9hms]+):([0-9hms]+)\]`)
+	durRe = regexp.MustCompile(`(\d+)([hms])`)
+)
+
+// parseDurationSec 把 10m54s / 1h2m3s / 45s 转成秒
+func parseDurationSec(s string) int {
+	total := 0
+	for _, m := range durRe.FindAllStringSubmatch(s, -1) {
+		n, _ := strconv.Atoi(m[1])
+		switch m[2] {
+		case "h":
+			total += n * 3600
+		case "m":
+			total += n * 60
+		case "s":
+			total += n
+		}
+	}
+	return total
 }
 
 func parseTargets(input string) []string {
