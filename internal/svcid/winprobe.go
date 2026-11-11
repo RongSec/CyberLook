@@ -146,7 +146,12 @@ func normalizeProduct(s string) string {
 			if p == "" {
 				continue
 			}
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+			// 仅对 ASCII 分段做大写首字母。p[0] < 0x80 判断 UTF-8 安全
+			// （ASCII 码点恒单字节）；非 ASCII（如中文）分段原样保留——
+			// 旧写法 p[:1] 按字节切片会把多字节首字符切碎产生非法 UTF-8→U+FFFD。
+			if p[0] < 0x80 {
+				parts[i] = strings.ToUpper(p[:1]) + p[1:]
+			}
 		}
 		return strings.Join(parts, " ")
 	}
@@ -198,7 +203,7 @@ func buildSMB1Negotiate() []byte {
 // TPKT(4) + X.224 CR(li + 6 字节) + cookie + RDP Negotiation(8 字节)
 func buildRDPNegotiate() []byte {
 	cookie := []byte("Cookie: mstshash=probe\r\n")
-	x224 := []byte{0xe0, 0x00, 0x00, 0x00, 0x00, 0x00} // X.224 CR class 0
+	x224 := []byte{0xe0, 0x00, 0x00, 0x00, 0x00, 0x00}            // X.224 CR class 0
 	rdp := []byte{0x01, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00} // 请求 TLS
 	body := append([]byte{}, x224...)
 	body = append(body, cookie...)
