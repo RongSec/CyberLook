@@ -618,7 +618,9 @@ func countAliveNodesForTask(task *model.ScanTask) int {
 // DispatchNextBatch 下发下一个未下发的批（事件驱动：节点完成时调用）
 
 // CheckTaskAllDone 所有子任务结束后收敛主任务状态
-// 全部 done → done；有 failed → failed；有 cancelled（手动停止/故障转移）→ interrupted
+// 全部 done → done；有 failed → failed。
+// 终态（failed/done/stopped/paused）不会再被收敛覆盖——用户主动取消/停止之后
+// 迟到的 finish/巡检事件不能把任务翻回 done（F4 验收：取消必须停在 failed）。
 func CheckTaskAllDone(taskID uint) {
 	var task model.ScanTask
 	if err := config.DB.First(&task, taskID).Error; err != nil {
@@ -628,6 +630,9 @@ func CheckTaskAllDone(taskID uint) {
 	if task.QueueMode {
 		CheckQueueDone(taskID)
 		return
+	}
+	if task.Status != "running" {
+		return // 非运行态不收敛（取消/停止/暂停的终态保持不动）
 	}
 
 	// ===== 判定一：存活探测必须全部完成 =====

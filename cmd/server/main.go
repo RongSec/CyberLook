@@ -12,6 +12,7 @@ import (
 
 	"asset-platform/internal/api"
 	"asset-platform/internal/config"
+	"asset-platform/internal/scanner"
 	"asset-platform/internal/scheduler"
 	"asset-platform/internal/service"
 
@@ -28,6 +29,11 @@ func main() {
 		_ = os.Setenv("GODEBUG", os.Getenv("GODEBUG")+",x509negativeserial=1")
 	}
 	cfg := config.Load()
+
+	// 审计旁路落库：server 本机执行路径（nodeIds 为空 / 队列本机消费）同样落
+	// 与 exe 同目录的 config/config.db（v0.0.27 D 项：此前只有 agent 进程启用，
+	// 导致本机直跑任务的审计链缺失）。旁路语义不变：写失败只记日志、不影响扫描。
+	scanner.EnableAudit()
 
 	// 识别链路审计（dry-run，不写业务表）：/app/asset-server audit-identify --unclear 100 --clear 30
 	if len(os.Args) > 1 && os.Args[1] == "audit-identify" {

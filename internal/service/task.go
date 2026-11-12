@@ -225,8 +225,13 @@ func StopTask(taskID uint) error {
 	config.DB.Model(&model.AgentTask{}).
 		Where("task_id = ? AND status IN ?", taskID, []string{"pending", "running"}).
 		Updates(map[string]interface{}{"status": "cancelled", "message": "已手动停止", "finished_at": now})
+	// 取消终态统一口径（与队列路径一致）：status=failed + error="已取消（部分结果已入库）"。
+	// 不能是 done/成功，也不能只写 "stopped" 让迟到事件把它翻回 done。
+	ClearTaskCtrl(taskID)
+	FinishTaskRun(taskID, "failed")
+	tasklog.AppendTS(taskID, "[调度] 任务已取消：部分结果已入库")
 	return config.DB.Model(&task).Updates(map[string]interface{}{
-		"status": "stopped", "finished_at": now,
+		"status": "failed", "error": "已取消（部分结果已入库）", "finished_at": now,
 	}).Error
 }
 
