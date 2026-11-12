@@ -1,7 +1,10 @@
 # 依赖与构建产物
 web/node_modules
 web/dist
-data
+# 运行期数据（备份/上传文件/数据库）不打进镜像；但指纹规则必须打进去
+# （Dockerfile.agent 的 COPY data/fingerprint 是硬要求，漏掉会「沉默降级为纯端口扫描」）
+data/*
+!data/fingerprint
 
 # 第三方大文件（保留 tscanclient_linux / tscanclient_win 供分发下载）
 third_party/TscanPlus-main
