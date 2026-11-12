@@ -82,12 +82,6 @@ type taskDetail struct {
 //
 // 引擎句柄未注册（扫描还没进 RunBuiltinPortScan）时 ControlScan 返回 false，
 // 无所谓——下一条心跳再投影。取消（cancel）不在这里：走 cancelled 字段既有链路。
-type ctrlCmd struct {
-	Action      string `json:"action"`
-	Paused      bool   `json:"paused"`
-	Concurrency int    `json:"concurrency"`
-	TimeoutMs   int    `json:"timeoutMs"`
-}
 
 // shardRun 运行中分片：取消句柄
 type shardRun struct {
@@ -371,6 +365,16 @@ type claimResp struct {
 		Timeout     int `json:"timeout"`
 		Concurrency int `json:"concurrency"`
 	} `json:"nodeConf"`
+	// Cmd 该任务的调控幂等状态（pause/limit）；每轮 claim 都会带回来，
+	// 用于在**共享 limiter** 上做 node 级持久投影（不依赖单元心跳恰好 tick 到）。
+	Cmd ctrlCmd `json:"cmd"`
+}
+
+type ctrlCmd struct {
+	Action      string `json:"action"`
+	Paused      bool   `json:"paused"`
+	Concurrency int    `json:"concurrency"`
+	TimeoutMs   int    `json:"timeoutMs"`
 }
 
 type claimUnitRef struct {
@@ -484,6 +488,33 @@ func clampInflight(conc int) int {
 		return safeInflight
 	}
 	return conc
+}
+
+// applyQueueCtrl 把任务级调控状态投影到节点共享 limiter（幂等，可每轮调用）。
+func applyQueueCtrl(c ctrlCmd) {
+	ctrl := queueLimiterQueueCtrl()
+	if ctrl == nil {
+		return
+	}
+	switch {
+	case c.Paused || c.Action == "pause":
+		ctrl.Pause()
+	case c.Concurrency > 0 || c.TimeoutMs > 0:
+		if c.Concurrency > 0 {
+			ctrl.SetLimit(clampInflight(c.Concurrency))
+		}
+		if c.TimeoutMs > 0 {
+			ctrl.SetTimeoutMs(c.TimeoutMs)
+		}
+		ctrl.Resume() // 产品语义：设了新值就按新值跑（顺带解除暂停）
+	}
+}
+
+// queueLimiterQueueCtrl 取已初始化的节点级 limiter（未初始化返回 nil）。
+func queueLimiterQueueCtrl() *portscan.Controls {
+	queueCtrlMu.Lock()
+	defer queueCtrlMu.Unlock()
+	return queueCtrlInst
 }
 
 func queueLoop() {
@@ -604,6 +635,9 @@ func consumeQueue() int {
 				}
 				break
 			}
+			// node 级持久投影：每轮把任务当前的 pause/limit 状态应用到共享 limiter。
+			// 这样 K=1 与 K>1 语义一致，也不依赖"恰好有单元在心跳"（v0.0.27 实测缺陷）。
+			applyQueueCtrl(c.Cmd)
 			units := c.unitList()
 			if len(units) == 0 {
 				if c != nil && c.Paused {
