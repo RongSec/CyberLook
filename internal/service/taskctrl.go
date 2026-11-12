@@ -20,6 +20,10 @@ type TaskCtrlCmd struct {
 	Paused      bool   `json:"paused"`
 	Concurrency int    `json:"concurrency"` // 0=未调整（用节点/任务默认）
 	TimeoutMs   int    `json:"timeoutMs"`   // 0=未调整
+	// Seq 单调递增的调控版本号（每次 SetTaskPause/SetTaskLimit 自增）。
+	// K 路单元并发心跳时，晚到的老心跳会带更小的 Seq，执行端据此丢弃，
+	// 避免把新速率盖回旧值（"偶发回弹"的旋钮）。0 = 无调控态（未发生过变更）。
+	Seq int64 `json:"seq"`
 }
 
 type taskCtrl struct {
@@ -27,6 +31,7 @@ type taskCtrl struct {
 	paused      bool
 	concurrency int // 0 = 未设
 	timeoutMs   int // 0 = 未设
+	seq         int64
 }
 
 var taskCtrls sync.Map // taskID(uint) -> *taskCtrl
@@ -46,6 +51,7 @@ func SetTaskPause(taskID uint, paused bool) {
 	c := getTaskCtrl(taskID)
 	c.mu.Lock()
 	c.paused = paused
+	c.seq++
 	c.mu.Unlock()
 }
 
@@ -60,6 +66,7 @@ func SetTaskLimit(taskID uint, concurrency, timeoutMs int) {
 		c.timeoutMs = timeoutMs
 	}
 	c.paused = false // 设了新值就要按新值跑
+	c.seq++
 	c.mu.Unlock()
 }
 
@@ -75,11 +82,13 @@ func TaskCtrlSnapshot(taskID uint) TaskCtrlCmd {
 	defer c.mu.Unlock()
 	switch {
 	case c.paused:
-		return TaskCtrlCmd{Action: "pause", Paused: true, Concurrency: c.concurrency, TimeoutMs: c.timeoutMs}
+		return TaskCtrlCmd{Action: "pause", Paused: true, Concurrency: c.concurrency, TimeoutMs: c.timeoutMs, Seq: c.seq}
 	case c.concurrency > 0 || c.timeoutMs > 0:
-		return TaskCtrlCmd{Action: "limit", Concurrency: c.concurrency, TimeoutMs: c.timeoutMs}
+		return TaskCtrlCmd{Action: "limit", Concurrency: c.concurrency, TimeoutMs: c.timeoutMs, Seq: c.seq}
 	}
-	return TaskCtrlCmd{Action: "none"}
+	// 无调控态：带当前 seq（可能 >0，表示"已解除暂停/已复位"），
+	// 执行端据此 Resume 收敛到"按默认速率运行"。
+	return TaskCtrlCmd{Action: "none", Seq: c.seq}
 }
 
 // TaskPausedNow 该任务当前是否处于暂停投影（队列领取闸门用）。
