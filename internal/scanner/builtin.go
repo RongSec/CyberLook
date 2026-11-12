@@ -195,12 +195,20 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	fullFinger := opts.Finger == "" || strings.Contains(strings.ToLower(opts.Finger), "all")
 
 	// ===== 规则（缓存载入；失败降级为纯端口扫描）=====
+	//
+	// 只在真的要识别时载入：FingerprintHub 全量是 11MB JSON（首次解析约 1.4s）。
+	// 队列模式下节点会并行跑 K 个单元，若每个纯端口扫描的单元都去 loadRulesCached，
+	// 首轮就是 K 个 goroutine 同时解析同一份 11MB 规则（CPU/内存被打满），
+	// 表现为"单元领了但迟迟不出结果"（实测 K=16、纯端口任务时日志只有「领取成功」
+	// 完全没有引擎行，75s 零完成）。纯端口扫描本来就不需要规则 —— 直接跳过。
 	var rs *svcid.RuleSet
 	var probes *svcid.ProbeIndex
-	if r, p, e := loadRulesCached(BuiltinRulesDir()); e == nil {
-		rs, probes = r, p
-	} else {
-		logf(logFn, "[自研引擎] 规则载入失败，仅做端口扫描："+e.Error())
+	if wantIdent {
+		if r, p, e := loadRulesCached(BuiltinRulesDir()); e == nil {
+			rs, probes = r, p
+		} else {
+			logf(logFn, "[自研引擎] 规则载入失败，仅做端口扫描："+e.Error())
+		}
 	}
 	identOpt := svcid.IdentOptions{Rules: rs, Probes: probes}
 	if !fullFinger {
