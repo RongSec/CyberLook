@@ -64,6 +64,20 @@
 
 ### 修复
 
+- **K>1 并行单元下 `/control limit` 打不上、pause 只冻结一个单元（"动态调速"是假功能）**：
+  共享 limiter 原来按**单元级 projectID** 投影（`ControlScan(proj)`），而 K 路单元共用的是另一份
+  ctrl——K=1 时两者恰好重合，所以单单元测试是好的，一到 K>1 旋钮就失效；更糟的是每轮 claim
+  又用节点默认并发重跑一次 `SetLimit`，把刚下发的 60 盖回 1500（现象=「生效一瞬间又回弹」）。
+  现在：① 共享 limiter 改为 **taskID 键**（`EnsureTaskCtrl/ApplyTaskCtrl/UnregisterTaskCtrl`），
+  K 个单元取同一个 ctrl，任一单元心跳都能投影；② 只有创建时用节点并发定初值，复用路径禁止
+  `SetLimit`；③ 投影带单调递增 `seq` 做乱序防护（老心跳晚到丢弃）；④ 任务收敛释放句柄防泄漏。
+  实测：K=6 基线 300pps → limit60 稳定段均值≈60 → 改回 600 恢复 300；K=32 全程 limit60
+  墙钟 455s（基线 23.8s，19×）且 probes 25600/25600、open 327 零丢失；pause→0、resume→恢复均 ≤2s。
+  单测 `internal/scanner/taskctrl_test.go` 四条（复用不重置 limit / seq 乱序丢弃 / pause-resume+生命周期 /
+  16 goroutine 并发投影终值由最大 seq 决定）。
+- **`.dockerignore` 把指纹规则也排除了，agent 镜像直接构建失败**：`data` 一行把整个 data 目录
+  （含 `data/fingerprint`）挡在构建上下文外，`docker compose build agent` 报
+  `/data/fingerprint: not found`。改为 `data/*` + `!data/fingerprint`，只排运行期数据。
 - **本地 fd/端口耗尽不再被当成"端口关闭"（假阴性，安全扫描器最致命的错）**：
   connect 扫描里 dial 失败一律算"未开放"，agent 撞 fd 上限（EMFILE/ENFILE/ENOBUFS/EAGAIN）时
   connect 是秒失败 → 每个探针都记 closed → 单元"正常完成、开放=0" → 对外输出"该主机没有开放端口"。
