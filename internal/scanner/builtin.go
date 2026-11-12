@@ -329,11 +329,28 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	allMu.Lock()
 	out := append([]ScanResult(nil), all...)
 	allMu.Unlock()
+	if st.LocalResErrs > 0 {
+		// 少量本地资源错误（低于整轮判废阈值）：结果仍可用，但必须留痕——
+		// 这类错误以前会被当成"端口关闭"，是最难发现的假阴性来源。
+		if serr != nil {
+			logf(logFn, fmt.Sprintf("[自研引擎] 本地 fd/资源不足 %d 次，本轮结果不可信，按失败退回队列（请调大 nofile 或调小并发）", st.LocalResErrs))
+		} else {
+			logf(logFn, fmt.Sprintf("[自研引擎] 警告：本地 fd/资源不足 %d 次（占 %.3f%%），结果可能有零星漏报，建议调大 nofile 或调小并发",
+				st.LocalResErrs, 100*float64(st.LocalResErrs)/float64(max64(st.Probes, 1))))
+		}
+	}
 	if serr != nil {
 		// 取消/出错：部分结果已照常 flush 回调 + 落审计库，调用方按 cancelled 语义处理
 		return out, serr
 	}
 	return out, nil
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // runStreamingScan 调 portscan.Scan 并把 OnOpen 接进流水线；返回统计与错误。

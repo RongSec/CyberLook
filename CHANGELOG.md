@@ -58,6 +58,16 @@
 
 ### 修复
 
+- **本地 fd/端口耗尽不再被当成"端口关闭"（假阴性，安全扫描器最致命的错）**：
+  connect 扫描里 dial 失败一律算"未开放"，agent 撞 fd 上限（EMFILE/ENFILE/ENOBUFS/EAGAIN）时
+  connect 是秒失败 → 每个探针都记 closed → 单元"正常完成、开放=0" → 对外输出"该主机没有开放端口"。
+  现在：① 探针错误分类（`errors.As` 解 net.OpError/os.SyscallError/syscall errno + 文本兜底）；
+  ② 命中本地资源错误不记 closed，让出许可退让 200ms 后重试，最多 3 次；
+  ③ 单元内资源错误占比 >0.5% → 返回 `ErrLocalResourceExhausted`，单元按失败退回队列（走 attempts/隔离），
+  **绝不落 done**；低于阈值只 WARN 留痕；④ agent 启动读 `RLIMIT_NOFILE`，soft<2048 时打印醒目告警
+  并把扫描在途上限钳到 soft-256（soft≥8192 时按 1500 运行）。
+  单测 `internal/portscan/resource_test.go` 注入假 dialer 连续 EMFILE，断言"不判 closed / 确有重试 /
+  最终返回资源错误"。
 - **agent 缺指纹规则时静默降级为纯端口扫描**：`Dockerfile.agent` 未打包 `data/fingerprint`，
   agent 容器内 `SCAN_RULES_DIR=data/fingerprint` 不存在，引擎只记一行「规则载入失败」
   就继续扫，扫出来「已识别」恒为 0、指纹/产品全空（线上 v0.0.27 实测踩到）。
