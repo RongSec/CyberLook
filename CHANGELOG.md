@@ -45,6 +45,15 @@
   `-engine-db` flag；`creack/pty` 依赖随 tidy 移除。
   v0.0.27 起**仅自研引擎**；`task.engine` 字段保留兼容存量数据（任意值均走自研）。
 
+### 修复
+
+- **agent 缺指纹规则时静默降级为纯端口扫描**：`Dockerfile.agent` 未打包 `data/fingerprint`，
+  agent 容器内 `SCAN_RULES_DIR=data/fingerprint` 不存在，引擎只记一行「规则载入失败」
+  就继续扫，扫出来「已识别」恒为 0、指纹/产品全空（线上 v0.0.27 实测踩到）。
+  现在镜像内置规则（`COPY data/fingerprint /app/data/fingerprint` +
+  `ENV SCAN_RULES_DIR=/app/data/fingerprint`），compose 保留只读挂载覆盖入口（默认注释）。
+  部署验收见 README「扫描引擎」节。
+
 ---
 
 ## [0.0.26] - 2026-11-10（扫描引擎修复）

@@ -628,6 +628,29 @@ v0.0.25 起默认使用自研引擎（`internal/portscan` + `internal/svcid`，�
 不再依赖 TscanPlus。需要回退时给 agent 设置 `SCAN_ENGINE=tscan`。
 实测对比见 `docs/端口扫描对拍报告-2026-11-09.md`。
 
+### ⚠️ agent 必须能读到指纹规则目录（否则静默降级为纯端口扫描）
+
+agent 端的服务识别依赖 FingerprintHub 全量规则（`SCAN_RULES_DIR`，默认相对路径
+`data/fingerprint`）。目录不可用时**不会报错退出**，只在任务日志里留一行
+
+```
+[自研引擎] 规则载入失败，仅做端口扫描：规则路径 data/fingerprint 不可用: stat data/fingerprint: no such file or directory
+```
+
+随后该节点扫出来的结果「已识别」恒为 0、`fingerprint`/`product` 全空——看上去"能扫"，实际没有识别。
+部署时二选一（推荐前者）：
+
+1. **镜像内置**（默认）：`Dockerfile.agent` 已 `COPY data/fingerprint /app/data/fingerprint`
+   并 `ENV SCAN_RULES_DIR=/app/data/fingerprint`，节点离线也能识别，约 +11MB 镜像体积。
+2. **宿主机挂载覆盖**：想换规则不重建镜像时，在 `docker-compose.yml` 的 agent 服务打开
+   `- ./data/fingerprint:/app/data/fingerprint:ro`（只读）。
+
+验收：
+```bash
+docker exec asset-agent ls /app/data/fingerprint | wc -l        # 期望非 0（≥2：web/service 两个 json）
+docker logs asset-agent 2>&1 | grep "识别=true"                  # 期望「识别=true，全量指纹=true」
+```
+
 ## 许可证
 
 **GPL-3.0** — 详见 [LICENSE](LICENSE)（GNU GENERAL PUBLIC LICENSE, Version 3, 29 June 2007）
