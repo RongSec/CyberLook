@@ -6,10 +6,11 @@ package scanner
 // config.db（表结构沿用原 TscanPlus 的 ipscan/urlscan 列子集），供事后排查
 // 「上报丢没丢、扫描当时看到什么」。
 //
-// 约束（2026-11-11 评审定稿）：
-//   - **仅 agent 进程写审计库**（cmd/agent 启动时显式 EnableAudit()）；
-//     server 本地执行 / bench 不写，避免中心容器磁盘无界增长。
-//   - 路径 = 与 scope-agent 可执行文件**同目录**的 config/config.db
+// 约束（v0.0.27 更新）：
+//   - **agent 与 server 两个进程都显式 EnableAudit()**：agent 写节点本地审计链，
+//     server 写自己 exe 同目录的 config/config.db，覆盖「本机直跑任务」的审计。
+//     bench 等工具进程不调用 → 不落库（避免压测污染/磁盘无界增长）。
+//   - 路径 = 与可执行文件**同目录**的 config/config.db
 //     （与历史 TscanClient 行为一致：下载 exe 到哪、审计库就生成到哪：
 //     Linux systemd → /opt/weijian-agent/config/，Windows → C:\weijian-agent\config\，
 //     compose agent → /app/config/）。exe 目录不可写时回退 ./config/config.db。
