@@ -42,6 +42,14 @@ func AIServiceIdentifyEnabled() bool {
 // 并据此收尾（done_ai）或回收重派（stalled_ai）。
 // trigger 仅用于日志标注（watchdog / 手动）。
 func DiagnoseShard(at model.AgentTask, trigger string) (verdict, note string, err error) {
+	// IP 租约队列的会话行（batch_no=0）不是真实分片：它常驻到整个任务扫完，
+	// 且每个 IP 单元扫完都会打一行「扫描结束」，走「日志出现结束标志 → 立刻判完成」
+	// 会被每 2 秒触发一次，把会话行状态在 running/done_ai 之间来回翻转并刷屏任务日志
+	// （v0.0.27 队列实测：分片 #663 连续 7 秒内写 7 条「已完成但未结束」）。
+	// 队列任务的完成判定统一交给 CheckQueueDone（无 pending 无 leased 才算完）。
+	if at.BatchNo == 0 {
+		return "", "", nil
+	}
 	var node model.Node
 	_ = config.DB.First(&node, at.NodeID).Error
 	// 优先用「本分片」的终端回显（节点日志是累积的，混着几百个分片）
