@@ -66,6 +66,8 @@ func CreateTask(in TaskInput) (*model.ScanTask, error) {
 	if task.Timeout == 0 {
 		task.Timeout = 3
 	}
+	// 队列模式创建即固化（重启/翻 USE_IP_QUEUE 不影响已建任务）
+	task.QueueMode = UseIPQueue()
 	if err := config.DB.Create(&task).Error; err != nil {
 		return nil, err
 	}
@@ -103,7 +105,11 @@ func DeleteTask(id uint) error {
 		removeTaskReports(task.ReportPath, taskProjectID(task))
 	}
 	config.DB.Where("task_id = ?", id).Delete(&model.ScanSnapshot{})
-	CleanPipeline(id) // 清掉内存里的流水线状态
+	config.DB.Where("task_id = ?", id).Delete(&model.TaskUnit{}) // 队列单元随任务销毁
+	CleanPipeline(id)                                            // 清掉内存里的流水线状态
+	ClearTaskCtrl(id)
+	DropETAState(id)
+	queueNotifyOnce.Delete(id)
 	DeleteTaskLogs(id)
 	return config.DB.Delete(&model.ScanTask{}, id).Error
 }
@@ -182,13 +188,38 @@ func BatchDeleteAssets(ids []uint) error {
 
 // ExecuteTask 执行扫描任务：调自研引擎（流式）→ 结果入库（快照/服务/资产）
 // StopTask 停止任务：取消本机扫描，节点分片标记取消（agent 心跳收到 cancelled 后取消本机扫描）
+// v0.0.27 队列任务取消口径（用户拍板）：status=failed + error=「已取消（部分结果已入库）」，
+// 在扫单元由 agent 保留部分结果后停；未领单元留在 pending（重跑可续）。
 func StopTask(taskID uint) error {
 	var task model.ScanTask
 	if err := config.DB.First(&task, taskID).Error; err != nil {
 		return err
 	}
-	scanner.StopScan(taskProjectID(task))
 	now := time.Now()
+	if task.QueueMode {
+		// 本机队列循环：命中当前在扫单元句柄（ProjectID=任务名，本机串行单句柄）
+		scanner.StopScan(taskProjectID(task))
+		// 节点会话行全部置 cancelled：agent 心跳收到 cancelled → 停当前单元、退出领取循环
+		config.DB.Model(&model.AgentTask{}).
+			Where("task_id = ? AND batch_no = 0 AND status IN ?", taskID, []string{"pending", "running"}).
+			Updates(map[string]interface{}{"status": "cancelled", "message": "已取消（部分结果已入库）", "finished_at": now})
+		// 正在 leased 的单元打回 pending（执行方已停或即将停，不必等 reaper；
+		// 若 agent 慢半拍仍在上报，ReportUnit 条件更新命中不到 leased 行会静默忽略）
+		config.DB.Model(&model.TaskUnit{}).
+			Where("task_id = ? AND status = ?", taskID, model.UnitLeased).
+			Updates(map[string]interface{}{
+				"status": model.UnitPending, "node_id": 0, "session_id": 0,
+				"lease_expire": nil, "updated_at": now,
+			})
+		ClearTaskCtrl(taskID)
+		DropETAState(taskID)
+		FinishTaskRun(taskID, "failed")
+		tasklog.AppendTS(taskID, "[队列] 任务已取消：部分结果已入库，未完成单元保留在队列（重跑续扫）")
+		return config.DB.Model(&model.ScanTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+			"status": "failed", "error": "已取消（部分结果已入库）", "finished_at": now,
+		}).Error
+	}
+	scanner.StopScan(taskProjectID(task))
 	// 停止时把未结束的分片统一置为 cancelled 并补结束时间，
 	// 否则它们会一直挂在 running，主任务永远不收敛
 	config.DB.Model(&model.AgentTask{}).
@@ -203,6 +234,11 @@ func ExecuteTask(taskID uint) error {
 	var task model.ScanTask
 	if err := config.DB.First(&task, taskID).Error; err != nil {
 		return err
+	}
+	// v0.0.27 本机队列路径：queue_mode 已固化或全局开关开启 → 进程内消费租约队列
+	// （claim→单 IP 扫描→回报→再 claim），与 agent 路径同构；旧单机整段扫描退役。
+	if task.QueueMode || UseIPQueue() {
+		return ExecuteTaskQueue(taskID)
 	}
 	now := time.Now()
 	config.DB.Model(&task).Updates(map[string]interface{}{"status": "running", "started_at": now})

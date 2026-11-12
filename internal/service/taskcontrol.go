@@ -22,6 +22,14 @@ func PauseTask(id uint) error {
 	if t.Status != "running" {
 		return errors.New("只有运行中的任务可以暂停")
 	}
+	// 队列任务：执行层暂停（引擎冻结 + 停领新单元），**不杀会话、不打回 leased 单元**——
+	// 心跳仍在续租，恢复后当前单元无缝继续（这正是单 IP 队列相对分片制的暂停优势）。
+	if t.QueueMode {
+		SetTaskPause(id, true)
+		config.DB.Model(&model.ScanTask{}).Where("id = ?", id).Update("status", "paused")
+		tasklog.AppendTS(id, "[队列] 任务已暂停：当前单元在途探针结束后冻结，暂停期间不再领取")
+		return nil
+	}
 
 	// 取消未完成分片，IP 收回池子
 	var shards []model.AgentTask
@@ -60,6 +68,14 @@ func ResumeTask(id uint) error {
 	if t.Status != "paused" && t.Status != "stopped" {
 		return errors.New("只有暂停/停止的任务可以继续")
 	}
+	// 队列任务：解冻执行层 + 状态回 running + 唤醒节点领取循环
+	if t.QueueMode {
+		SetTaskPause(id, false)
+		config.DB.Model(&model.ScanTask{}).Where("id = ?", id).Update("status", "running")
+		tasklog.AppendTS(id, "[队列] 任务继续：恢复领取与扫描")
+		wakeQueueConsumers(&t)
+		return nil
+	}
 	// 注意：不要在这里 StartTaskRun
 	// 概览按「最近一次执行」时间窗口统计，新建 run 会把窗口重置 → 概览清零。
 	// 暂停/继续属于同一次执行，必须保持原窗口；只有「停止后重跑」「完成后重跑」才开新 run。
@@ -77,6 +93,33 @@ func RestartTask(id uint) error {
 	}
 	if t.Status == "running" {
 		return errors.New("请先暂停/停止再重跑")
+	}
+	// 队列任务重跑：单元全部回 pending（attempts 清零），清会话，重走队列下发
+	if t.QueueMode {
+		config.DB.Where("task_id = ? AND batch_no = 0", id).Delete(&model.AgentTask{})
+		ResetUnits(id)
+		ClearTaskCtrl(id)
+		DropETAState(id)
+		queueNotifyOnce.Delete(id)
+		config.DB.Model(&model.ScanTask{}).Where("id = ?", id).
+			Updates(map[string]interface{}{"status": "pending", "error": "", "probe_offset": 0, "alive_count": 0})
+		StartTaskRun(id)
+		tasklog.AppendTS(id, "[队列] 任务已重跑：全部单元回炉（attempts/进度清零）")
+		go func() {
+			var fresh model.ScanTask
+			if config.DB.First(&fresh, id).Error == nil {
+				local, err := DispatchQueueTask(&fresh)
+				if err != nil {
+					tasklog.AppendTS(id, "[队列] 重跑下发失败：%v", err)
+					config.DB.Model(&model.ScanTask{}).Where("id = ?", id).Updates(map[string]interface{}{"status": "failed", "error": err.Error()})
+					return
+				}
+				if local {
+					_ = ExecuteTaskQueue(id)
+				}
+			}
+		}()
+		return nil
 	}
 	// 清空分片与断点
 	config.DB.Where("task_id = ?", id).Delete(&model.AgentTask{})

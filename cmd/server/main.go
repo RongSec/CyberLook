@@ -68,6 +68,15 @@ func main() {
 			var running []model.ScanTask
 			config.DB.Where("status = ?", "running").Find(&running)
 			for _, t := range running {
+				if t.QueueMode {
+					// 队列任务恢复：节点侧领取循环自愈（agent 每轮轮询）；
+					// 本机任务（node_ids 空）需要把进程内消费循环重新拉起来。
+					if t.NodeIDs == "" {
+						log.Printf("[恢复] 队列任务 #%d（%s）本机消费重启", t.ID, t.Name)
+						go service.ExecuteTaskQueue(t.ID)
+					}
+					continue
+				}
 				log.Printf("[恢复] 任务 #%d（%s）运行中，从断点恢复流水线", t.ID, t.Name)
 				service.DispatchNextBatch(t.ID)
 			}
@@ -82,6 +91,9 @@ func main() {
 				}
 			}
 		}()
+		// IP 租约队列 reaper：租约过期回收（10s tick → 节点崩溃最迟 70s 单元回池）
+		// + ETA 滚动采样 + 收敛巡检（v0.0.27）
+		service.StartQueueReaper()
 		scheduler.Start()
 		// 分片停滞看门狗：节点还活着但扫描进程卡死（scanned 长时间不涨）时收尾或回收，
 		// 否则分片永远 running，任务进度卡在 99%

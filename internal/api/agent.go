@@ -79,8 +79,35 @@ func AgentProgress(c *gin.Context) {
 		Message  string `json:"message"`
 		Log      string `json:"log"`
 		Eta      int    `json:"eta"`
+		// ===== v0.0.27 IP 租约队列扩展（带 ip 即队列心跳）=====
+		IP          string  `json:"ip"` // 当前 leased 单元；带即续租+落单元读数
+		ProbesDone  int64   `json:"probesDone"`
+		ProbesTotal int64   `json:"probesTotal"`
+		Pps         float64 `json:"pps"`
+		OpenFound   int64   `json:"openFound"`
+		Identified  int64   `json:"identified"`
+		Done        bool    `json:"unitDone"`   // true=单元完成（旧字段兼容）
+		UnitStatus  string  `json:"unitStatus"` // "done"|"failed"，优先于 unitDone
 	}
 	_ = c.ShouldBindJSON(&req)
+	// 队列会话心跳：续租 + 单元实时读数（probes_done/pps/open/identified），
+	// unitStatus/unitDone 即该单元的完成落账。总进度聚合走 task_units（tasketa.go）。
+	if req.IP != "" && at.TaskID > 0 {
+		st := "progress"
+		switch req.UnitStatus {
+		case "done", "failed":
+			st = req.UnitStatus
+		default:
+			if req.Done {
+				st = "done"
+			}
+		}
+		service.ReportUnit(at.TaskID, at.NodeID, req.IP, service.UnitReport{
+			ProbesDone: req.ProbesDone, ProbesTotal: req.ProbesTotal,
+			OpenFound: req.OpenFound, Identified: req.Identified, Pps: req.Pps,
+			Status: st,
+		})
+	}
 	// 原子抢占 pending → running，只有成功的那一次记日志（避免并发重复）
 	now := time.Now()
 	if res := config.DB.Model(&model.AgentTask{}).
@@ -90,14 +117,21 @@ func AgentProgress(c *gin.Context) {
 		if at.IPRanges != "" {
 			ipCount = len(strings.Split(at.IPRanges, ","))
 		}
-		tasklog.AppendTS(at.TaskID, "[节点 %s] 收到任务并开始执行（分片 #%d，%d 个 IP）",
-			at.NodeName, at.ID, ipCount)
+		if at.BatchNo > 0 { // 队列会话行（batch_no=0）的加入日志在 EnsureSession 已记
+			tasklog.AppendTS(at.TaskID, "[节点 %s] 收到任务并开始执行（分片 #%d，%d 个 IP）",
+				at.NodeName, at.ID, ipCount)
+		}
 	}
 	// 兜底：老数据可能没有 started_at
 	config.DB.Model(&model.AgentTask{}).
 		Where("id = ? AND started_at IS NULL", id).
 		Update("started_at", now)
-	_ = service.UpdateAgentProgress(uint(id), req.Total, req.Scanned, req.Progress, req.Eta, req.Message)
+	// 队列会话心跳（batch_no=0 且带 ip）不叠写分片式进度：会话 total/scanned
+	// 由 NoteSessionUnit 在单元终报时精确累计（UpdateAgentProgress 是覆盖语义，
+	// 会把已结算单元的累计值顶掉成"当前单元"值）。进度真值在 task_units。
+	if !(at.BatchNo == 0 && req.IP != "") {
+		_ = service.UpdateAgentProgress(uint(id), req.Total, req.Scanned, req.Progress, req.Eta, req.Message)
+	}
 	// 顺便缓存 agent 上报的终端日志
 	if req.Log != "" && at.NodeID > 0 {
 		updateNodeLog(at.NodeID, req.Log)
