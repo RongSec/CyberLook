@@ -98,8 +98,14 @@ services:
         soft: 65535
         hard: 65535
     volumes:
-      # 引擎审计库持久化：agent exe 同目录 config/config.db（v0.0.27 起自研引擎写入）
-      - agent-tscan-config:/app/config
+      # 引擎审计库持久化：agent exe 同目录 config/config.db（v0.0.27 起自研引擎写入）。
+      # 卷名 v0.0.27.1 起由 agent-tscan-config 改为 agent-engine-config：
+      # 它装的是**自研引擎**的审计库，与 tscan 无关（tscan 已彻底移除）。
+      # ⚠️ 升级时旧卷不会自动迁移——审计库只用于排障，丢一次可接受；
+      #    需保留旧数据时先拷过去再切：
+      #    docker run --rm -v asset-platform_agent-tscan-config:/from \
+      #      -v asset-platform_agent-engine-config:/to alpine cp -a /from/. /to/
+      - agent-engine-config:/app/config
       # 可选：宿主机规则目录覆盖镜像内置规则（只读）。不用时保持注释即可。
       # - ./data/fingerprint:/app/data/fingerprint:ro
     depends_on:
@@ -108,6 +114,8 @@ services:
 volumes:
   pg-data:
   redis-data:
-  # tscan-config：v0.0.27 移除（server 不再需要 tscan 目录）。
+  # tscan-config：v0.0.27 移除（TscanPlus 已移除，server 不再需要 tscan 目录）。
   # 服务器上执行 `docker volume rm asset-platform_tscan-config` 清理旧卷。
-  agent-tscan-config:
+  # agent-engine-config：agent 侧自研引擎审计库（config/config.db）。
+  # 旧名 agent-tscan-config 不再声明，见 agent 服务挂载处的迁移说明。
+  agent-engine-config:

@@ -16,8 +16,9 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 
 # v0.0.27：扫描引擎已内置于 scope-agent（纯 Go 自研），不再打包 TscanClient。
-# 审计库 = exe 同目录 config/config.db（/app/config），compose 卷 agent-tscan-config
-# 挂在 /app/config 上持久化（原卷名保留，挂载点从 /app/tscanclient/config 改名为语义正确的 /app/config）。
+# 审计库 = exe 同目录 config/config.db（/app/config），compose 卷 agent-engine-config
+# 挂在 /app/config 上持久化（v0.0.27.1 卷名由 agent-tscan-config 改为 agent-engine-config，
+# 旧卷不自动迁移，见 docker-compose.yml 的迁移命令）。
 COPY --from=go-builder /out/scope-agent /app/scope-agent
 # v0.0.27：全量指纹规则随镜像内置（约 11MB）。节点离线/换环境也能做服务识别；
 # 缺了它不会报错，只会**沉默降级为纯端口扫描**（日志「规则载入失败，仅做端口扫描」），

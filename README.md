@@ -21,14 +21,14 @@
 测试目标：真实企业内网共94653个IP
 
 ## 特别鸣谢
-- https://github.com/TideSec/TscanPlus
-- 本系统核心扫描能力均依赖于内嵌的tscanclient,日后也会对tscanclient的更新在第一时间做主动适配。
+- https://github.com/TideSec/TscanPlus —— 早期版本的扫描能力来源，v0.0.27 起已**彻底移除**（`TscanClient` 执行链、`tscan-binary` 分发路由全部删除），仅在此保留致谢。
+- 现扫描引擎为仓库内自研（`internal/portscan` + `internal/svcid`，纯 Go、CGO-free），规则数据来自 FingerprintHub（MIT）。
 
 ## TODO
 - 暂停在继续后扫描任务的概览会重复一次分片计数（不影响功能和数据）
 ## 功能特性
 
-- **资产发现**：基于 TscanClient 的端口扫描、Web 指纹识别
+- **资产发现**：自研引擎（`internal/portscan` connect 扫描 + `internal/svcid` 全量指纹识别）做端口扫描与 Web 指纹识别
 - **分布式扫描**：多节点（支持 Windows/Linux）批量调度，可对节点单独设置参数，灵活分片，敏捷调度
 - **资产处置**：按分类处置资产（新出现 / 新变更 / 台账导入）
 - **SimHash 内容变更检测**：基于页面内容指纹判断资产是否改版，避免重复劳动
@@ -51,7 +51,7 @@
 | 后端 | Go 1.26+ (Gin + GORM) |
 | 前端 | Vue 3 + Naive UI + ECharts |
 | 数据库 | PostgreSQL 16 + Redis 7 |
-| 扫描引擎 | TscanClient |
+| 扫描引擎 | 自研（`internal/portscan` + `internal/svcid`，进程内，无外部二进制） |
 | 部署 | Docker Compose |
 
 ## 快速开始
@@ -102,7 +102,9 @@ asset-platform/
 ├── internal/               # Go 业务代码
 │   ├── api/                #   HTTP 接口
 │   ├── service/            #   业务逻辑
-│   ├── scanner/            #   TscanClient 封装
+│   ├── portscan/            #   connect 端口扫描（并发/进度/取消/调速）
+│   ├── svcid/               #   指纹识别（FingerprintHub 规则）
+│   ├── scanner/             #   扫描编排 + 审计库旁路
 │   ├── similarity/         #   SimHash 相似度
 │   ├── model/              #   数据模型
 │   └── config/             #   配置
@@ -315,7 +317,7 @@ stateDiagram-v2
 | `miss_count` | 本轮没扫到 +1，**连续 3 次没扫到就删除该服务行**（`markMissingServices`） |
 | `confirmed` | 处置确认后置 true；**端口级**，确认基线写 `confirmed_title` |
 | `confirmed_title` | 该端口确认时的标题基线（迁移 039 新增） |
-| `title_source` | `tscan`（扫描器给的）/ `fingerprint`（指纹命中）/ `ai`（AI 识别写回） |
+| `title_source` | `tscan`（历史枚举值，现指「扫描器给的」）/ `fingerprint`（指纹命中）/ `ai`（AI 识别写回） |
 | `prev_title` / `prev_fingerprint` / `prev_status_code` / `prev_content_length` | 发生变更时留旧值，待处置页展示「旧→新」 |
 | `page_simhash` | 当前页面内容 SimHash |
 
@@ -400,7 +402,7 @@ flowchart LR
 └──────────────────────────────────────────┘
             ↑ HTTP (心跳/任务/结果)
 ┌─ 扫描节点 (asset-agent) ─────────────────┐
-│  TscanClient 扫描 + 结果上报             │
+│  自研引擎扫描 + 流式结果上报             │
 │  支持 Windows / Linux / ARM64            │
 └──────────────────────────────────────────┘
             ↓ 扫描结果
@@ -417,7 +419,7 @@ flowchart LR
 | Redis | `redis-data` | 缓存 |
 | JWT 密钥 | `./data/files` | 登录凭证 |
 | 升级备份 | `./data/backup` | 系统升级前的二进制 |
-| TscanClient 配置 | `tscan-config` | 扫描结果缓存 |
+| 节点引擎审计库 | `agent-engine-config` | agent 本地 config.db（排障用，v0.0.27.1 由 `agent-tscan-config` 改名） |
 
 
 ## 所有功能介绍
@@ -451,7 +453,7 @@ flowchart LR
 ![alt text](docs/images/image-5.png)
 ![alt text](docs/images/image-6.png)
 1. 下发任务，可以选择节点和配置各项参数，任务成果会在最右侧显示，显示结果随每次任务刷新。
-2. 鉴于目前tscanclient的存活探测功能失效，服务端采用了icmp+tcp的方式先判定存活探测，在探测过程中，依据设定的分片数动态给子节点下发任务，如果暂停再继续，存活探测可以断点续传，下发的没有完成的分片会重新下发。
+2. 引擎的 connect 扫描天然不做 ICMP 预探测，服务端另用 icmp+tcp 先判定存活，在探测过程中，依据设定的分片数动态给子节点下发任务，如果暂停再继续，存活探测可以断点续传，下发的没有完成的分片会重新下发。
 3. 可以编辑扫描策略模板。
 4. 可以设定定时任务，定时任务子页面可以看到每一次定时任务的详情。
 5. 扫描任务中可以便捷的设置各类参数。
@@ -533,7 +535,7 @@ git push origin v0.0.4
 
 产出：
 ```
-ghcr.io/rongsec/cyberlook:v0.0.4         主镜像（后端 + 前端 + agent + TscanClient）
+ghcr.io/rongsec/cyberlook:v0.0.4         主镜像（后端 + 前端 + 分发的 agent 二进制，自研引擎内置）
 ghcr.io/rongsec/cyberlook-updater:v0.0.4 更新边车镜像
 ```
 
@@ -624,8 +626,9 @@ bash update.sh v0.0.3
 
 ## 扫描引擎
 
-v0.0.25 起默认使用自研引擎（`internal/portscan` + `internal/svcid`，全量 FingerprintHub 规则），
-不再依赖 TscanPlus。需要回退时给 agent 设置 `SCAN_ENGINE=tscan`。
+自研引擎是**唯一**引擎（`internal/portscan` + `internal/svcid`，全量 FingerprintHub 规则）。
+v0.0.27 起 TscanPlus 已彻底移除：`TscanClient` 执行链、`tscan-binary` 分发路由、
+`SCAN_ENGINE=tscan` 回退开关全部删除，没有回退路径。
 实测对比见 `docs/端口扫描对拍报告-2026-11-09.md`。
 
 ### ⚠️ agent 必须能读到指纹规则目录（否则静默降级为纯端口扫描）
