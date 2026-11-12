@@ -491,7 +491,11 @@ func clampInflight(conc int) int {
 }
 
 // applyQueueCtrl 把任务级调控状态投影到节点共享 limiter（幂等，可每轮调用）。
-func applyQueueCtrl(c ctrlCmd) {
+//
+// 关键点：**没有调控态时必须把 limiter 复位到节点默认**。否则上一个任务的
+// limit=60 会一直留在共享 limiter 上，把后续任务也按 60 跑（实测：limit 测试后的
+// 下一个 /24 任务耗时从 165s 涨到 520s，就是因为 60 没被复位）。
+func applyQueueCtrl(c ctrlCmd, defConc, defTimeoutMs int) {
 	ctrl := queueLimiterQueueCtrl()
 	if ctrl == nil {
 		return
@@ -507,6 +511,13 @@ func applyQueueCtrl(c ctrlCmd) {
 			ctrl.SetTimeoutMs(c.TimeoutMs)
 		}
 		ctrl.Resume() // 产品语义：设了新值就按新值跑（顺带解除暂停）
+	default:
+		// action=none：复位到节点默认并发/超时（幂等，每轮调用也不会抖）
+		ctrl.SetLimit(clampInflight(defConc))
+		if defTimeoutMs > 0 {
+			ctrl.SetTimeoutMs(defTimeoutMs)
+		}
+		ctrl.Resume()
 	}
 }
 
@@ -637,7 +648,7 @@ func consumeQueue() int {
 			}
 			// node 级持久投影：每轮把任务当前的 pause/limit 状态应用到共享 limiter。
 			// 这样 K=1 与 K>1 语义一致，也不依赖"恰好有单元在心跳"（v0.0.27 实测缺陷）。
-			applyQueueCtrl(c.Cmd)
+			applyQueueCtrl(c.Cmd, c.NodeConf.Concurrency, c.NodeConf.Timeout)
 			units := c.unitList()
 			if len(units) == 0 {
 				if c != nil && c.Paused {
