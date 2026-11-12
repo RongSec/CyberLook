@@ -88,6 +88,15 @@ services:
       # v0.0.27：全量指纹规则目录（镜像内已内置）。想用宿主机上的新规则覆盖镜像自带版本时，
       # 打开下面 volumes 里的只读挂载即可（改规则不用重建镜像）。
       SCAN_RULES_DIR: /app/data/fingerprint
+      # 节点内并行单元数（默认 6）。调大前务必先抬 ulimit（见下），
+      # 否则容器默认 nofile=1024 会把并发顶死在 ~1000 个 socket，表现为单元超时/被隔离。
+      QUEUE_UNIT_CONCURRENCY: "6"
+    ulimits:
+      # 默认 1024 个 fd 只够 ~1000 个在途探针；自研引擎是 connect 扫描，每个探针一个 socket。
+      # 想跑满 800+ pps（需 ≥1600 在途）必须放开。
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
       # 引擎审计库持久化：agent exe 同目录 config/config.db（v0.0.27 起自研引擎写入）
       - agent-tscan-config:/app/config
