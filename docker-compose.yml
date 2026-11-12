@@ -84,9 +84,15 @@ services:
     restart: always
     # network_mode: host
     command: ["/app/scope-agent", "-server", "http://server:18888", "-name", "node-docker-1"]
+    environment:
+      # v0.0.27：全量指纹规则目录（镜像内已内置）。想用宿主机上的新规则覆盖镜像自带版本时，
+      # 打开下面 volumes 里的只读挂载即可（改规则不用重建镜像）。
+      SCAN_RULES_DIR: /app/data/fingerprint
     volumes:
       # 引擎审计库持久化：agent exe 同目录 config/config.db（v0.0.27 起自研引擎写入）
       - agent-tscan-config:/app/config
+      # 可选：宿主机规则目录覆盖镜像内置规则（只读）。不用时保持注释即可。
+      # - ./data/fingerprint:/app/data/fingerprint:ro
     depends_on:
       - server
 
