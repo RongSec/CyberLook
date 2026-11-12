@@ -75,6 +75,12 @@
   墙钟 455s（基线 23.8s，19×）且 probes 25600/25600、open 327 零丢失；pause→0、resume→恢复均 ≤2s。
   单测 `internal/scanner/taskctrl_test.go` 四条（复用不重置 limit / seq 乱序丢弃 / pause-resume+生命周期 /
   16 goroutine 并发投影终值由最大 seq 决定）。
+- **清理 tscan 命名残留（卷改名需注意审计库不自动迁移）**：compose 里 agent 的审计库卷仍叫
+  `agent-tscan-config`（装的其实是自研引擎的 `config.db`），改名 `agent-engine-config`；
+  `.dockerignore` 里匹配 `third_party/TscanPlus-*` 的死规则删除（仓库里已无 third_party 内容，
+  注释却还写着"保留 tscan 供分发下载"）；README 里"扫描引擎 = TscanClient""`SCAN_ENGINE=tscan` 可回退"
+  等失效描述改为自研引擎唯一。**升级注意**：旧卷不会自动迁移，审计库仅用于排障、丢一次可接受；
+  需保留时 `docker run --rm -v <项目>_agent-tscan-config:/from -v <项目>_agent-engine-config:/to alpine cp -a /from/. /to/`。
 - **`.dockerignore` 把指纹规则也排除了，agent 镜像直接构建失败**：`data` 一行把整个 data 目录
   （含 `data/fingerprint`）挡在构建上下文外，`docker compose build agent` 报
   `/data/fingerprint: not found`。改为 `data/*` + `!data/fingerprint`，只排运行期数据。
