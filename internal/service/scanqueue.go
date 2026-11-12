@@ -569,6 +569,9 @@ func NoteSessionUnit(sessionID uint, probesTotal, probesDone int64, ok bool) {
 type QueueTaskRef struct {
 	TaskID   uint   `json:"taskId"`
 	TaskName string `json:"taskName"`
+	// SessionID 该节点在该任务上的会话行（agent_task.batch_no=0）ID。
+	// agent 用它拼审计库 Project（agent-q-<sessionID>-<ip>），据此清理已结束任务的审计行。
+	SessionID uint `json:"sessionId"`
 }
 
 func QueueTasksForNode(nodeID uint) []QueueTaskRef {
@@ -577,7 +580,7 @@ func QueueTasksForNode(nodeID uint) []QueueTaskRef {
 	out := make([]QueueTaskRef, 0, len(tasks))
 	for _, t := range tasks {
 		if taskAllowsNode(&t, nodeID) {
-			out = append(out, QueueTaskRef{TaskID: t.ID, TaskName: t.Name})
+			out = append(out, QueueTaskRef{TaskID: t.ID, TaskName: t.Name, SessionID: sessionOf(t.ID, nodeID)})
 		}
 	}
 	return out

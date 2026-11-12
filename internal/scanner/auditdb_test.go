@@ -134,3 +134,51 @@ func TestEngineDBPathIsExeAdjacent(t *testing.T) {
 		t.Fatalf("路径口径应为 <dir>/config/config.db，实际 %s", p)
 	}
 }
+
+// TestPruneAuditProjects 会话型 Project 的过期清理：
+// 在途会话保留、已结束会话删除、非队列 Project（人工 Default）不动。
+func TestPruneAuditProjects(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(auditSchema); err != nil {
+		t.Fatalf("建表失败: %v", err)
+	}
+	projects := []string{"agent-q-600-10.0.0.1", "agent-q-601-10.0.0.2", "Default", "weird"}
+	for _, p := range projects {
+		for _, tbl := range []string{"ipscan", "urlscan"} {
+			if _, err := db.Exec("INSERT INTO "+tbl+" (Project, Host, Port) VALUES (?, ?, ?)", p, "10.0.0.1", "80"); err != nil {
+				t.Fatalf("插入 %s 失败: %v", tbl, err)
+			}
+		}
+	}
+	db.Close()
+
+	got := AuditProjectsIn(dbPath)
+	if len(got) != len(projects) {
+		t.Fatalf("AuditProjectsIn 期望 %d 个 Project，得到 %v", len(projects), got)
+	}
+
+	removed := PruneAuditProjectsIn(dbPath, "agent-q-", map[uint]bool{601: true})
+	if len(removed) != 1 || removed[0] != "agent-q-600-10.0.0.1" {
+		t.Fatalf("期望只清掉 600 会话，实际 removed=%v", removed)
+	}
+	if n := countRows(t, dbPath, "ipscan", "agent-q-601-10.0.0.2"); n != 1 {
+		t.Fatalf("在途会话 601 的行不该被删，实际 %d", n)
+	}
+	if n := countRows(t, dbPath, "ipscan", "Default"); n != 1 {
+		t.Fatalf("人工 Project 不该被删，实际 %d", n)
+	}
+	if n := countRows(t, dbPath, "urlscan", "agent-q-600-10.0.0.1"); n != 0 {
+		t.Fatalf("过期会话的行应清空，实际 %d", n)
+	}
+	// 空 keep 集合 + 非法前缀：全部不动
+	if r := PruneAuditProjectsIn(dbPath, "", map[uint]bool{}); r != nil {
+		t.Fatalf("空前缀应直接返回 nil，实际 %v", r)
+	}
+	if n := countRows(t, dbPath, "ipscan", "weird"); n != 1 {
+		t.Fatalf("形态不认识的 Project 不该被删，实际 %d", n)
+	}
+}
