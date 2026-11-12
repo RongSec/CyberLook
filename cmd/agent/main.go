@@ -375,6 +375,7 @@ type ctrlCmd struct {
 	Paused      bool   `json:"paused"`
 	Concurrency int    `json:"concurrency"`
 	TimeoutMs   int    `json:"timeoutMs"`
+	Seq         int64  `json:"seq"` // 单调递增版本号，乱序防护（见 scanner.ApplyTaskCtrl）
 }
 
 type claimUnitRef struct {
@@ -419,26 +420,16 @@ func queueUnitConcurrency() int {
 	return k
 }
 
-// queueCtrl 节点级共享限速器（K 路单元扫描共用一份许可池）。
-// 首次 claim 拿到 nodeConf 时初始化；之后所有单元 Reuse，"/control limit" 一次全生效。
-var (
-	queueCtrlMu   sync.Mutex
-	queueCtrlInst *portscan.Controls
-)
-
-func queueLimiter(conc, timeoutMs int) *portscan.Controls {
-	queueCtrlMu.Lock()
-	defer queueCtrlMu.Unlock()
-	if queueCtrlInst == nil {
-		if conc <= 0 {
-			conc = 1000
-		}
-		if timeoutMs <= 0 {
-			timeoutMs = 1500
-		}
-		queueCtrlInst = portscan.NewControls(conc, timeoutMs)
-	}
-	return queueCtrlInst
+// ===== 队列模式的共享限速器 =====
+//
+// K 路单元扫描共用一份 *portscan.Controls，键是 **taskID**（不是单元级 projectID）。
+// 这样任何单元的心跳都能把 pause/limit 投影到同一句柄上——见 scanner.
+// EnsureTaskCtrl / ApplyTaskCtrl 的注释（v0.0.27 实测：按单元键投影时 K>1 下
+// limit 打不上，pause 只冻结了正在 tick 的那个单元）。
+//
+// 生命周期：任务收敛时 scanner.UnregisterTaskCtrl(taskID) 释放，否则会随任务数泄漏。
+func queueLimiter(taskID uint, conc, timeoutMs int) *portscan.Controls {
+	return scanner.EnsureTaskCtrl(taskID, clampInflight(conc), timeoutMs)
 }
 
 // ===== 本机 fd 上限自检（v0.0.27 假阴性防护）=====
@@ -490,42 +481,23 @@ func clampInflight(conc int) int {
 	return conc
 }
 
-// applyQueueCtrl 把任务级调控状态投影到节点共享 limiter（幂等，可每轮调用）。
+// applyQueueCtrl 把任务级调控投影应用到该任务共享 limiter（幂等 + seq 乱序防护）。
 //
-// 关键点：**没有调控态时必须把 limiter 复位到节点默认**。否则上一个任务的
-// limit=60 会一直留在共享 limiter 上，把后续任务也按 60 跑（实测：limit 测试后的
-// 下一个 /24 任务耗时从 165s 涨到 520s，就是因为 60 没被复位）。
-func applyQueueCtrl(c ctrlCmd, defConc, defTimeoutMs int) {
-	ctrl := queueLimiterQueueCtrl()
-	if ctrl == nil {
+// 与旧实现的关键差别：
+//   - 键从"进程级单例"改为 taskID —— 每个任务有独立 ctrl，
+//     上一个任务的 limit=60 **不会**毒化下一个任务（新任务 EnsureTaskCtrl 建新实例）。
+//     所以这里**不再**需要"无调控态时复位到节点默认"那段覆盖式 SetLimit——
+//     正是那段覆盖把刚下发的 limit 盖回节点并发值（v0.0.27 实测缺陷）。
+//   - 只在任务创建时用节点并发定初值，之后速率只由 seq 推进。
+func applyQueueCtrl(taskID uint, c ctrlCmd) {
+	if taskID == 0 {
 		return
 	}
-	switch {
-	case c.Paused || c.Action == "pause":
-		ctrl.Pause()
-	case c.Concurrency > 0 || c.TimeoutMs > 0:
-		if c.Concurrency > 0 {
-			ctrl.SetLimit(clampInflight(c.Concurrency))
-		}
-		if c.TimeoutMs > 0 {
-			ctrl.SetTimeoutMs(c.TimeoutMs)
-		}
-		ctrl.Resume() // 产品语义：设了新值就按新值跑（顺带解除暂停）
-	default:
-		// action=none：复位到节点默认并发/超时（幂等，每轮调用也不会抖）
-		ctrl.SetLimit(clampInflight(defConc))
-		if defTimeoutMs > 0 {
-			ctrl.SetTimeoutMs(defTimeoutMs)
-		}
-		ctrl.Resume()
-	}
-}
-
-// queueLimiterQueueCtrl 取已初始化的节点级 limiter（未初始化返回 nil）。
-func queueLimiterQueueCtrl() *portscan.Controls {
-	queueCtrlMu.Lock()
-	defer queueCtrlMu.Unlock()
-	return queueCtrlInst
+	scanner.ApplyTaskCtrl(taskID, scanner.ScanCtl{
+		Action:      c.Action,
+		Concurrency: c.Concurrency,
+		TimeoutMs:   c.TimeoutMs,
+	}, c.Seq)
 }
 
 func queueLoop() {
@@ -646,9 +618,9 @@ func consumeQueue() int {
 				}
 				break
 			}
-			// node 级持久投影：每轮把任务当前的 pause/limit 状态应用到共享 limiter。
-			// 这样 K=1 与 K>1 语义一致，也不依赖"恰好有单元在心跳"（v0.0.27 实测缺陷）。
-			applyQueueCtrl(c.Cmd, c.NodeConf.Concurrency, c.NodeConf.Timeout)
+			// 任务级持久投影：把任务当前 pause/limit 状态应用到该任务共享 limiter。
+			// 键是 taskID（K 路单元共用一个 ctrl），带 seq 乱序防护；幂等，可每轮调用。
+			applyQueueCtrl(t.TaskID, c.Cmd)
 			units := c.unitList()
 			if len(units) == 0 {
 				if c != nil && c.Paused {
@@ -685,6 +657,10 @@ func consumeQueue() int {
 		if stopped {
 			log.Printf("[queue] 任务 #%d 已被取消，退出领取循环", t.TaskID)
 		}
+		// 任务收敛（完成/取消/本轮领空）→ 释放任务级共享 limiter，避免句柄泄漏。
+		// 若任务之后又被领取，EnsureTaskCtrl 会用节点默认并发重建，pause/limit 由
+		// claim 响应里的 cmd 重新投影（幂等，不会丢）。
+		scanner.UnregisterTaskCtrl(t.TaskID)
 	}
 	return consumed
 }
@@ -750,10 +726,10 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		Modules:   task.Modules, Finger: task.Finger, Ports: ports,
 		Thread: thread, Timeout: timeout, NoPing: task.NoPing, NoSmart: task.NoSmart,
 		ExtraArgs: task.ExtraArgs,
-		// K 路单元共享同一台机器的许可池：并发总量由它统一约束，
-		// "/control limit" 与 pause 一次对所有在途单元生效（不会被后启动单元覆盖）。
+		// K 路单元共享同一份任务级许可池：并发总量由它统一约束，
+		// "/control limit" 与 pause 一次对所有在途单元生效（键=taskID，不会被后启动单元覆盖）。
 		// 并发先按本机 nofile 钳一次，避免把机器推到 fd 墙（那会产出假阴性）。
-		Ctrl: queueLimiter(clampInflight(thread), timeout),
+		Ctrl: queueLimiter(taskID, thread, timeout),
 	}
 	log.Printf("[queue] 单元领取成功：任务 #%d IP=%s（探针 %d，会话 #%d）", taskID, u.IP, u.ProbesTotal, at)
 
@@ -792,6 +768,7 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		tk := time.NewTicker(2 * time.Second)
 		defer tk.Stop()
 		appliedPaused := false
+		lastCtrlSeq := int64(-1) // 已记录日志的调控版本号（避免 K 路重复打日志）
 		n := 0
 		for range tk.C {
 			mu.Lock()
@@ -823,21 +800,30 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 				return
 			}
 			cc := r.Cmd
-			switch {
-			case cc.Paused || cc.Action == "pause":
-				if scanner.ControlScan(proj, scanner.ScanCtl{Action: "pause"}) && !appliedPaused {
-					log.Printf("[queue] 会话 #%d 调控：扫描已暂停", at)
-					appliedPaused = true
-				}
-			case cc.Action == "limit":
-				if scanner.ControlScan(proj, scanner.ScanCtl{Action: "limit", Concurrency: cc.Concurrency, TimeoutMs: cc.TimeoutMs}) && appliedPaused {
-					log.Printf("[queue] 会话 #%d 调控：限速 %d/%dms 并解除暂停", at, cc.Concurrency, cc.TimeoutMs)
+			action := cc.Action
+			if cc.Paused {
+				action = "pause"
+			}
+			// 键=taskID：K 路共用同一个 ctrl，任一单元的心跳都能冻结/调速全部在途单元。
+			// seq 单调：晚到的老心跳（seq 更小）被丢弃，不会把新速率盖回旧值。
+			if scanner.ApplyTaskCtrl(taskID, scanner.ScanCtl{
+				Action: action, Concurrency: cc.Concurrency, TimeoutMs: cc.TimeoutMs}, cc.Seq) {
+				switch action {
+				case "pause":
+					if !appliedPaused {
+						log.Printf("[queue] 会话 #%d 调控：全部在途单元已暂停（task#%d seq=%d）", at, taskID, cc.Seq)
+						appliedPaused = true
+					}
+				case "limit":
+					if cc.Seq != lastCtrlSeq {
+						log.Printf("[queue] 会话 #%d 调控：限速 limit=%d 超时=%dms seq=%d（下一探针生效）",
+							at, cc.Concurrency, cc.TimeoutMs, cc.Seq)
+						lastCtrlSeq = cc.Seq
+					}
 					appliedPaused = false
-				}
-			default:
-				if appliedPaused {
-					if scanner.ControlScan(proj, scanner.ScanCtl{Action: "resume"}) {
-						log.Printf("[queue] 会话 #%d 调控：扫描已恢复", at)
+				default:
+					if appliedPaused {
+						log.Printf("[queue] 会话 #%d 调控：扫描已恢复 seq=%d", at, cc.Seq)
 						appliedPaused = false
 					}
 				}

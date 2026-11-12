@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -130,6 +131,128 @@ func ControlScan(projectID string, ctl ScanCtl) bool {
 		h.ctrl.Resume() // 产品语义：设了新值就按新值跑（顺带解除暂停）
 	case "cancel":
 		h.cancel()
+	default:
+		return false
+	}
+	return true
+}
+
+// ===== 队列模式：taskID 级共享 limiter 注册表 =====
+//
+// 为什么必须按 taskID 而不是 projectID 索引：
+//
+// 队列模式下 K 个单元（goroutine）并行扫同一个任务，它们共用一份
+// *portscan.Controls（ScanOptions.Ctrl）。而上面的 running 表按**单元级**
+// ProjectID 索引（agent-q-<session>-<ip>），ControlScan(proj) 只能命中"某一个
+// 单元"的句柄。K=1 时两者恰好重合（所以单单元测 limit 是好的），但 K>1 时
+// pause/limit 必须打到 K 路共用的那一个 ctrl 上——用单元键去投影，就会出现
+// "旋钮在最该生效的场景里失效"（v0.0.27 实测：K=6 下 limit 打不上）。
+//
+// 这里单独用 taskID 做键，让**任何**单元的心跳都能投影到同一句柄，
+// 既不依赖"恰好有单元 tick"，也不会漏掉某个单元。seq 单调递增做乱序防护：
+// K 路并发下老心跳晚到会把新值盖回去，seq 更小的直接丢弃。
+var (
+	taskCtrlMu sync.RWMutex
+	taskCtrls  = make(map[uint]*taskCtrlHandle)
+)
+
+type taskCtrlHandle struct {
+	ctrl    *portscan.Controls
+	lastSeq int64 // 已应用的最大调控版本号（乱序防护）
+}
+
+// EnsureTaskCtrl 返回任务级共享 limiter；**仅首次**调用用 conc/timeoutMs 建初值，
+// 之后一律复用已有实例。
+//
+// 关键约束：复用路径上**禁止**写 SetLimit——那正是 v0.0.27 "limit 只生效一瞬间
+// 又被盖回节点并发值"的直接原因（每轮 claim 都拿节点默认并发重跑一遍 SetLimit）。
+// 创建即定初值，之后的速率只由 ApplyTaskCtrl 依据 seq 推进。
+func EnsureTaskCtrl(taskID uint, conc, timeoutMs int) *portscan.Controls {
+	if taskID == 0 {
+		return nil
+	}
+	taskCtrlMu.Lock()
+	defer taskCtrlMu.Unlock()
+	if h, ok := taskCtrls[taskID]; ok {
+		return h.ctrl
+	}
+	if conc <= 0 {
+		conc = 1000
+	}
+	if timeoutMs <= 0 {
+		timeoutMs = 1500
+	}
+	h := &taskCtrlHandle{ctrl: portscan.NewControls(conc, timeoutMs)}
+	taskCtrls[taskID] = h
+	return h.ctrl
+}
+
+// TaskCtrl 取任务级共享 limiter（不存在返回 nil）。
+func TaskCtrl(taskID uint) *portscan.Controls {
+	taskCtrlMu.RLock()
+	defer taskCtrlMu.RUnlock()
+	if h, ok := taskCtrls[taskID]; ok {
+		return h.ctrl
+	}
+	return nil
+}
+
+// UnregisterTaskCtrl 任务收敛（done/failed/stopped/删除）时释放句柄。
+//
+// 不释放会随任务数泄漏：Controls 内部有 sync.Cond 等待者，任务跑几轮就攒一批
+// ctrl + 挂起的 goroutine。任务结束后下一次 claim 会用 EnsureTaskCtrl 重新建。
+func UnregisterTaskCtrl(taskID uint) {
+	if taskID == 0 {
+		return
+	}
+	taskCtrlMu.Lock()
+	delete(taskCtrls, taskID)
+	taskCtrlMu.Unlock()
+}
+
+// ApplyTaskCtrl 把一条心跳/claim 投影应用到任务级共享 limiter（幂等 + 乱序防护）。
+//
+// seq 语义：服务端每次状态变更自增，投影里带回。收到 seq 小于已应用值的
+// （老心跳晚到）直接丢弃，避免"偶发回弹"的旋钮。seq<=0 视为老服务端/本地调用，
+// 不做乱序判断（兼容）。
+//
+//   - pause   → Pause()（K 路同时冻结，在途探针自然结束）
+//   - limit   → SetLimit+SetTimeoutMs，并 Resume（设了新值就按新值跑）
+//   - resume / none / "" → Resume()（幂等：未暂停时是 no-op；保证 pause 后可收敛）
+//
+// 返回 false 表示句柄不存在或指令因乱序被丢弃。
+func ApplyTaskCtrl(taskID uint, ctl ScanCtl, seq int64) bool {
+	taskCtrlMu.Lock()
+	h, ok := taskCtrls[taskID]
+	if !ok {
+		taskCtrlMu.Unlock()
+		return false
+	}
+	if seq > 0 && seq < h.lastSeq {
+		last := h.lastSeq
+		taskCtrlMu.Unlock()
+		log.Printf("[ctrl] 任务 #%d 丢弃乱序心跳 seq=%d（已应用 %d）", taskID, seq, last)
+		return false
+	}
+	if seq > h.lastSeq {
+		h.lastSeq = seq
+	}
+	ctrl := h.ctrl
+	taskCtrlMu.Unlock()
+
+	switch ctl.Action {
+	case "pause":
+		ctrl.Pause()
+	case "limit":
+		if ctl.Concurrency > 0 {
+			ctrl.SetLimit(ctl.Concurrency)
+		}
+		if ctl.TimeoutMs > 0 {
+			ctrl.SetTimeoutMs(ctl.TimeoutMs)
+		}
+		ctrl.Resume()
+	case "resume", "none", "":
+		ctrl.Resume()
 	default:
 		return false
 	}
