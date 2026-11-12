@@ -168,6 +168,26 @@ WHERE u.id = (
 )
 RETURNING ip, probes_total, session_id`
 
+// claimSkipLockedBatch 批量原子领取：一次 SQL 领最多 ? 个 pending 单元。
+// 与单条版本同语义（SKIP LOCKED 保证并发执行方之间不重叠），只是把「领一个」
+// 换成「领一批」——agent 单次往返换来 K 个在途单元，端到端吞吐提升 K 倍，
+// 往返开销与 UDP/TCP 握手次数都摊薄。LIMIT 由调用方钳制（1..MaxClaimBatch）。
+const claimSkipLockedBatch = `
+UPDATE task_units u
+SET status = 'leased', node_id = ?, session_id = ?,
+    lease_expire = ?, attempts = u.attempts + 1, updated_at = ?
+WHERE u.id IN (
+    SELECT id FROM task_units
+    WHERE task_id = ? AND status = 'pending'
+    ORDER BY id
+    FOR UPDATE SKIP LOCKED
+    LIMIT ?
+)
+RETURNING ip, probes_total, session_id`
+
+// MaxClaimBatch 单次批量领取上限（防一个节点一口气锁走整段队列）。
+const MaxClaimBatch = 32
+
 type claimRow struct {
 	IP          string `gorm:"column:ip"`
 	ProbesTotal int64  `gorm:"column:probes_total"`
@@ -207,6 +227,41 @@ func ClaimUnit(taskID, nodeID, sessionID uint) (*QueueUnit, error) {
 	return &QueueUnit{IP: row.IP, ProbesTotal: row.ProbesTotal, SessionID: sessionID, NodeID: nodeID}, nil
 }
 
+// ClaimUnits 批量领取最多 n 个待扫单元（n 钳制到 1..MaxClaimBatch）。
+// 语义与 ClaimUnit 完全一致：暂停 → ErrQueuePaused；不可领/领空 → 空切片。
+// 单次 SQL 完成，SKIP LOCKED 保证多执行方并发下不重复。
+func ClaimUnits(taskID, nodeID, sessionID uint, n int) ([]QueueUnit, error) {
+	if n <= 0 {
+		n = 1
+	}
+	if n > MaxClaimBatch {
+		n = MaxClaimBatch
+	}
+	var task model.ScanTask
+	if err := config.DB.Select("id", "status", "queue_mode").First(&task, taskID).Error; err != nil {
+		return nil, err
+	}
+	if QueuePaused(&task) {
+		return nil, ErrQueuePaused
+	}
+	if task.Status != "running" || !task.QueueMode {
+		return nil, nil
+	}
+	now := time.Now()
+	var rows []claimRow
+	if err := config.DB.Raw(claimSkipLockedBatch, nodeID, sessionID, now.Add(LeaseTTL), now, taskID, n).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]QueueUnit, 0, len(rows))
+	for _, r := range rows {
+		if r.IP == "" {
+			continue
+		}
+		out = append(out, QueueUnit{IP: r.IP, ProbesTotal: r.ProbesTotal, SessionID: sessionID, NodeID: nodeID})
+	}
+	return out, nil
+}
+
 // ClaimForNode agent 领取入口：校验队列任务归属后建/复用该节点的会话再原子领取。
 // 返回 (nil, nil) = 该任务此刻对本节点不可领（非队列/非 running/不允许该节点/无 pending）；
 // (nil, ErrQueuePaused) = 暂停停领。
@@ -229,6 +284,29 @@ func ClaimForNode(taskID, nodeID uint, nodeName string) (*QueueUnit, error) {
 		return nil, err
 	}
 	return ClaimUnit(taskID, nodeID, sessID)
+}
+
+// ClaimForNodeBatch 批量版 ClaimForNode：校验归属 + 建/复用会话后一次领最多 n 个单元。
+// 语义与单个版本一致：(nil,nil) = 本节点此刻不可领；ErrQueuePaused = 暂停停领。
+func ClaimForNodeBatch(taskID, nodeID uint, nodeName string, n int) ([]QueueUnit, error) {
+	var task model.ScanTask
+	if err := config.DB.First(&task, taskID).Error; err != nil {
+		return nil, nil
+	}
+	if !task.QueueMode || !taskAllowsNode(&task, nodeID) {
+		return nil, nil
+	}
+	if QueuePaused(&task) {
+		return nil, ErrQueuePaused
+	}
+	if task.Status != "running" {
+		return nil, nil
+	}
+	sessID, err := EnsureSession(taskID, nodeID, nodeName)
+	if err != nil {
+		return nil, err
+	}
+	return ClaimUnits(taskID, nodeID, sessID, n)
 }
 
 // PeekQueueClaimable 领取前置探测：任务是否还有可领单元（含过期租约即时回收）。

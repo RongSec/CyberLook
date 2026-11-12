@@ -49,12 +49,16 @@ func AgentQueueTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tasks": out})
 }
 
-// AgentClaimUnit 原子领取一个单 IP 扫描单元。
-// body: {"nodeId":n}；响应 hasUnit=false（队列空/任务不可领/已暂停）或单元+任务配置+会话。
+// AgentClaimUnit 原子领取扫描单元（v0.0.27 支持批量）。
+// body: {"nodeId":n,"n":k}；k 省略=1。响应：
+//
+//	hasUnit=true → units:[{ip,probesTotal,sessionId},...]（旧字段 unit 仍返回第一个，兼容老 agent）
+//	hasUnit=false → 队列空 / 任务不可领 / 已暂停（paused 标记让 agent 退避而不是退出）
 func AgentClaimUnit(c *gin.Context) {
 	taskID, _ := strconv.Atoi(c.Param("id"))
 	var req struct {
 		NodeID uint `json:"nodeId"`
+		N      int  `json:"n"` // 期望领取个数（服务端钳制 1..MaxClaimBatch）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.NodeID == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 nodeId"})
@@ -70,13 +74,16 @@ func AgentClaimUnit(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "节点凭据无效"})
 		return
 	}
+	if req.N <= 0 {
+		req.N = 1
+	}
 
-	u, err := service.ClaimForNode(uint(taskID), req.NodeID, node.Name)
+	units, err := service.ClaimForNodeBatch(uint(taskID), req.NodeID, node.Name, req.N)
 	if err != nil && !errors.Is(err, service.ErrQueuePaused) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if u == nil {
+	if len(units) == 0 {
 		// 暂停与空队列都回 hasUnit=false；agent 侧按 paused 退避节奏
 		c.JSON(http.StatusOK, gin.H{"hasUnit": false, "paused": errors.Is(err, service.ErrQueuePaused)})
 		return
@@ -84,11 +91,16 @@ func AgentClaimUnit(c *gin.Context) {
 	// 任务配置 + 节点参数（等价 AgentTaskDetail 的载荷，省一次往返）
 	var task model.ScanTask
 	config.DB.First(&task, taskID)
-	c.JSON(http.StatusOK, gin.H{
-		"hasUnit": true,
-		"unit": gin.H{
+	list := make([]gin.H, 0, len(units))
+	for _, u := range units {
+		list = append(list, gin.H{
 			"ip": u.IP, "probesTotal": u.ProbesTotal, "sessionId": u.SessionID,
-		},
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"hasUnit":  true,
+		"units":    list,
+		"unit":     list[0], // 兼容只认 unit 的老 agent
 		"task":     task,
 		"nodeConf": gin.H{"timeout": node.Timeout, "concurrency": node.Concurrency},
 	})

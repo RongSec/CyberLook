@@ -31,6 +31,13 @@
 
 ### 优化
 
+- **节点内并行单元（K=6，`QUEUE_UNIT_CONCURRENCY` 可调 1~32）**：IP 租约队列原来
+  「领 1 个单元 → 扫完 → 再领」，单 IP 的 2s 级延迟直接决定节点吞吐（实测 47 pps，
+  /26 段要 9 分钟）。现在一个节点同时持有 K 个在途单元、单次 claim 批量领 K 个
+  （服务端一条 `UPDATE … IN (SELECT … FOR UPDATE SKIP LOCKED LIMIT n)`，仍是原子），
+  端到端回到分钟内的秒级量级。**K 路扫描共用同一个限速器**
+  （`scanner.ScanOptions.Ctrl`），所以 K 只放大租约在途数、不放大发包速率，
+  `/control limit` 与暂停对全部在途单元同时生效。
 - **取消即保留部分结果**：节点收到取消指令后引擎立即收敛，取消前已识别的批次
   照常 flush 入库，不再丢弃整轮扫描（旧 tscan 链路 kill 进程即全丢）。
 - 心跳/进度、SSE 唤醒、分片调度等控制面协议不变；`/progress` 响应新增 `cmd`

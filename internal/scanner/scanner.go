@@ -48,6 +48,16 @@ type ScanOptions struct {
 	NoSmart   bool   // 兼容字段：自研按给定端口全扫
 	Finger    string // "tiny"=不做主动探针；"all"/空=全量
 	ExtraArgs string // 已废弃（tscan 命令行参数），保留兼容存储
+
+	// Ctrl 共享并发限速器（可选）。
+	//
+	// 队列模式下一个节点会并行跑 K 个单元扫描（QUEUE_UNIT_CONCURRENCY，默认 6）。
+	// 若每个单元各建一个限速器，机器总在途探针数就是 K×thread，网卡/防火墙会先炸，
+	// "/control limit" 也只对其中一路生效。传同一个 *portscan.Controls 进来后：
+	//   - K 路扫描共用一份许可池 → 总在途探针恒 ≤ 当前 limit（K 只影响租约在途数）
+	//   - 一次 SetLimit/Pause 对所有路同时生效（全局调速语义）
+	// 传 nil = 老行为（每次扫描自建限速器，按 opts.Thread 初始化）。
+	Ctrl *portscan.Controls
 }
 
 // LogFunc 实时日志回调（isProgress 表示是否为进度条行）

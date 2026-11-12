@@ -136,7 +136,16 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	// 先注册再干任何慢活——目标展开/规则载入——调用方重试必然命中，无竞态）。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ctrl := portscan.NewControls(4096, 1500) // 初值随后按任务参数 SetLimit/SetTimeoutMs 校正
+	// 共享限速器（队列多 worker 模式）：K 路扫描共用一份许可池，
+	// 由调用方初始化并负责 SetLimit/SetTimeoutMs，这里**不再覆盖**，
+	// 否则后启动的单元会把全局并发改回自己的 thread。
+	shared := opts.Ctrl != nil
+	var ctrl *portscan.Controls
+	if shared {
+		ctrl = opts.Ctrl
+	} else {
+		ctrl = portscan.NewControls(4096, 1500) // 初值随后按任务参数 SetLimit/SetTimeoutMs 校正
+	}
 	if opts.ProjectID != "" {
 		registerScan(opts.ProjectID, &scanHandle{cancel: cancel, ctrl: ctrl})
 		defer unregisterScan(opts.ProjectID)
@@ -169,10 +178,13 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	if timeoutMs <= 0 {
 		timeoutMs = 1500
 	}
-	// 按任务参数校正调控句柄初值（此后 /control 可继续动态改）
-	ctrl.SetLimit(conc)
-	if timeoutMs >= portscan.MinTimeoutMs {
-		ctrl.SetTimeoutMs(timeoutMs)
+	// 按任务参数校正调控句柄初值（此后 /control 可继续动态改）；
+	// 共享限速器时由持有者初始化，这里只读不写。
+	if !shared {
+		ctrl.SetLimit(conc)
+		if timeoutMs >= portscan.MinTimeoutMs {
+			ctrl.SetTimeoutMs(timeoutMs)
+		}
 	}
 
 	// ===== ScanOptions 语义映射 =====

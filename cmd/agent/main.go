@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"asset-platform/internal/portscan"
 	"asset-platform/internal/scanner"
 	"asset-platform/internal/version"
 )
@@ -360,16 +361,78 @@ type queueTaskRef struct {
 type claimResp struct {
 	HasUnit bool `json:"hasUnit"`
 	Paused  bool `json:"paused"`
-	Unit    *struct {
-		IP          string `json:"ip"`
-		ProbesTotal int64  `json:"probesTotal"`
-		SessionID   uint   `json:"sessionId"`
-	} `json:"unit"`
-	Task     scanTask `json:"task"`
+	// Units 批量领取结果（v0.0.27.1 起）；老服务端只回 unit，这里做了兜底。
+	Units    []claimUnitRef `json:"units"`
+	Unit     *claimUnitRef  `json:"unit"`
+	Task     scanTask       `json:"task"`
 	NodeConf struct {
 		Timeout     int `json:"timeout"`
 		Concurrency int `json:"concurrency"`
 	} `json:"nodeConf"`
+}
+
+type claimUnitRef struct {
+	IP          string `json:"ip"`
+	ProbesTotal int64  `json:"probesTotal"`
+	SessionID   uint   `json:"sessionId"`
+}
+
+// units 取本次领取到的单元列表（兼容只有 unit 的老服务端）。
+func (c *claimResp) unitList() []claimUnitRef {
+	if c == nil {
+		return nil
+	}
+	if len(c.Units) > 0 {
+		return c.Units
+	}
+	if c.Unit != nil && c.Unit.IP != "" {
+		return []claimUnitRef{*c.Unit}
+	}
+	return nil
+}
+
+// queueUnitConcurrency 节点内并行单元数 K（env QUEUE_UNIT_CONCURRENCY，默认 6，钳制 1..32）。
+//
+// 为什么需要 K>1：旧实现"领 1 个 → 扫完 → 再领"，每个单元 1 个 IP×100 端口 ≈2.1s
+// （受单 IP 内最慢探针的超时支配），节点吞吐被卡在 ~47 pps，/26 段要 9 分钟。
+// K 路并行后同样的单 IP 延迟不再是端到端瓶颈，只是租约在途数变多；
+// 发包总量由共享限速器（scanner.ScanOptions.Ctrl）统一约束，K 不会放大流量。
+func queueUnitConcurrency() int {
+	k := 6
+	if v := strings.TrimSpace(os.Getenv("QUEUE_UNIT_CONCURRENCY")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			k = n
+		}
+	}
+	if k < 1 {
+		k = 1
+	}
+	if k > 32 {
+		k = 32
+	}
+	return k
+}
+
+// queueCtrl 节点级共享限速器（K 路单元扫描共用一份许可池）。
+// 首次 claim 拿到 nodeConf 时初始化；之后所有单元 Reuse，"/control limit" 一次全生效。
+var (
+	queueCtrlMu   sync.Mutex
+	queueCtrlInst *portscan.Controls
+)
+
+func queueLimiter(conc, timeoutMs int) *portscan.Controls {
+	queueCtrlMu.Lock()
+	defer queueCtrlMu.Unlock()
+	if queueCtrlInst == nil {
+		if conc <= 0 {
+			conc = 1000
+		}
+		if timeoutMs <= 0 {
+			timeoutMs = 1500
+		}
+		queueCtrlInst = portscan.NewControls(conc, timeoutMs)
+	}
+	return queueCtrlInst
 }
 
 func queueLoop() {
@@ -461,34 +524,82 @@ func consumeQueue() int {
 	_ = json.NewDecoder(resp.Body).Decode(&payload)
 	resp.Body.Close()
 
+	K := queueUnitConcurrency()
 	consumed := 0
 	for _, t := range payload.Tasks {
 		if !t.Claimable {
 			continue
 		}
+		done := make(chan struct{}, K)
+		inflight := 0
+		stopped := false // 服务端取消该任务 → 不再补位，等在途跑完即退
 		for {
-			c, err := claimUnit(t.TaskID)
-			if err != nil || c == nil || !c.HasUnit || c.Unit == nil {
-				if c != nil && c.Paused {
-					log.Printf("[queue] 任务 #%d 已暂停，停领新单元（当前节点其余任务继续）", t.TaskID)
-				}
-				break // 这个任务暂时没活（或暂停）
-			}
-			stopTask := runQueueUnit(t.TaskID, c)
-			consumed++
-			// 服务端取消（任务停止/被删除）：立刻退出该任务的领取循环，
-			// 不要再 claim 下一个单元（删除场景下任务行都已在删的路上）
-			if stopTask {
-				log.Printf("[queue] 任务 #%d 已被取消，退出领取循环", t.TaskID)
+			if stopped && inflight == 0 {
 				break
 			}
+			want := K - inflight
+			if want <= 0 {
+				<-done // 等任一单元收工再补位
+				inflight--
+				continue
+			}
+			c, err := claimUnits(t.TaskID, want)
+			if err != nil {
+				log.Printf("[queue] 任务 #%d 领取失败: %v", t.TaskID, err)
+				if inflight > 0 { // 别空转打服务端：没活就等在途收工
+					<-done
+					inflight--
+					continue
+				}
+				break
+			}
+			units := c.unitList()
+			if len(units) == 0 {
+				if c != nil && c.Paused {
+					log.Printf("[queue] 任务 #%d 已暂停，停领新单元（在途单元跑完即止）", t.TaskID)
+				}
+				if inflight > 0 {
+					<-done
+					inflight--
+					continue
+				}
+				break
+			}
+			for i := range units {
+				u := units[i]
+				inflight++
+				go func(u claimUnitRef) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[queue] 单元 %s 执行异常: %v", u.IP, r)
+						}
+						done <- struct{}{}
+					}()
+					if runQueueUnit(t.TaskID, c, u) {
+						stopped = true // 取消：多 worker 下幂等——在途跑完就不再补位
+					}
+				}(u)
+			}
+			consumed += len(units)
+		}
+		for inflight > 0 { // 收尾：等在途全部落盘
+			<-done
+			inflight--
+		}
+		if stopped {
+			log.Printf("[queue] 任务 #%d 已被取消，退出领取循环", t.TaskID)
 		}
 	}
 	return consumed
 }
 
-func claimUnit(taskID uint) (*claimResp, error) {
-	body, _ := json.Marshal(map[string]interface{}{"nodeId": nodeID})
+// claimUnits 一次批量领取最多 n 个单元（服务端一条 SQL 领完，SKIP LOCKED 原子）。
+// n=1 时与旧的单领行为等价；老服务端不认 n 也没关系——它会回 1 个（unit 字段兜底）。
+func claimUnits(taskID uint, n int) (*claimResp, error) {
+	if n <= 0 {
+		n = 1
+	}
+	body, _ := json.Marshal(map[string]interface{}{"nodeId": nodeID, "n": n})
 	resp, err := agentReq("POST", fmt.Sprintf("%s/api/agent/tasks/%d/claim", *serverURL, taskID), body)
 	if err != nil {
 		return nil, err
@@ -511,9 +622,11 @@ func claimUnit(taskID uint) (*claimResp, error) {
 //
 // 返回值 stopTask=true 表示服务端已取消该任务（停止/删除），调用方应立刻退出
 // 该任务的领取循环，不要再 claim 下一个单元。
-func runQueueUnit(taskID uint, c *claimResp) (stopTask bool) {
-	u := c.Unit
-	at := uint(c.Unit.SessionID)
+func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
+	at := u.SessionID
+	if at == 0 {
+		at = c.Unit.SessionID
+	}
 	task := c.Task
 	conf := c.NodeConf
 	thread := conf.Concurrency
@@ -541,6 +654,9 @@ func runQueueUnit(taskID uint, c *claimResp) (stopTask bool) {
 		Modules:   task.Modules, Finger: task.Finger, Ports: ports,
 		Thread: thread, Timeout: timeout, NoPing: task.NoPing, NoSmart: task.NoSmart,
 		ExtraArgs: task.ExtraArgs,
+		// K 路单元共享同一台机器的许可池：并发总量由它统一约束，
+		// "/control limit" 与 pause 一次对所有在途单元生效（不会被后启动单元覆盖）。
+		Ctrl: queueLimiter(thread, timeout),
 	}
 	log.Printf("[queue] 单元领取成功：任务 #%d IP=%s（探针 %d，会话 #%d）", taskID, u.IP, u.ProbesTotal, at)
 
