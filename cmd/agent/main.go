@@ -474,8 +474,14 @@ func consumeQueue() int {
 				}
 				break // 这个任务暂时没活（或暂停）
 			}
-			runQueueUnit(t.TaskID, c)
+			stopTask := runQueueUnit(t.TaskID, c)
 			consumed++
+			// 服务端取消（任务停止/被删除）：立刻退出该任务的领取循环，
+			// 不要再 claim 下一个单元（删除场景下任务行都已在删的路上）
+			if stopTask {
+				log.Printf("[queue] 任务 #%d 已被取消，退出领取循环", t.TaskID)
+				break
+			}
 		}
 	}
 	return consumed
@@ -502,7 +508,10 @@ func claimUnit(taskID uint) (*claimResp, error) {
 
 // runQueueUnit 执行一个单 IP 单元（与 runAgentTask 同构：取消重试 StopScan、
 // cmd 幂等投影、进度/结果流式上报；差别只在目标=1 个 IP 且心跳带 ip 续租）。
-func runQueueUnit(taskID uint, c *claimResp) {
+//
+// 返回值 stopTask=true 表示服务端已取消该任务（停止/删除），调用方应立刻退出
+// 该任务的领取循环，不要再 claim 下一个单元。
+func runQueueUnit(taskID uint, c *claimResp) (stopTask bool) {
 	u := c.Unit
 	at := uint(c.Unit.SessionID)
 	task := c.Task
@@ -708,6 +717,7 @@ func runQueueUnit(taskID uint, c *claimResp) {
 		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "done")
 		log.Printf("[queue] 单元 %s 完成：%d 探针 %d 条结果", u.IP, fd, len(results))
 	}
+	return wasCancelled
 }
 
 // reportUnitProgress 队列心跳（带 ip）：续租 + 单元读数；返回取消/调控指令。
