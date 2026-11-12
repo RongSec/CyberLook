@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -301,6 +302,7 @@ func main() {
 	// 审计落库仅 agent 进程启用：config/config.db 与 scope-agent 同目录
 	// （下载 exe 到哪、审计库就生成到哪；不可写自动回退 ./config/）
 	scanner.EnableAudit()
+	checkNoFileLimit()
 	// 所有日志带主机名前缀，便于在中心端区分是哪个节点在执行
 	if hn, err := os.Hostname(); err == nil && hn != "" {
 		log.SetPrefix("[" + hn + "] ")
@@ -433,6 +435,55 @@ func queueLimiter(conc, timeoutMs int) *portscan.Controls {
 		queueCtrlInst = portscan.NewControls(conc, timeoutMs)
 	}
 	return queueCtrlInst
+}
+
+// ===== 本机 fd 上限自检（v0.0.27 假阴性防护）=====
+//
+// 自研引擎是 connect 扫描：**每个在途探针占一个 socket**。容器默认 nofile=1024 时，
+// 一旦在途探针数超过上限，dial 会立刻返回 EMFILE——如果按"连接失败=端口关闭"处理，
+// 扫描器就会对外输出"该主机没有开放端口"（假阴性，比慢一百倍更致命）。
+// 所以启动时就把"安全在途上限"算出来，并把默认并发钳到安全值。
+//
+// 规则：
+//
+//	soft < 2048  → 醒目 WARN，默认并发钳到 soft-256（留 256 个给日志/DB/SSH 等）
+//	soft >= 8192 → 默认并发提到 1500（足够跑满 800+ pps）
+//	其余          → 默认并发 = min(1500, soft-256)，不低于 200
+var safeInflight int = 800
+
+func checkNoFileLimit() {
+	soft, err := nofileSoft()
+	if err != nil {
+		log.Printf("[agent] 警告：读取 RLIMIT_NOFILE 失败（%v），按 nofile=1024 保守处理", err)
+		safeInflight = 700
+		return
+	}
+	switch {
+	case soft < 2048:
+		safeInflight = soft - 256
+		if safeInflight < 200 {
+			safeInflight = 200
+		}
+		log.Printf("[agent] ⚠️ nofile=%d，高并发会触发假阴性风险（fd 耗尽的探针会被误判为端口关闭）；"+
+			"已将扫描在途上限钳到 %d。生产环境请 `ulimits.nofile: 65535`", soft, safeInflight)
+	case soft >= 8192:
+		safeInflight = 1500
+		log.Printf("[agent] nofile=%d ≥ 8192，扫描在途上限按 %d 运行（足以跑满 800+ pps）", soft, safeInflight)
+	default:
+		safeInflight = soft - 256
+		if safeInflight > 1500 {
+			safeInflight = 1500
+		}
+		log.Printf("[agent] nofile=%d，扫描在途上限按 %d 运行", soft, safeInflight)
+	}
+}
+
+// clampInflight 把任务/节点配置的并发钳到本机安全在途上限。
+func clampInflight(conc int) int {
+	if conc <= 0 || conc > safeInflight {
+		return safeInflight
+	}
+	return conc
 }
 
 func queueLoop() {
@@ -656,7 +707,8 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		ExtraArgs: task.ExtraArgs,
 		// K 路单元共享同一台机器的许可池：并发总量由它统一约束，
 		// "/control limit" 与 pause 一次对所有在途单元生效（不会被后启动单元覆盖）。
-		Ctrl: queueLimiter(thread, timeout),
+		// 并发先按本机 nofile 钳一次，避免把机器推到 fd 墙（那会产出假阴性）。
+		Ctrl: queueLimiter(clampInflight(thread), timeout),
 	}
 	log.Printf("[queue] 单元领取成功：任务 #%d IP=%s（探针 %d，会话 #%d）", taskID, u.IP, u.ProbesTotal, at)
 
@@ -823,7 +875,12 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		// 取消：单元由服务端 StopTask 已回 pending；结果已随流 flush，这里只停不报。
 		log.Printf("[queue] 单元 %s 已取消（部分结果 %d 条已流式上报）", u.IP, len(results))
 	case err != nil:
-		log.Printf("[queue] 单元 %s 失败: %v（回池重试）", u.IP, err)
+		if errors.Is(err, portscan.ErrLocalResourceExhausted) {
+			// 本机 fd/端口不够，这一轮的结果不可信：绝不能落 done（否则就是静默假阴性）
+			log.Printf("[queue] ERROR 本地 fd/资源不足，单元 %s 结果不可信，已退回队列（请调大 nofile 或调小并发）：%v", u.IP, err)
+		} else {
+			log.Printf("[queue] 单元 %s 失败: %v（回池重试）", u.IP, err)
+		}
 		// 带 failed 终报让 reaper 逻辑即时回池（不等租约过期；迟到心跳命中不到 leased 会静默忽略）
 		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "failed")
 	default:

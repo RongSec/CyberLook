@@ -15,13 +15,16 @@ package portscan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -36,6 +39,9 @@ type Options struct {
 	// OnOpen 发现开放端口即回调（在扫描 worker 内调用，**实现必须并发安全**）。
 	// 缓冲满时形成背压（该 worker 暂停接活），属预期保护。
 	OnOpen func(ip string, port int)
+	// Dial 探针拨号实现（nil = net.Dialer.DialContext）。
+	// 只为单测注入"本地资源耗尽"这类错误，生产路径不要传。
+	Dial func(ctx context.Context, timeout time.Duration, addr string) (net.Conn, error)
 	// Controls 运行期调控句柄；nil = 内部按 Concurrency/Timeout 自建
 	// （默认行为与固定并发等价）。传入后可在扫描期间 SetLimit/SetTimeoutMs/Pause/Resume。
 	Controls *Controls
@@ -57,7 +63,11 @@ type Stats struct {
 	Closed   int64
 	Filtered int64
 	Errors   int64
-	Elapsed  time.Duration
+	// LocalResErrs 本地资源错误数（EMFILE/ENFILE/ENOBUFS/EAGAIN 等）。
+	// >0 表示结果可能不完整：这些探针既不是"关闭"也不是"超时"，
+	// 而是本机发不出包（fd/端口/内存不够）——绝不能当成开放端口为空。
+	LocalResErrs int64
+	Elapsed      time.Duration
 }
 
 // PPS 探针速率
@@ -104,7 +114,7 @@ func Scan(ctx context.Context, targets []string, ports []int, opt Options) ([]Re
 
 	var mu sync.Mutex
 	results := make([]Result, 0, 256)
-	var done, open, closed, filtered, errs int64
+	var done, open, closed, filtered, errs, localRes int64
 
 	// ctx 取消 → 持续唤醒 cond，让挂在 acquire 上的派发协程及时看到 ctx 退出
 	stopWatch := make(chan struct{})
@@ -160,31 +170,64 @@ dispatch:
 			wg.Add(1)
 			go func(ip string, p int) {
 				defer wg.Done()
-				defer ctrl.release()
-				t0 := time.Now()
-				// 超时在 dial 前读当前值：SetTimeout 运行期生效（下一个探针即变）
-				d := net.Dialer{Timeout: time.Duration(ctrl.TimeoutMs()) * time.Millisecond}
-				conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(p)))
-				if err == nil {
-					_ = conn.Close()
-					rtt := time.Since(t0)
-					mu.Lock()
-					results = append(results, Result{IP: ip, Port: p, RTT: rtt})
-					mu.Unlock()
-					atomic.AddInt64(&open, 1)
-					if opt.OnOpen != nil {
-						select {
-						case <-ctx.Done(): // 已取消：不再投喂，结果集以已收集为准
-						default:
-							opt.OnOpen(ip, p)
+				addr := net.JoinHostPort(ip, strconv.Itoa(p))
+				// 探针级重试只针对**本机资源不足**：那是"本机发不出去"，
+				// 既不代表端口关闭也不代表被防火墙丢弃，必须退让后重试，
+				// 重试仍失败就只记 localRes（上层据此判整轮不可信），绝不记 closed。
+				permitHeld := true
+				for attempt := 1; ; attempt++ {
+					t0 := time.Now()
+					// 超时在 dial 前读当前值：SetTimeout 运行期生效（下一个探针即变）
+					timeout := time.Duration(ctrl.TimeoutMs()) * time.Millisecond
+					conn, err := dialProbe(ctx, opt, timeout, addr)
+					if err == nil {
+						_ = conn.Close()
+						rtt := time.Since(t0)
+						mu.Lock()
+						results = append(results, Result{IP: ip, Port: p, RTT: rtt})
+						mu.Unlock()
+						atomic.AddInt64(&open, 1)
+						if opt.OnOpen != nil {
+							select {
+							case <-ctx.Done(): // 已取消：不再投喂，结果集以已收集为准
+							default:
+								opt.OnOpen(ip, p)
+							}
 						}
+						break
 					}
-				} else if isRefused(err) {
-					atomic.AddInt64(&closed, 1)
-				} else if isTimeout(err) {
-					atomic.AddInt64(&filtered, 1)
-				} else {
-					atomic.AddInt64(&errs, 1)
+					if isLocalResourceErr(err) {
+						// 只在**重试用尽**时计数：阈值口径是"有多少探针最终没发出去"，
+						// 按尝试次数计会把极少数失败放大 N 倍（3 次重试 → 占比×3）。
+						if attempt < localResRetryTimes {
+							// 让出许可 → 退让 → 重新排队，给系统回收 fd 的机会
+							ctrl.release()
+							permitHeld = false
+							select {
+							case <-ctx.Done():
+							case <-time.After(localResRetryDelay):
+							}
+							if ctx.Err() != nil || !ctrl.acquire(ctx) {
+								atomic.AddInt64(&done, 1)
+								return
+							}
+							permitHeld = true
+							continue
+						}
+						atomic.AddInt64(&localRes, 1)
+						break // 用尽重试：只记 localRes，不算 closed/filtered
+					}
+					if isRefused(err) {
+						atomic.AddInt64(&closed, 1)
+					} else if isTimeout(err) {
+						atomic.AddInt64(&filtered, 1)
+					} else {
+						atomic.AddInt64(&errs, 1)
+					}
+					break
+				}
+				if permitHeld {
+					ctrl.release()
 				}
 				atomic.AddInt64(&done, 1)
 			}(ip, p)
@@ -200,8 +243,16 @@ dispatch:
 	st.Closed = atomic.LoadInt64(&closed)
 	st.Filtered = atomic.LoadInt64(&filtered)
 	st.Errors = atomic.LoadInt64(&errs)
+	st.LocalResErrs = atomic.LoadInt64(&localRes)
 	if cancelled || ctx.Err() != nil {
 		return results, st, ctx.Err()
+	}
+	// 本地资源耗尽占比超阈值 → 整轮结果不可信，必须让上层按失败处理。
+	// 注意：这里返回 results 供审计留痕，但 error 非 nil，调用方不得落 done。
+	if st.LocalResErrs > 0 && float64(st.LocalResErrs) > localResFailRatio*float64(st.Probes) {
+		return results, st, fmt.Errorf("%w：%d/%d 探针因本机资源不足未发出（占 %.2f%%）",
+			ErrLocalResourceExhausted, st.LocalResErrs, st.Probes,
+			100*float64(st.LocalResErrs)/float64(max64(st.Probes, 1)))
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -224,6 +275,96 @@ func isRefused(err error) bool {
 func isTimeout(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "i/o timeout") || strings.Contains(s, "context deadline exceeded")
+}
+
+// isLocalResourceErr 判断错误是否来自**本机资源不足**（fd/端口/内存），而不是目标的状态。
+//
+// 为什么必须单独判：EMFILE/ENFILE/ENOBUFS/EAGAIN 时 connect 会立刻失败，
+// 如果按"连接失败=端口关闭"处理，扫描器就会对外输出"该主机没有开放端口"——
+// 安全扫描器的假阴性比慢一百倍更致命（客户以为扫过了，其实一个包都没发出去）。
+// 跨平台稳妥做法：errors.As 解 syscall 错误 + 错误文本兜底（Windows 的
+// WSAENOBUFS/"too many open files" 文本不一致或没有 syscall.Errno）。
+func isLocalResourceErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) && sysErr.Err != nil {
+			if isResourceErrno(sysErr.Err) {
+				return true
+			}
+		}
+		if isResourceErrno(opErr.Err) {
+			return true
+		}
+	}
+	var sysErr *os.SyscallError
+	if errors.As(err, &sysErr) && sysErr.Err != nil && isResourceErrno(sysErr.Err) {
+		return true
+	}
+	if isResourceErrno(err) {
+		return true
+	}
+	// 兜底：文本匹配（不同平台/不同 Go 版本措辞不一致，但都含这些片段）
+	s := strings.ToLower(err.Error())
+	for _, k := range []string{
+		"too many open files",              // EMFILE/ENFILE
+		"no buffer space",                  // ENOBUFS
+		"cannot allocate memory",           // ENOMEM
+		"resource temporarily unavailable", // EAGAIN
+		"address already in use",           // EADDRINUSE（本地端口耗尽的表现之一）
+		"cannot assign requested address",  // EADDRNOTAVAIL（临时端口耗尽）
+	} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// isResourceErrno 判 errno 是否属于"本机资源不足"。
+func isResourceErrno(err error) bool {
+	for _, target := range []error{
+		syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.EAGAIN,
+		syscall.ENOMEM, syscall.EADDRNOTAVAIL, syscall.EADDRINUSE,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrLocalResourceExhausted 本机资源不足导致结果不可信（fd/端口/内存）。
+//
+// 上层必须把它当成**单元失败**（走 attempts/隔离），绝不能落成 done——
+// 否则就是"扫了但什么都没扫到"的静默假阴性。
+var ErrLocalResourceExhausted = errors.New("本地 fd/端口资源不足，本轮探测结果不完整")
+
+// 探针级重试参数：本地资源错误不是目标的答复，值得等一下再试。
+const (
+	localResRetryTimes = 3
+	localResRetryDelay = 200 * time.Millisecond
+	// localResFailRatio 本地资源错误占比超过它 → 整轮结果不可信（0.5%）
+	localResFailRatio = 0.005
+)
+
+// dialProbe 单次拨号（Dial 可注入，测试用）。
+func dialProbe(ctx context.Context, opt Options, timeout time.Duration, addr string) (net.Conn, error) {
+	if opt.Dial != nil {
+		return opt.Dial(ctx, timeout, addr)
+	}
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, "tcp", addr)
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ParsePorts 解析端口表达式：1-65535 / 22,80,443 / top100 / top1000
