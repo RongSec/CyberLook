@@ -255,3 +255,56 @@ func TestQueuePauseBlocksClaim(t *testing.T) {
 		t.Fatalf("恢复后应可领取: %v", err)
 	}
 }
+
+// TestQueueClaimBatchNoOverlap 批量领取（worker pool 用）在并发下不重复、不越界：
+// 8 个 goroutine 各自一次领 5 个，共 23 个单元 → 每 IP 恰好被 1 个 goroutine 领到，
+// 总领取数 = 23，且单次返回不超过请求的 5 个。
+func TestQueueClaimBatchNoOverlap(t *testing.T) {
+	setupQueueDB(t)
+	var ips []string
+	for i := 0; i < 23; i++ {
+		ips = append(ips, fmt.Sprintf("10.98.0.%d", i))
+	}
+	taskID := newTestTask(t, "batchclaim", ips, 100)
+	defer cleanupTask(taskID)
+
+	const workers, batch = 8, 5
+	var mu sync.Mutex
+	claimed := map[string]int{}
+	total := 0
+	var wg sync.WaitGroup
+	for g := 0; g < workers; g++ {
+		wg.Add(1)
+		go func(nodeID uint) {
+			defer wg.Done()
+			for {
+				units, err := ClaimUnits(taskID, nodeID, 0, batch)
+				if err != nil {
+					t.Errorf("批量 claim 出错: %v", err)
+					return
+				}
+				if len(units) == 0 {
+					return
+				}
+				if len(units) > batch {
+					t.Errorf("单次领取 %d 个，超过请求上限 %d", len(units), batch)
+				}
+				mu.Lock()
+				for _, u := range units {
+					claimed[u.IP]++
+				}
+				total += len(units)
+				mu.Unlock()
+			}
+		}(uint(g%3 + 1))
+	}
+	wg.Wait()
+	if total != len(ips) {
+		t.Fatalf("总领取数 %d，期望 %d（领多=重复、领少=漏）", total, len(ips))
+	}
+	for ip, n := range claimed {
+		if n != 1 {
+			t.Fatalf("IP %s 被领取 %d 次（应为 1 次）", ip, n)
+		}
+	}
+}
