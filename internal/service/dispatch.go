@@ -1,13 +1,14 @@
 package service
 
 import (
-	"gorm.io/gorm"
-	"strconv"
 	"asset-platform/internal/scanner"
 	"context"
-	"sort"
-	"log"
 	"fmt"
+	"gorm.io/gorm"
+	"log"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,8 +71,41 @@ func nodeAlive(n *model.Node) bool {
 	return time.Since(*n.LastHeartbeat) < nodeAliveWindow
 }
 
-// DispatchTask 按节点并发能力拆分 IP 段并分配子任务
+// hasLegacyPipelineState 任务是否已有分片制流水线在途状态（内存流水线/断点文件/探测进度）。
+// 有则不换轨到队列制：双轨并行会把同一 IP 扫两遍。重跑/收敛后再下发自然进队列。
+func hasLegacyPipelineState(task *model.ScanTask) bool {
+	if task.ProbeOffset > 0 {
+		return true
+	}
+	if _, ok := pipelines.Load(task.ID); ok {
+		return true
+	}
+	if _, err := os.Stat(pipelineFilePath(task.ID)); err == nil {
+		return true
+	}
+	var shardCnt int64
+	config.DB.Model(&model.AgentTask{}).Where("task_id = ? AND batch_no > 0", task.ID).Count(&shardCnt)
+	return shardCnt > 0
+}
+
+// DispatchTask 按节点并发能力拆分 IP 段并分配子任务。
+// v0.0.27：USE_IP_QUEUE（默认开）时走单 IP 租约队列（DispatchQueueTask），
+// queue_mode 固化到任务行；=false 走旧分片流水线（一个版本周期的回退路径）。
+// 注意：已在分片制上跑了一半的任务（有探测进度）不换轨——单元表与 alivePool
+// 双轨并行会重复扫描；它们跑完/重跑时自然进入队列制。
 func DispatchTask(task *model.ScanTask) error {
+	if task.QueueMode || (UseIPQueue() && !hasLegacyPipelineState(task)) {
+		// 队列模式：目标展开为逐 IP 单元，执行方原子领取
+		local, err := DispatchQueueTask(task)
+		if err != nil {
+			return err
+		}
+		if local {
+			// 无可派发节点：NodeIDs 保持空，调用方（api 层）据此走本机 ExecuteTask
+			task.NodeIDs = ""
+		}
+		return nil
+	}
 	if task.NodeIDs == "" {
 		// 下发前先做存活检测：以心跳时间为准，而不是数据库里可能过期的 status
 		var nodes []model.Node
@@ -175,12 +209,12 @@ func portCountOf(t *model.ScanTask) int {
 const probeSliceSize = 500 // 每片探测多少个原始 IP
 
 type taskPipeline struct {
-	mu        sync.Mutex
-	totalIPs  []string // 展开后的全部原始 IP
-	offset    int      // 已探测到第几个
-	alivePool []string // 已确认存活、还没下发的 IP
-	probing   bool     // 是否有探测在进行
-	dispatching bool   // 防止 DispatchNextBatch 重入
+	mu          sync.Mutex
+	totalIPs    []string // 展开后的全部原始 IP
+	offset      int      // 已探测到第几个
+	alivePool   []string // 已确认存活、还没下发的 IP
+	probing     bool     // 是否有探测在进行
+	dispatching bool     // 防止 DispatchNextBatch 重入
 	// stopped 流水线已废弃（重跑/删除/停止）。旧协程拿到这个标记后必须自行退出，
 	// 不能再去 ensurePipeline，否则会凭空再造一条流水线并行跑。
 	stopped bool
@@ -248,6 +282,12 @@ func CleanPipeline(taskID uint) {
 func DispatchNextBatch(taskID uint) {
 	var task model.ScanTask
 	if err := config.DB.First(&task, taskID).Error; err != nil {
+		return
+	}
+	// 队列任务不走分片流水线（agent finish 等事件仍会习惯性喊一声调度）：
+	// 收敛判定归 CheckQueueDone，唤醒消费归 claim 循环自身。
+	if task.QueueMode {
+		CheckQueueDone(taskID)
 		return
 	}
 	// 只有 running 状态才推进：paused/stopped/done 不派发、不探测
@@ -539,7 +579,7 @@ func findIdleNodeExcluding(task *model.ScanTask, exclude map[uint]bool) *model.N
 		var cnt int64
 		config.DB.Model(&model.AgentTask{}).
 			Where("node_id = ? AND task_id = ? AND status IN ?", nodes[i].ID, task.ID,
-			[]string{"pending", "running"}).Count(&cnt)
+				[]string{"pending", "running"}).Count(&cnt)
 		if cnt == 0 {
 			return &nodes[i]
 		}
@@ -582,6 +622,11 @@ func countAliveNodesForTask(task *model.ScanTask) int {
 func CheckTaskAllDone(taskID uint) {
 	var task model.ScanTask
 	if err := config.DB.First(&task, taskID).Error; err != nil {
+		return
+	}
+	// 队列任务的收敛走自己的判据（会话行不代表分片，别让旧逻辑误判）
+	if task.QueueMode {
+		CheckQueueDone(taskID)
 		return
 	}
 
@@ -845,6 +890,11 @@ func checkStalledShards() {
 
 	for i := range shards {
 		s := &shards[i]
+		// 队列会话行（batch_no=0）不走过期看门狗：它的活性 = 名下 leased 单元的租约，
+		// 回收归 reaper；会话本身"长时间无进度"多半是队列暂时空（在等别的节点），不是卡死。
+		if s.BatchNo == 0 {
+			continue
+		}
 		win := stallWindow(s.TaskID)
 
 		// 分片自身进度是否还在涨 —— 最可靠的活性信号（agent 每 2 秒上报 scanned）。

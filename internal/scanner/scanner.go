@@ -131,6 +131,20 @@ func RunPortScan(targets, excludes []string, opts ScanOptions, logFn LogFunc, on
 	return RunBuiltinPortScan(targets, excludes, opts, logFn, onResult)
 }
 
+// PortCount 端口串 → 端口数真值（""/top100=100，all=65535，支持 "80,443" / "1-1024"）。
+// IP 租约队列的进度分母用它，创建即定，不再估算。
+func PortCount(portSpec string) (int, error) {
+	spec := strings.TrimSpace(portSpec)
+	if spec == "" || strings.EqualFold(spec, "top100") {
+		spec = "top100"
+	}
+	ports, err := portscan.ParsePorts(spec)
+	if err != nil {
+		return 0, err
+	}
+	return len(ports), nil
+}
+
 func logf(fn LogFunc, line string) {
 	if fn != nil {
 		fn(line, false)

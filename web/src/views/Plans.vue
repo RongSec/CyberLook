@@ -59,9 +59,8 @@
           <span class="switch-tip">自研引擎：connect 扫描 + FingerprintHub 全量指纹，流式上报（v0.0.27 起唯一引擎）</span>
         </n-form-item>
 
-        <n-form-item label="分片大小">
-          <n-input-number v-model:value="form.batchSize" :min="10" :max="5000" style="width: 180px" />
-          <span class="switch-tip">每批下发的 IP 数，默认 100。哪个节点完成就领下一批</span>
+        <n-form-item label="下发方式">
+          <span class="switch-tip" style="margin:0">单 IP 租约队列：目标展开为逐 IP 任务单元，空闲节点原子领取、崩溃自动回池重试（≤3 次），无需配置分片大小</span>
         </n-form-item>
         <n-form-item label="扫描范围">
           <div class="range-box">
@@ -157,10 +156,6 @@
       <!-- 非执行中：可编辑 -->
       <n-form v-else label-placement="left" label-width="90">
         <n-form-item label="任务名称"><n-input v-model:value="editForm.name" /></n-form-item>
-        <n-form-item label="分片大小">
-          <n-input-number v-model:value="form.batchSize" :min="10" :max="5000" style="width: 180px" />
-          <span class="switch-tip">每批下发的 IP 数，默认 100。哪个节点完成就领下一批</span>
-        </n-form-item>
         <n-form-item label="扫描范围">
           <div class="range-box">
             <div class="range-line">
@@ -303,6 +298,16 @@
 
     <!-- 终端弹窗 -->
     <n-modal v-model:show="showLog" preset="card" :title="`扫描引擎终端输出${logTaskName ? ' — ' + logTaskName : ''}`" style="width: 860px">
+      <!-- 队列概览条（IP 租约队列任务）：pending/进行中/完成/隔离 -->
+      <div v-if="logQueue" class="queue-bar">
+        <n-tag size="small" :bordered="false" type="info">队列</n-tag>
+        <span class="q-item">待领取 <b>{{ logQueue.pending }}</b></span>
+        <span class="q-item q-run">进行中 <b>{{ logQueue.leased }}</b></span>
+        <span class="q-item q-done">完成 <b>{{ logQueue.done }}</b></span>
+        <span class="q-item" :class="{ 'q-fail': logQueue.failed > 0 }">隔离 <b>{{ logQueue.failed }}</b></span>
+        <span class="q-item q-probe">探针 <b>{{ fmtNum(logQueue.probesDone) }}</b> / {{ fmtNum(logQueue.probesTotal) }}</span>
+        <span v-if="logTask?.error" class="q-error">{{ logTask.error }}</span>
+      </div>
       <!-- 实时调控条：暂停/继续 + 并发/超时动态调速（执行层内存态，≤2s 随心跳生效） -->
       <div class="ctrl-bar">
         <n-tag :type="logTaskPaused ? 'warning' : 'success'" size="small" :bordered="false">
@@ -455,9 +460,21 @@ const columns = [
   {
     title: '进度', key: 'progress', width: 170,
     render: row => {
-      if (row.status !== 'running') return row.status === 'done' ? h(NProgress, { type: 'line', percentage: 100, height: 8, showIndicator: false, color: '#34d399' }) : '-'
+      if (row.status !== 'running' && row.status !== 'paused') {
+        return row.status === 'done' ? h(NProgress, { type: 'line', percentage: 100, height: 8, showIndicator: false, color: '#34d399' }) : '-'
+      }
       if (row.percent >= 0) {
-        return h(NProgress, { type: 'line', percentage: row.percent, height: 8, color: '#f59e0b' })
+        // 队列任务：真值 = Σprobes_done/Σprobes_total（后端注入），副行给 IP 粒度计数
+        const kids = [h('span', {}, `${row.percent}%`)]
+        if (row.queue) {
+          kids.push(h('span', { style: 'font-size:10.5px;color:#9ca3af' },
+            `IP ${row.queue.done}/${row.queue.done + row.queue.pending + row.queue.leased + row.queue.failed}${row.queue.failed ? `（隔离${row.queue.failed}）` : ''}`))
+        }
+        return h('div', {}, [
+          h(NProgress, { type: 'line', percentage: row.percent, height: 8, indicatorPlacement: 'inside',
+            color: row.status === 'paused' ? '#8b5cf6' : '#f59e0b' }),
+          h('div', { style: 'display:flex;justify-content:space-between;font-size:11px;color:#6b7280;margin-top:2px' }, kids)
+        ])
       }
       return h(NProgress, { type: 'line', processing: true, percentage: 40, height: 8, showIndicator: false })
     }
@@ -472,17 +489,27 @@ const columns = [
       const done = row.agentDone || 0
       const all = row.agentTotal
       const color = done === all ? '#34d399' : '#5eead4'
+      const label = row.queueMode ? `IP 单元 ${done}/${all}` : `${done}/${all} 分片`
       return h('div', { style: 'font-size:11.5px;line-height:1.5' }, [
-        h('div', { style: `color:${color}` }, `${done}/${all} 分片`),
+        h('div', { style: `color:${color}` }, label),
         h('div', { style: 'color:#9ca3af;font-size:10.5px;white-space:normal' }, row.agentNodes || '')
       ])
     }
   },
   {
     title: '预计剩余', key: 'etaSeconds', width: 110,
-    render: row => row.status === 'running' && row.etaSeconds > 0
-      ? h('span', { style: 'color:#f59e0b;font-size:12px' }, fmtEta(row.etaSeconds))
-      : h('span', { style: 'color:#9ca3af' }, '-')
+    render: row => {
+      if (row.status === 'running' && row.etaSeconds > 0) {
+        return h('span', { style: 'color:#f59e0b;font-size:12px' }, `预计 ${fmtEta(row.etaSeconds)}`)
+      }
+      if (row.status === 'running' && row.etaSeconds === -1) {
+        return h('span', { style: 'color:#8b5cf6;font-size:12px' }, '已暂停')
+      }
+      if (row.status === 'paused') {
+        return h('span', { style: 'color:#8b5cf6;font-size:12px' }, '已暂停')
+      }
+      return h('span', { style: 'color:#9ca3af' }, '-')
+    }
   },
   { title: '创建时间', key: 'createdAt', width: 150, render: r => fmt(r.createdAt) },
   { title: '操作', key: 'actions', width: 420, render: row => h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
@@ -739,6 +766,15 @@ const ctrlState = ref('none')
 const logTaskPaused = computed(() => ctrlState.value === 'pause')
 const logTask = computed(() => items.value.find(t => t.id === logTaskId.value))
 const logTaskRunning = computed(() => logTask.value && (logTask.value.status === 'running' || logTask.value.status === 'paused'))
+// 队列概览（列表接口注入的 queue 字段；非队列任务为 null 不显示概览条）
+const logQueue = computed(() => logTask.value?.queue || null)
+
+function fmtNum(n) {
+  if (n == null) return '-'
+  if (n >= 100000000) return (n / 100000000).toFixed(2) + '亿'
+  if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+  return String(n)
+}
 
 async function sendControl(body, okMsg) {
   if (!logTaskId.value) return false
@@ -1151,6 +1187,17 @@ onBeforeUnmount(() => { clearInterval(pollTimer); stopSSE() })
 .diag-row .k { flex: 0 0 72px; color: #6b7280; }
 .diag-logs-title { font-size: 12.5px; color: #6b7280; margin-bottom: 6px; }
 .switch-tip { color: #94a3b8; font-size: 12px; margin-left: 8px; }
+.queue-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 7px 10px; margin-bottom: 8px; border-radius: 8px;
+  background: #10161f; border: 1px solid #1f2a3a; font-size: 12.5px; color: #8b949e;
+}
+.queue-bar b { color: #e5e7eb; font-weight: 600; }
+.queue-bar .q-run b { color: #f59e0b; }
+.queue-bar .q-done b { color: #34d399; }
+.queue-bar .q-fail b { color: #ef4444; }
+.queue-bar .q-probe { margin-left: auto; }
+.queue-bar .q-error { color: #f87171; font-size: 12px; }
 .ctrl-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 10px; margin-bottom: 10px; border-radius: 8px;

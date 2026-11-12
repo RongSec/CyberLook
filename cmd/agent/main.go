@@ -77,6 +77,7 @@ type taskDetail struct {
 //   - pause → Controls.Pause()（许可清零，扫描挂起、分片保持占用、进度冻结）
 //   - resume/none → Controls.Resume()（none=服务端无调控态；重启后也能解除旧暂停，保证收敛）
 //   - limit → SetLimit+SetTimeoutMs（下一个探针即生效）
+//
 // 引擎句柄未注册（扫描还没进 RunBuiltinPortScan）时 ControlScan 返回 false，
 // 无所谓——下一条心跳再投影。取消（cancel）不在这里：走 cancelled 字段既有链路。
 type ctrlCmd struct {
@@ -329,9 +330,365 @@ func main() {
 
 	go heartbeatLoop()
 	go streamLoop()  // SSE 长连接：有任务时被唤醒
-	go fetchAndRun() // 启动时拉一次（处理重启前遗留任务）
+	go fetchAndRun() // 启动时拉一次（处理重启前遗留任务/清理指令）
+	go queueLoop()   // v0.0.27 IP 租约队列消费循环（任务是否入队由服务端 queue_mode 决定）
 
 	select {}
+}
+
+// ===== v0.0.27 IP 租约队列：agent 侧消费循环 =====
+//
+// 结构：轮询 /queue-tasks（该节点可消费的在途队列任务）→ 逐个 /claim 原子领取
+// 单 IP 单元 → 进程内扫这一个 IP（流式回调照常 postResults）→ 带 ip 的心跳每 2s
+// 续租+上报探针读数 → 单元完成发 unitDone 终报 → 立刻领下一个。
+// claim 空（队列消费完/暂停/任务收敛）→ 退避 3s 再查。
+// 暂停：claim 响应 paused=true 时不领取；在扫单元由 cmd=pause 投影冻结（进度归零）。
+// 取消：会话行被 StopTask 置 cancelled → 心跳 cancelled=true → StopScan 停当前单元、
+// 退出本轮领取（不再 claim）。
+//
+// 旧分片通道（fetchAndRun）保持运行：清理指令（cleanup:）与 USE_IP_QUEUE=false
+// 的回退任务都还走它，一个版本周期后随分片制一起退役。
+
+type queueTaskRef struct {
+	TaskID    uint   `json:"taskId"`
+	TaskName  string `json:"taskName"`
+	Claimable bool   `json:"claimable"`
+}
+
+type claimResp struct {
+	HasUnit bool `json:"hasUnit"`
+	Paused  bool `json:"paused"`
+	Unit    *struct {
+		IP          string `json:"ip"`
+		ProbesTotal int64  `json:"probesTotal"`
+		SessionID   uint   `json:"sessionId"`
+	} `json:"unit"`
+	Task     scanTask `json:"task"`
+	NodeConf struct {
+		Timeout     int `json:"timeout"`
+		Concurrency int `json:"concurrency"`
+	} `json:"nodeConf"`
+}
+
+func queueLoop() {
+	for {
+		consumed := consumeQueue()
+		if consumed > 0 {
+			continue // 有活就立刻续轮，直到领空
+		}
+		// 没活：睡 3 秒或被唤醒信号踢醒（SSE wake / 旧通道拉任务也踢）
+		select {
+		case <-queueWake:
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+// queueWake 唤醒队列消费循环（SSE 信号与本机事件共用）。
+var queueWake = make(chan struct{}, 1)
+
+func kickQueue() {
+	select {
+	case queueWake <- struct{}{}:
+	default:
+	}
+}
+
+// consumeQueue 扫一遍可领任务；返回本轮实际消费（领取并执行）的单元数。
+func consumeQueue() int {
+	resp, err := agentReq("GET", fmt.Sprintf("%s/api/agent/nodes/%d/queue-tasks", *serverURL, nodeID), nil)
+	if err != nil {
+		return 0
+	}
+	var payload struct {
+		Tasks []queueTaskRef `json:"tasks"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&payload)
+	resp.Body.Close()
+
+	consumed := 0
+	for _, t := range payload.Tasks {
+		if !t.Claimable {
+			continue
+		}
+		for {
+			c, err := claimUnit(t.TaskID)
+			if err != nil || c == nil || !c.HasUnit || c.Unit == nil {
+				if c != nil && c.Paused {
+					log.Printf("[queue] 任务 #%d 已暂停，停领新单元（当前节点其余任务继续）", t.TaskID)
+				}
+				break // 这个任务暂时没活（或暂停）
+			}
+			runQueueUnit(t.TaskID, c)
+			consumed++
+		}
+	}
+	return consumed
+}
+
+func claimUnit(taskID uint) (*claimResp, error) {
+	body, _ := json.Marshal(map[string]interface{}{"nodeId": nodeID})
+	resp, err := agentReq("POST", fmt.Sprintf("%s/api/agent/tasks/%d/claim", *serverURL, taskID), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
+		log.Printf("[queue] claim 任务 #%d 被拒 HTTP %d: %s", taskID, resp.StatusCode, string(b))
+		return nil, nil
+	}
+	var c claimResp
+	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// runQueueUnit 执行一个单 IP 单元（与 runAgentTask 同构：取消重试 StopScan、
+// cmd 幂等投影、进度/结果流式上报；差别只在目标=1 个 IP 且心跳带 ip 续租）。
+func runQueueUnit(taskID uint, c *claimResp) {
+	u := c.Unit
+	at := uint(c.Unit.SessionID)
+	task := c.Task
+	conf := c.NodeConf
+	thread := conf.Concurrency
+	if thread <= 0 {
+		thread = 1000
+	}
+	timeout := conf.Timeout
+	if timeout <= 0 {
+		timeout = task.Timeout * 1000
+		if timeout <= 0 {
+			timeout = 1500
+		}
+	}
+	ports := task.Ports
+	switch task.PortMode {
+	case "top100":
+		ports = ""
+	case "all":
+		ports = "1-65535"
+	}
+	// ProjectID 单元级唯一：同会话串行执行不会重叠，但取消句柄按单元精确命中
+	proj := fmt.Sprintf("agent-q-%d-%s", at, u.IP)
+	opts := scanner.ScanOptions{
+		ProjectID: proj,
+		Modules:   task.Modules, Finger: task.Finger, Ports: ports,
+		Thread: thread, Timeout: timeout, NoPing: task.NoPing, NoSmart: task.NoSmart,
+		ExtraArgs: task.ExtraArgs,
+	}
+	log.Printf("[queue] 单元领取成功：任务 #%d IP=%s（探针 %d，会话 #%d）", taskID, u.IP, u.ProbesTotal, at)
+
+	// 取消通道：心跳响应 cancelled=true → StopScan 重试直至命中句柄（预算 <5s）
+	scanReturned := make(chan struct{})
+	var closeOnce sync.Once
+	closeReturned := func() { closeOnce.Do(func() { close(scanReturned) }) }
+	defer closeReturned()
+	doCancel := func() {
+		go func() {
+			for i := 0; i < 40; i++ {
+				if scanner.StopScan(proj) {
+					return
+				}
+				select {
+				case <-scanReturned:
+					return
+				case <-time.After(150 * time.Millisecond):
+				}
+			}
+		}()
+	}
+
+	var mu sync.Mutex
+	scanned, total := 0, int(u.ProbesTotal)
+	ppsVal := 0.0
+	openFound, identified := 0, 0
+	lastPct := -1
+	finished := false
+	cancelled := false
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tk := time.NewTicker(2 * time.Second)
+		defer tk.Stop()
+		appliedPaused := false
+		n := 0
+		for range tk.C {
+			mu.Lock()
+			done := finished
+			s, t2, lp := scanned, total, lastPct
+			pp, of, idf := ppsVal, openFound, identified
+			mu.Unlock()
+			if done {
+				return
+			}
+			pct := 0
+			if lp >= 0 {
+				pct = lp
+			} else if t2 > 0 {
+				pct = s * 100 / t2
+			}
+			if pct > 100 {
+				pct = 100
+			}
+			n++
+			r := reportUnitProgress(at, taskID, u.IP, s, t2, pp, of, idf, pct, n%2 == 1)
+			if r.Cancelled {
+				log.Printf("[queue] 会话 #%d 收到取消：停掉单元 %s 的扫描并退出领取循环", at, u.IP)
+				mu.Lock()
+				cancelled = true
+				finished = true
+				mu.Unlock()
+				doCancel()
+				return
+			}
+			cc := r.Cmd
+			switch {
+			case cc.Paused || cc.Action == "pause":
+				if scanner.ControlScan(proj, scanner.ScanCtl{Action: "pause"}) && !appliedPaused {
+					log.Printf("[queue] 会话 #%d 调控：扫描已暂停", at)
+					appliedPaused = true
+				}
+			case cc.Action == "limit":
+				if scanner.ControlScan(proj, scanner.ScanCtl{Action: "limit", Concurrency: cc.Concurrency, TimeoutMs: cc.TimeoutMs}) && appliedPaused {
+					log.Printf("[queue] 会话 #%d 调控：限速 %d/%dms 并解除暂停", at, cc.Concurrency, cc.TimeoutMs)
+					appliedPaused = false
+				}
+			default:
+				if appliedPaused {
+					if scanner.ControlScan(proj, scanner.ScanCtl{Action: "resume"}) {
+						log.Printf("[queue] 会话 #%d 调控：扫描已恢复", at)
+						appliedPaused = false
+					}
+				}
+			}
+		}
+	}()
+
+	results, err := scanner.RunPortScan([]string{u.IP}, fetchExcludes(), opts,
+		func(line string, isProgress bool) {
+			if isProgress {
+				if m := portRe.FindStringSubmatch(line); len(m) == 3 {
+					if a, e1 := strconv.Atoi(m[1]); e1 == nil {
+						if b, e2 := strconv.Atoi(m[2]); e2 == nil && b > 0 {
+							mu.Lock()
+							if b > total {
+								total = b
+							}
+							if a > scanned && a <= total {
+								scanned = a
+							}
+							mu.Unlock()
+						}
+					}
+				}
+				if m := ppsRe.FindStringSubmatch(line); len(m) == 2 {
+					if v, e := strconv.ParseFloat(m[1], 64); e == nil {
+						mu.Lock()
+						ppsVal = v
+						mu.Unlock()
+					}
+				}
+				if m := openRe.FindStringSubmatch(line); len(m) == 3 {
+					a, _ := strconv.Atoi(m[1])
+					b, _ := strconv.Atoi(m[2])
+					mu.Lock()
+					if a > openFound {
+						openFound = a
+					}
+					if b > identified {
+						identified = b
+					}
+					mu.Unlock()
+				}
+				if m := pctRe.FindStringSubmatch(line); len(m) == 2 {
+					if v, e := strconv.Atoi(m[1]); e == nil {
+						mu.Lock()
+						if v > lastPct {
+							lastPct = v
+						}
+						mu.Unlock()
+					}
+				}
+			}
+			// 带 [agent-task #会话] 前缀：服务端 updateShardLog 按该标记切分会话日志
+			log.Printf("[agent-task #%d] [queue] %s", at, line)
+		},
+		func(batch []scanner.ScanResult) {
+			for i := 0; i < len(batch); i += 200 {
+				end := i + 200
+				if end > len(batch) {
+					end = len(batch)
+				}
+				postResults(taskID, batch[i:end])
+			}
+		})
+
+	mu.Lock()
+	fd, ft, of, idf, pp := scanned, total, openFound, identified, ppsVal
+	if len(results) > of {
+		of = len(results)
+		idf = of
+	}
+	wasCancelled := cancelled
+	finished = true
+	mu.Unlock()
+	wg.Wait()
+
+	switch {
+	case wasCancelled:
+		// 取消：单元由服务端 StopTask 已回 pending；结果已随流 flush，这里只停不报。
+		log.Printf("[queue] 单元 %s 已取消（部分结果 %d 条已流式上报）", u.IP, len(results))
+	case err != nil:
+		log.Printf("[queue] 单元 %s 失败: %v（回池重试）", u.IP, err)
+		// 带 failed 终报让 reaper 逻辑即时回池（不等租约过期；迟到心跳命中不到 leased 会静默忽略）
+		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "failed")
+	default:
+		if fd == 0 {
+			fd = ft // 快单元没赶上进度行：按满额计
+		}
+		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "done")
+		log.Printf("[queue] 单元 %s 完成：%d 探针 %d 条结果", u.IP, fd, len(results))
+	}
+}
+
+// reportUnitProgress 队列心跳（带 ip）：续租 + 单元读数；返回取消/调控指令。
+func reportUnitProgress(sessionID, taskID uint, ip string, scanned, total int, pps float64, open, identified, pct int, withLog bool) progressResp {
+	payload := map[string]interface{}{
+		"ip": ip, "probesDone": scanned, "probesTotal": total, "pps": pps,
+		"openFound": open, "identified": identified,
+		"total": total, "scanned": scanned, "progress": pct, "message": "扫描中",
+	}
+	if withLog {
+		payload["log"] = logRing.Snapshot()
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := agentReq("POST", fmt.Sprintf("%s/api/agent/tasks/%d/progress", *serverURL, sessionID), body)
+	if err != nil {
+		return progressResp{}
+	}
+	defer resp.Body.Close()
+	var r progressResp
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	return r
+}
+
+// reportUnitFinal 单元终报（done/failed）。
+func reportUnitFinal(sessionID, taskID uint, ip string, done, total int, open, identified int, pps float64, status string) {
+	payload := map[string]interface{}{
+		"ip": ip, "probesDone": done, "probesTotal": total, "pps": pps,
+		"openFound": open, "identified": identified,
+		"unitDone": status == "done", "unitStatus": status,
+		"total": total, "scanned": done, "progress": 100, "message": "单元" + status,
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := agentReq("POST", fmt.Sprintf("%s/api/agent/tasks/%d/progress", *serverURL, sessionID), body)
+	if err == nil {
+		resp.Body.Close()
+	}
 }
 
 // countPortsIn 估算端口数量：空=Top100；支持 "1-65535"、"80,443"、"1-1024,3389"
@@ -532,6 +889,7 @@ func streamLoop() {
 			if strings.HasPrefix(line, "event: wake") {
 				log.Printf("[agent] 收到唤醒信号，拉取任务")
 				go fetchAndRun()
+				go kickQueue() // 队列模式：同样踢醒领取循环
 			}
 		}
 		resp.Body.Close()
@@ -873,6 +1231,9 @@ var (
 	// 进度条形如：进度 21% (283200/1279104) [3m4s:10m23s]
 	pctRe  = regexp.MustCompile(`(\d{1,3})\s*%`)
 	portRe = regexp.MustCompile(`\((\d+)\s*/\s*(\d+)\)`)
+	// 队列单元心跳抽取：速率与发现数（emitProgress 行格式，与 builtin.go 对齐）
+	ppsRe  = regexp.MustCompile(`([\d.]+)探针/秒`)
+	openRe = regexp.MustCompile(`开放 (\d+) 已识别 (\d+)`)
 	// 进度条尾部 [已用:剩余]，如 [2m36s:10m54s]
 	etaRe = regexp.MustCompile(`\[([0-9hms]+):([0-9hms]+)\]`)
 	durRe = regexp.MustCompile(`(\d+)([hms])`)

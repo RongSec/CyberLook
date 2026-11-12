@@ -40,18 +40,22 @@ type ScanTask struct {
 	Timeout    int    `gorm:"column:timeout;default:3" json:"timeout"`
 	NoPing     bool   `gorm:"column:no_ping" json:"noPing"`
 	// AliveProbe 是否先做服务端存活探测（false = 直接把全部目标 IP 规划下发）
-	AliveProbe  bool       `gorm:"column:alive_probe" json:"aliveProbe"`
-	NoSmart     bool       `gorm:"column:no_smart" json:"noSmart"`
-	ExtraArgs   string     `gorm:"column:extra_args" json:"extraArgs"`
-	ReportPath  string     `gorm:"column:report_path" json:"reportPath"`
-	BatchSize   int        `gorm:"column:batch_size;default:100" json:"batchSize"`   // 每批下发的 IP 数
-	ProbeOffset int        `gorm:"column:probe_offset;default:0" json:"probeOffset"` // 流水线探测进度（已探测到第几个原始 IP）
-	TotalIPs    int        `gorm:"column:total_ips;default:0" json:"totalIps"`       // 目标展开后的 IP 总数（用于判断探测是否完成）
-	AliveCount  int        `gorm:"column:alive_count;default:0" json:"aliveCount"`   // 存活探测累计命中数
-	NodeIDs     string     `gorm:"column:node_ids" json:"nodeIds"`                   // ""=本机, "all"=全部节点, "1,2"=指定
-	CreatedAt   time.Time  `json:"createdAt"`
-	StartedAt   *time.Time `json:"startedAt"`
-	FinishedAt  *time.Time `json:"finishedAt"`
+	AliveProbe  bool   `gorm:"column:alive_probe" json:"aliveProbe"`
+	NoSmart     bool   `gorm:"column:no_smart" json:"noSmart"`
+	ExtraArgs   string `gorm:"column:extra_args" json:"extraArgs"`
+	ReportPath  string `gorm:"column:report_path" json:"reportPath"`
+	BatchSize   int    `gorm:"column:batch_size;default:100" json:"batchSize"`   // 已退役：v0.0.27 IP 租约队列按单 IP 领取；列保留兼容旧任务
+	ProbeOffset int    `gorm:"column:probe_offset;default:0" json:"probeOffset"` // 流水线探测进度（已探测到第几个原始 IP）
+	TotalIPs    int    `gorm:"column:total_ips;default:0" json:"totalIps"`       // 目标展开后的 IP 总数（用于判断探测是否完成）
+	AliveCount  int    `gorm:"column:alive_count;default:0" json:"aliveCount"`   // 存活探测累计命中数
+	NodeIDs     string `gorm:"column:node_ids" json:"nodeIds"`                   // ""=本机, "all"=全部节点, "1,2"=指定
+	// QueueMode 该任务使用 IP 租约队列（创建时按 USE_IP_QUEUE 开关固化，重启/翻开关不影响在途任务）
+	QueueMode bool `gorm:"column:queue_mode;default:false" json:"queueMode"`
+	// Error 失败终态摘要（取消=failed+error"已取消"；单元失败等）。done 任务恒空。
+	Error      string     `gorm:"column:error;size:512" json:"error"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	StartedAt  *time.Time `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt"`
 }
 
 func (ScanTask) TableName() string { return "scan_tasks" }

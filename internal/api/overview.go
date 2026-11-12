@@ -1,12 +1,13 @@
 package api
 
 import (
-	"time"
 	"net/http"
 	"strconv"
+	"time"
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -52,6 +53,23 @@ func TaskOverview(c *gin.Context) {
 	}
 	qvn.Count(&vioNew)
 
+	// 队列概览（租约队列任务专属）：pending/进行中/完成/隔离 + 探针真值进度
+	var queue gin.H
+	if t.QueueMode {
+		qs := service.QueueStatsOf(uint(id))
+		percent, eta := -1, int64(0)
+		if t.Status == "running" || t.Status == "paused" {
+			percent, eta = service.QueueProgress(uint(id))
+		} else if t.Status == "done" {
+			percent = 100
+		}
+		queue = gin.H{
+			"pending": qs.Pending, "leased": qs.Leased, "done": qs.Done, "failed": qs.FailedUnit,
+			"probesDone": qs.ProbesDone, "probesTotal": qs.ProbesTotal,
+			"percent": percent, "etaSeconds": eta,
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"taskId":        t.ID,
 		"totalIps":      t.TotalIPs,
@@ -60,6 +78,9 @@ func TaskOverview(c *gin.Context) {
 		"appsNew":       appsNew,
 		"violations":    vioTotal,
 		"violationsNew": vioNew,
+		"queueMode":     t.QueueMode,
+		"queue":         queue,
+		"error":         t.Error,
 	})
 }
 
@@ -70,8 +91,8 @@ func ListScheduledTasks(c *gin.Context) {
 
 	type item struct {
 		model.ScanTask
-		LastRun *model.TaskRun `json:"lastRun"`
-		RunCount int64         `json:"runCount"`
+		LastRun  *model.TaskRun `json:"lastRun"`
+		RunCount int64          `json:"runCount"`
 	}
 	out := make([]item, len(tasks))
 	for i, t := range tasks {

@@ -154,24 +154,57 @@ func ListTasks(c *gin.Context) {
 		AgentTotal int64  `json:"agentTotal"` // 分片总数
 		AgentDone  int64  `json:"agentDone"`  // 已完成分片
 		AgentNodes string `json:"agentNodes"` // 参与的节点名，逗号分隔
-		EtaSeconds int64  `json:"etaSeconds"` // 预计剩余秒数（取各分片最大值）
-		Overview   gin.H  `json:"overview"`   // 概览：IP/存活/应用/违规
+		EtaSeconds int64  `json:"etaSeconds"` // 预计剩余秒数（-1=已暂停）
+		// Queue 队列概览（pending/leased/done/failed + 探针真值；非队列任务为 null）
+		Queue    *gin.H `json:"queue"`
+		Overview gin.H  `json:"overview"` // 概览：IP/存活/应用/违规
 	}
 	out := make([]taskWithProgress, len(tasks))
 	for i := range tasks {
+		t := tasks[i]
+		// 队列任务：精确进度（Σprobes_done/Σprobes_total）+ EWMA ETA，不走分片 SUM
+		if t.QueueMode {
+			percent := -1
+			var eta int64
+			if t.Status == "running" || t.Status == "paused" {
+				percent, eta = service.QueueProgress(t.ID)
+			} else if t.Status == "done" {
+				percent = 100
+			}
+			qs := service.QueueStatsOf(t.ID)
+			q := gin.H{"pending": qs.Pending, "leased": qs.Leased, "done": qs.Done,
+				"failed": qs.FailedUnit, "probesDone": qs.ProbesDone, "probesTotal": qs.ProbesTotal}
+			// 卡死兜底：单元全终态但没人触发收敛（比如会话行没建过）
+			if t.Status == "running" && qs.Pending == 0 && qs.Leased == 0 && qs.Done+qs.FailedUnit > 0 {
+				service.CheckQueueDone(t.ID)
+				config.DB.First(&t, t.ID)
+				if t.Status == "done" {
+					percent = 100
+					eta = 0
+				}
+			}
+			_, prog := tasklog.Get(t.ID)
+			out[i] = taskWithProgress{
+				ScanTask: t, Progress: prog, Percent: percent, EtaSeconds: eta, Queue: &q,
+				Overview:   buildOverview(t.ID, t.TotalIPs, t.AliveCount),
+				AgentTotal: qs.Done + qs.FailedUnit,
+				AgentDone:  qs.Done,
+				AgentNodes: strings.Join(queueNodeNames(t.ID), ", "),
+			}
+			continue
+		}
 		// 卡住的 running 任务自动收敛：分片都已结束但主任务没更新
-		if tasks[i].Status == "running" && tasks[i].NodeIDs != "" {
+		if t.Status == "running" && t.NodeIDs != "" {
 			var active, shards int64
-			config.DB.Model(&model.AgentTask{}).Where("task_id = ?", tasks[i].ID).Count(&shards)
+			config.DB.Model(&model.AgentTask{}).Where("task_id = ?", t.ID).Count(&shards)
 			config.DB.Model(&model.AgentTask{}).
-				Where("task_id = ? AND status IN ?", tasks[i].ID, []string{"pending", "running"}).Count(&active)
+				Where("task_id = ? AND status IN ?", t.ID, []string{"pending", "running"}).Count(&active)
 			// 还没有分片说明仍在探测阶段，不能收敛
 			if shards > 0 && active == 0 {
-				service.CheckTaskAllDone(tasks[i].ID)
-				config.DB.First(&tasks[i], tasks[i].ID)
+				service.CheckTaskAllDone(t.ID)
+				config.DB.First(&t, t.ID)
 			}
 		}
-		t := tasks[i]
 		_, prog := tasklog.Get(t.ID)
 		var totalShards, doneShards int64
 		config.DB.Model(&model.AgentTask{}).Where("task_id = ?", t.ID).Count(&totalShards)
@@ -212,6 +245,14 @@ func ListTasks(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "items": out})
+}
+
+// queueNodeNames 队列任务的参与节点名（会话行 distinct）。
+func queueNodeNames(taskID uint) []string {
+	var names []string
+	config.DB.Model(&model.AgentTask{}).
+		Where("task_id = ? AND batch_no = 0", taskID).Distinct().Pluck("node_name", &names)
+	return names
 }
 
 // RunTask 立即执行任务（异步）

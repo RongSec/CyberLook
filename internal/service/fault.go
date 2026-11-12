@@ -172,6 +172,24 @@ func RescheduleOrphanShards() int {
 	}
 
 	for _, s := range shards {
+		// 队列会话行（batch_no=0）：不等租约过期，节点判死即把它的 leased 单元即时回池
+		if s.BatchNo == 0 {
+			var units []model.TaskUnit
+			config.DB.Where("task_id = ? AND node_id = ? AND status = ?", s.TaskID, s.NodeID, model.UnitLeased).Find(&units)
+			now := time.Now()
+			for _, u := range units {
+				RequeueOrIsolate(s.TaskID, u.IP, now)
+			}
+			config.DB.Model(&model.AgentTask{}).Where("id = ?", s.ID).
+				Updates(map[string]interface{}{
+					"status":      "cancelled",
+					"message":     "节点离线/熔断，leased 单元已回池",
+					"finished_at": time.Now(),
+				})
+			RecordFault("node_offline", s.NodeID, s.NodeName, s.TaskID,
+				"队列会话 #"+strconv.Itoa(int(s.ID))+" 所在节点不可用，已收回 "+strconv.Itoa(len(units))+" 个租约单元")
+			continue
+		}
 		ips := splitIPs(s.IPRanges)
 		// 把这个分片的 IP 塞回该任务的存活池
 		if v, ok := pipelines.Load(s.TaskID); ok {
