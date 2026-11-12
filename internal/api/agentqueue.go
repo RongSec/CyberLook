@@ -103,5 +103,9 @@ func AgentClaimUnit(c *gin.Context) {
 		"unit":     list[0], // 兼容只认 unit 的老 agent
 		"task":     task,
 		"nodeConf": gin.H{"timeout": node.Timeout, "concurrency": node.Concurrency},
+		// cmd = 该任务的调控幂等状态（pause/limit）。agent 每轮 claim 都拿一次并对
+		// **共享 limiter** 应用一遍——否则 limit 只能靠"恰好有单元在 tick"生效，
+		// K 路并行时会出现"limit 已下发但 pps 不降"（v0.0.27 实测踩到）。
+		"cmd": service.TaskCtrlSnapshot(uint(taskID)),
 	})
 }
