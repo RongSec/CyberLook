@@ -329,9 +329,10 @@ func main() {
 	log.Printf("[agent] 已建立唤醒通道，空闲时不轮询（有任务服务端会主动唤醒）")
 
 	go heartbeatLoop()
-	go streamLoop()  // SSE 长连接：有任务时被唤醒
-	go fetchAndRun() // 启动时拉一次（处理重启前遗留任务/清理指令）
-	go queueLoop()   // v0.0.27 IP 租约队列消费循环（任务是否入队由服务端 queue_mode 决定）
+	go streamLoop()   // SSE 长连接：有任务时被唤醒
+	go fetchAndRun()  // 启动时拉一次（处理重启前遗留任务/清理指令）
+	go queueLoop()    // v0.0.27 IP 租约队列消费循环（任务是否入队由服务端 queue_mode 决定）
+	go auditJanitor() // 清理已结束任务的审计库 Project 行（防 config.db 无界增长）
 
 	select {}
 }
@@ -353,6 +354,7 @@ type queueTaskRef struct {
 	TaskID    uint   `json:"taskId"`
 	TaskName  string `json:"taskName"`
 	Claimable bool   `json:"claimable"`
+	SessionID uint   `json:"sessionId"`
 }
 
 type claimResp struct {
@@ -386,6 +388,59 @@ func queueLoop() {
 
 // queueWake 唤醒队列消费循环（SSE 信号与本机事件共用）。
 var queueWake = make(chan struct{}, 1)
+
+// auditJanitor 定期清理审计库里"会话已结束"的单元 Project 行。
+//
+// 背景：队列模式下每个 IP 单元用自己的 Project（agent-q-<sessionID>-<ip>）落审计库，
+// 任务结束/删除后这些行没有任何人删（v0.0.27 之前 ClearAuditProject 全仓零调用），
+// config.db 会随扫描量无界增长直到撑爆节点磁盘。这里每 5 分钟对一次账：
+// 以服务端仍在途的队列会话为准，其余 "agent-q-" 前缀的 Project 整条清掉。
+func auditJanitor() {
+	if !scanner.AuditEnabled() {
+		return
+	}
+	tk := time.NewTicker(5 * time.Minute)
+	defer tk.Stop()
+	for {
+		select {
+		case <-tk.C:
+		}
+		pruneStaleAuditProjects()
+	}
+}
+
+// pruneStaleAuditProjects 对账并清理一次；返回被清掉的 Project（便于日志/排查）。
+func pruneStaleAuditProjects() []string {
+	keep := liveQueueSessions()
+	removed := scanner.PruneAuditProjects("agent-q-", keep)
+	if len(removed) > 0 {
+		log.Printf("[审计库] 清理已结束会话的 Project %d 个（保留在途会话 %d 个）", len(removed), len(keep))
+	}
+	return removed
+}
+
+// liveQueueSessions 本节点当前仍可消费的队列会话集合（拿不到服务端列表时保守返回 nil：
+// 保守 = 一个都不删，宁可多留一轮也不误删在途任务的审计数据）。
+func liveQueueSessions() map[uint]bool {
+	resp, err := agentReq("GET", fmt.Sprintf("%s/api/agent/nodes/%d/queue-tasks", *serverURL, nodeID), nil)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Tasks []queueTaskRef `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil
+	}
+	keep := make(map[uint]bool, len(payload.Tasks))
+	for _, t := range payload.Tasks {
+		if t.SessionID > 0 {
+			keep[t.SessionID] = true
+		}
+	}
+	return keep
+}
 
 func kickQueue() {
 	select {

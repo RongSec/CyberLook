@@ -27,6 +27,7 @@ type queueTaskItem struct {
 	TaskID    uint   `json:"taskId"`
 	TaskName  string `json:"taskName"`
 	Claimable bool   `json:"claimable"` // 有 pending 单元才值得发起 claim（省一次往返 + 防空调）
+	SessionID uint   `json:"sessionId"` // 该节点在该任务上的会话行 ID（agent 清理审计 Project 用）
 }
 
 // AgentQueueTasks 列出该节点可消费的在途队列任务。
@@ -42,6 +43,7 @@ func AgentQueueTasks(c *gin.Context) {
 		out = append(out, queueTaskItem{
 			TaskID: r.TaskID, TaskName: r.TaskName,
 			Claimable: service.PeekQueueClaimable(r.TaskID),
+			SessionID: r.SessionID,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": out})

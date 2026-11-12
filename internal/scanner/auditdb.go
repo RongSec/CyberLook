@@ -253,3 +253,75 @@ func ClearAuditProject(dbPath, projectID string) error {
 	}
 	return nil
 }
+
+// AuditProjects 列出审计库里出现过的 Project（ipscan ∪ urlscan）。
+// 库不存在或驱动不可用（mipsle 降级）时返回 nil，调用方按"无项目"处理。
+func AuditProjects() []string { return AuditProjectsIn("") }
+
+// AuditProjectsIn 同 AuditProjects，可指定库路径（空=EngineDBPath()，测试用临时库）。
+func AuditProjectsIn(dbPath string) []string {
+	if dbPath == "" {
+		dbPath = EngineDBPath()
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	seen := map[string]bool{}
+	out := make([]string, 0, 16)
+	for _, tbl := range []string{"ipscan", "urlscan"} {
+		rows, err := db.Query("SELECT DISTINCT Project FROM " + tbl)
+		if err != nil {
+			continue // 表还没建（从未落库）
+		}
+		for rows.Next() {
+			var p sql.NullString
+			if rows.Scan(&p) == nil && p.Valid && p.String != "" && !seen[p.String] {
+				seen[p.String] = true
+				out = append(out, p.String)
+			}
+		}
+		rows.Close()
+	}
+	return out
+}
+
+// PruneAuditProjects 清理"会话已结束"的队列审计行，防审计库无界增长。
+//
+// projectPrefix 是队列单元 Project 的前缀（agent 侧为 "agent-q-"），keepSessions
+// 是当前仍在本节点队列里的会话 ID 集合。规则：Project 形如
+// "<prefix><session>-<ip>"，解析出的 session 不在 keepSessions 里 → 整条 Project 删除。
+// 解析不出来的（手工跑的 Default 等）一律不动，避免误删人工数据。
+func PruneAuditProjects(projectPrefix string, keepSessions map[uint]bool) []string {
+	return PruneAuditProjectsIn("", projectPrefix, keepSessions)
+}
+
+// PruneAuditProjectsIn 同 PruneAuditProjects，可指定库路径（空=EngineDBPath()）。
+func PruneAuditProjectsIn(dbPath, projectPrefix string, keepSessions map[uint]bool) []string {
+	if projectPrefix == "" {
+		return nil
+	}
+	var removed []string
+	for _, p := range AuditProjectsIn(dbPath) {
+		if !strings.HasPrefix(p, projectPrefix) {
+			continue
+		}
+		rest := p[len(projectPrefix):]
+		dash := strings.IndexByte(rest, '-')
+		if dash <= 0 {
+			continue // 形态不认识，不动
+		}
+		sid, err := strconv.ParseUint(rest[:dash], 10, 32)
+		if err != nil {
+			continue
+		}
+		if keepSessions[uint(sid)] {
+			continue
+		}
+		if err := ClearAuditProject(dbPath, p); err == nil {
+			removed = append(removed, p)
+		}
+	}
+	return removed
+}
