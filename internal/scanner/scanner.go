@@ -9,8 +9,9 @@ import (
 	"sync"
 
 	"asset-platform/internal/portscan"
-
-	_ "modernc.org/sqlite"
+	// sqlite 驱动注册在 sqlite_driver.go（!mipsle）/ sqlite_driver_unsupported.go（mipsle），
+	// 不能在这里无条件 import——否则 mipsle 交叉编译被 modernc.org/libc 的
+	// 无 MIPS 实现直接卡死（v0.0.27 出包实测发现，审计旁路在 mipsle 上降级为空）。
 )
 
 // 引擎说明：v0.0.27 起 TscanPlus 已彻底移除，RunPortScan 恒走自研引擎

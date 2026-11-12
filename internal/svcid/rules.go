@@ -50,10 +50,10 @@ type RuleInfo struct {
 }
 
 type HTTPMatcher struct {
-	Method           string       `json:"method"`
-	Path             []string     `json:"path"`
-	Matchers         []WebMatcher `json:"matchers"`
-	MatchersCondition string      `json:"matchers-condition"`
+	Method            string       `json:"method"`
+	Path              []string     `json:"path"`
+	Matchers          []WebMatcher `json:"matchers"`
+	MatchersCondition string       `json:"matchers-condition"`
 }
 
 // SvcRule service 指纹（主动探针型）
@@ -106,24 +106,50 @@ type RuleSet struct {
 	LoadMs int64
 }
 
-// Load 加载 FingerprintHub 全量规则（两个 JSON 文件）
-func Load(dir string) (*RuleSet, error) {
+// Load 加载 FingerprintHub 规则。
+//
+// paths 是逗号分隔的路径列表，每一项既可以是目录，也可以是 .json 文件：
+//   - 目录：读取该目录下的 web_fingerprint_v4.json，并按 glob
+//     service_fingerprint_v4*.json 收集 service 规则（单文件与 partNN 分片共存时全部累加）
+//   - .json 文件：按文件名判断归属——名字含 "web_fingerprint" 的进 Web 规则集，
+//     含 "service_fingerprint" 的进 Service 规则集（单文件与 partNN 分片同等对待）
+//
+// 同一文件被多个路径重复命中时只加载一次。Load("data/fingerprint") 与旧版
+// 单目录调用行为完全一致。
+func Load(paths string) (*RuleSet, error) {
+	webFiles, svcFiles, err := collectRuleFiles(paths)
+	if err != nil {
+		return nil, err
+	}
+
 	rs := &RuleSet{faviconIndex: map[string][]int32{}}
 
-	webPath := filepath.Join(dir, "web_fingerprint_v4.json")
-	b, err := os.ReadFile(webPath)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s: %w", webPath, err)
+	for _, webPath := range webFiles {
+		b, err := os.ReadFile(webPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取 %s: %w", webPath, err)
+		}
+		var chunk []WebRule
+		if err := json.Unmarshal(b, &chunk); err != nil {
+			return nil, fmt.Errorf("解析 web 规则 %s: %w", filepath.Base(webPath), err)
+		}
+		rs.Web = append(rs.Web, chunk...)
 	}
-	if err := json.Unmarshal(b, &rs.Web); err != nil {
-		return nil, fmt.Errorf("解析 web 规则: %w", err)
+	if len(rs.Web) == 0 {
+		return nil, fmt.Errorf("未加载到任何 web 规则（-rules %s：目录需含 web_fingerprint_v4.json，文件需文件名含 web_fingerprint）", paths)
 	}
 
-	svcPath := filepath.Join(dir, "service_fingerprint_v4.json")
-	if b, err := os.ReadFile(svcPath); err == nil {
-		if err := json.Unmarshal(b, &rs.Service); err != nil {
-			return nil, fmt.Errorf("解析 service 规则: %w", err)
+	// service 规则：支持单文件或分片（service_fingerprint_v4.part00.json ...）
+	for _, svcPath := range svcFiles {
+		b, err := os.ReadFile(svcPath)
+		if err != nil {
+			continue
 		}
+		var chunk []SvcRule
+		if err := json.Unmarshal(b, &chunk); err != nil {
+			return nil, fmt.Errorf("解析 service 规则 %s: %w", filepath.Base(svcPath), err)
+		}
+		rs.Service = append(rs.Service, chunk...)
 	}
 
 	// 预处理：取名称/产品，收集 word pattern 建 AC
@@ -187,6 +213,64 @@ func Load(dir string) (*RuleSet, error) {
 
 	rs.ac = newAC(patterns)
 	return rs, nil
+}
+
+// collectRuleFiles 把逗号分隔的路径列表展开成 (web 文件, service 文件) 两组绝对路径。
+// 目录项按 glob 收集，.json 文件项按文件名归类。
+func collectRuleFiles(paths string) (webFiles, svcFiles []string, err error) {
+	items := strings.Split(paths, ",")
+	seen := map[string]bool{}
+	add := func(dst *[]string, p string) {
+		abs, e := filepath.Abs(p)
+		if e != nil {
+			abs = filepath.Clean(p)
+		}
+		if seen[abs] {
+			return
+		}
+		seen[abs] = true
+		*dst = append(*dst, abs)
+	}
+
+	for _, raw := range items {
+		p := strings.TrimSpace(raw)
+		if p == "" {
+			continue
+		}
+		fi, e := os.Stat(p)
+		if e != nil {
+			return nil, nil, fmt.Errorf("规则路径 %s 不可用: %w", p, e)
+		}
+		if fi.IsDir() {
+			// 目录：保持 glob 行为，单文件与 partNN 分片都能命中
+			w, _ := filepath.Glob(filepath.Join(p, "web_fingerprint_v4*.json"))
+			for _, f := range w {
+				add(&webFiles, f)
+			}
+			s, _ := filepath.Glob(filepath.Join(p, "service_fingerprint_v4*.json"))
+			for _, f := range s {
+				add(&svcFiles, f)
+			}
+			continue
+		}
+		// 文件：按文件名判断归属
+		base := strings.ToLower(filepath.Base(p))
+		switch {
+		case strings.Contains(base, "web_fingerprint"):
+			add(&webFiles, p)
+		case strings.Contains(base, "service_fingerprint"):
+			add(&svcFiles, p)
+		default:
+			return nil, nil, fmt.Errorf("规则文件 %s 无法归类：文件名需含 web_fingerprint 或 service_fingerprint", p)
+		}
+	}
+
+	if len(webFiles) == 0 && len(svcFiles) == 0 {
+		return nil, nil, fmt.Errorf("路径列表 %s 中没有规则文件", paths)
+	}
+	sort.Strings(webFiles)
+	sort.Strings(svcFiles)
+	return webFiles, svcFiles, nil
 }
 
 // MatchWeb 对一个 HTTP 响应做全量规则匹配，返回命中的规则（按分数排序）
