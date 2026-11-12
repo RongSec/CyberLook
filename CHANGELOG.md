@@ -53,6 +53,13 @@
   现在镜像内置规则（`COPY data/fingerprint /app/data/fingerprint` +
   `ENV SCAN_RULES_DIR=/app/data/fingerprint`），compose 保留只读挂载覆盖入口（默认注释）。
   部署验收见 README「扫描引擎」节。
+- **删除任务不通知节点**：`DELETE /api/tasks/:id` 只删库，agent 手上的单元没有任何信号，
+  会把在途单元扫完才停（实测删除后仍在打 #664 进度 98%），期间的进度/结果上报都打在
+  已删除的会话上。现在删除前置一步与「停止」完全相同的取消广播（会话置 cancelled →
+  agent 心跳拿到 `cancelled:true` → ≤5s 内 StopScan 并退出该任务领取循环），
+  服务端再等执行方真正松手（最长 8s，超时强制回收）后才删行；`agent_tasks`/`task_runs`
+  一并级联清理。批量删除先统一广播再逐个删，避免 8s×N 串行。前端删除确认文案对
+  运行中任务补充「会先停止扫描」。
 
 ---
 

@@ -540,7 +540,13 @@ const columns = [
       : null,
     h(NButton, { size: 'small', text: true, onClick: () => openLog(row) }, { default: () => '日志' }),
     h(NButton, { size: 'small', text: true, onClick: () => openNodeProgress(row) }, { default: () => '节点进度' }),
-    h(NPopconfirm, { onPositiveClick: () => del(row.id) }, { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }), default: () => '确认删除？' })
+    h(NPopconfirm, { onPositiveClick: () => del(row.id) }, {
+      trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
+      // 执行中/已暂停的任务删除前会先停扫描（服务端走取消广播，等节点松手再删行），文案要说清
+      default: () => (row.status === 'running' || row.status === 'paused')
+        ? '该任务正在执行，删除会先停止扫描（已扫到的结果一并删除）。确认删除？'
+        : '确认删除？'
+    })
   ]) },
   // 概览：本次扫描的 IP/存活/应用/违规（放在「节点进度」右侧）
   {

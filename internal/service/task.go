@@ -99,19 +99,67 @@ func GetTask(id uint) (*model.ScanTask, error) {
 }
 
 // DeleteTask 删除任务及其快照、报告文件
+// DeleteTask 删除任务。执行中的任务先走取消广播，等执行方收敛后再删行。
+//
+// 背景（v0.0.27 实测）：DELETE 只删库时，agent 手上的单元没有任何信号，
+// 会把在途单元扫完才停（实测 #123 删除后仍在打 #664 进度 98%），
+// 期间上报打到已删除的会话上全是无效请求；节点侧还以为自己"在干活"。
+// 所以删除前置一步与停止按钮完全相同的取消链路，等节点真正停下来再删。
 func DeleteTask(id uint) error {
 	var task model.ScanTask
-	if err := config.DB.First(&task, id).Error; err == nil {
+	_ = config.DB.First(&task, id).Error
+	if task.ID != 0 && (task.Status == "running" || task.Status == "paused") {
+		deleteTaskCancel(task)
+	}
+	if task.ID != 0 {
 		removeTaskReports(task.ReportPath, taskProjectID(task))
 	}
 	config.DB.Where("task_id = ?", id).Delete(&model.ScanSnapshot{})
-	config.DB.Where("task_id = ?", id).Delete(&model.TaskUnit{}) // 队列单元随任务销毁
-	CleanPipeline(id)                                            // 清掉内存里的流水线状态
+	config.DB.Where("task_id = ?", id).Delete(&model.TaskUnit{})  // 队列单元随任务销毁
+	config.DB.Where("task_id = ?", id).Delete(&model.AgentTask{}) // 会话/分片行一并清（否则节点侧残留幽灵分片）
+	config.DB.Where("task_id = ?", id).Delete(&model.TaskRun{})   // 运行记录
+	CleanPipeline(id)                                             // 清掉内存里的流水线状态
 	ClearTaskCtrl(id)
 	DropETAState(id)
 	queueNotifyOnce.Delete(id)
 	DeleteTaskLogs(id)
 	return config.DB.Delete(&model.ScanTask{}, id).Error
+}
+
+// deleteTaskCancel 删除前停止任务：复用 StopTask 的取消广播（会话置 cancelled →
+// agent 心跳拿到 cancelled:true → ≤5s 内 StopScan 并退出该任务的领取循环），
+// 然后**等执行方真的松手**（不再有 leased 单元 / 会话不再 running）再返回。
+// 最多等 deleteCancelWait；等不到也继续删（宁可留 1 个孤儿上报，也不能卡住删除请求）。
+const deleteCancelWait = 8 * time.Second
+
+func deleteTaskCancel(task model.ScanTask) {
+	taskID := task.ID
+	if err := StopTask(taskID); err != nil {
+		log.Printf("[删除] 任务 #%d 取消广播失败（继续删除）: %v", taskID, err)
+		return
+	}
+	deadline := time.Now().Add(deleteCancelWait)
+	for time.Now().Before(deadline) {
+		var leased int64
+		config.DB.Model(&model.TaskUnit{}).
+			Where("task_id = ? AND status = ?", taskID, model.UnitLeased).Count(&leased)
+		var alive int64
+		config.DB.Model(&model.AgentTask{}).
+			Where("task_id = ? AND status IN ?", taskID, []string{"pending", "running"}).Count(&alive)
+		if leased == 0 && alive == 0 {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	// 超时兜底：把还在 leased 的单元打回 pending、会话强制置 cancelled，避免残留
+	now := time.Now()
+	config.DB.Model(&model.TaskUnit{}).
+		Where("task_id = ? AND status = ?", taskID, model.UnitLeased).
+		Updates(map[string]interface{}{"status": model.UnitPending, "node_id": 0, "session_id": 0, "lease_expire": nil, "updated_at": now})
+	config.DB.Model(&model.AgentTask{}).
+		Where("task_id = ? AND status IN ?", taskID, []string{"pending", "running"}).
+		Updates(map[string]interface{}{"status": "cancelled", "message": "任务已删除", "finished_at": now})
+	log.Printf("[删除] 任务 #%d 等待执行方收敛超时（%s），已强制回收", taskID, deleteCancelWait)
 }
 
 // reportsDir 扫描报告 HTML 的输出目录（原为 TscanClient 工作目录；
@@ -165,6 +213,30 @@ func CleanOldReports(days int) int {
 
 // BatchDeleteTasks 批量删除任务
 func BatchDeleteTasks(ids []uint) error {
+	// 先把在跑的一次性全部取消（每个任务只发一次广播），再逐个删除：
+	// 否则 DeleteTask 内部的"等执行方松手"会按 8s/个串行叠加，批量删 10 个在跑任务要 80s。
+	var running []model.ScanTask
+	config.DB.Where("id IN ? AND status IN ?", ids, []string{"running", "paused"}).Find(&running)
+	for _, t := range running {
+		if err := StopTask(t.ID); err != nil {
+			log.Printf("[删除] 批量取消任务 #%d 失败（继续）: %v", t.ID, err)
+		}
+	}
+	if len(running) > 0 {
+		deadline := time.Now().Add(deleteCancelWait)
+		for time.Now().Before(deadline) {
+			var leased int64
+			config.DB.Model(&model.TaskUnit{}).
+				Where("task_id IN ? AND status = ?", ids, model.UnitLeased).Count(&leased)
+			var alive int64
+			config.DB.Model(&model.AgentTask{}).
+				Where("task_id IN ? AND status IN ?", ids, []string{"pending", "running"}).Count(&alive)
+			if leased == 0 && alive == 0 {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
 	for _, id := range ids {
 		if err := DeleteTask(id); err != nil {
 			return err
