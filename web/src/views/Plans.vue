@@ -781,8 +781,11 @@ const logQueue = computed(() => logTask.value?.queue || null)
 // 超过一天不封顶，按天/小时给，否则慢任务会显示一个骗人的"1 天"。
 function etaText(sec, conf, paused) {
   if (paused) return '已暂停'
+  // 低置信度时不给数字：刚开扫那一两个窗口的速率还在爬坡，
+  // 拿它算出来的"剩余 3 分 17 秒"比不显示更容易误导人。
+  if (conf === 'low') return '估算中…'
   if (sec == null || sec < 0) {
-    return conf === 'high' ? '剩余时间计算中' : '估算中…'
+    return '剩余时间计算中'
   }
   if (sec === 0) return '即将完成'
   const d = Math.floor(sec / 86400)
