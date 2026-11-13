@@ -843,6 +843,14 @@ func ExecuteTaskQueue(taskID uint) error {
 	// 单元可能已由「存活探测」阶段建好（只有存活 IP）。那种情况下绝不能再用
 	// task.IPRanges 全量展开一遍，否则死 IP 又被塞进队列，存活探测就白做了。
 	if unitCountOf(task.ID) == 0 {
+		if task.AliveProbe {
+			// 开了存活探测但单元还没建 → 说明探测还在后台跑。
+			// 这里必须**什么都不做**直接返回：探测完成时会自动拉起本机消费
+			// （见 startQueueAfterAliveProbe 的 local 分支）。
+			// 早期版本在这里顺手 InitUnits(IPRanges)，结果探测白做（实测 99 存活却排了 256 个单元）。
+			log.Printf("[队列] 任务 #%d 存活探测进行中，等待单元就绪后再消费", task.ID)
+			return nil
+		}
 		if _, total, err := InitUnits(task.ID, task.IPRanges, pc); err != nil {
 			return fmt.Errorf("队列初始化失败: %w", err)
 		} else {
