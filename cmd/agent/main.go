@@ -24,6 +24,10 @@ import (
 	"sync"
 	"time"
 
+	// 内嵌 IANA 时区库：节点镜像不再需要装 tzdata 包（省掉一次 apt 下载，
+	// 也让镜像能跑在没有 tzdata 的极简 base 上）。TZ=Asia/Shanghai 依然生效。
+	_ "time/tzdata"
+
 	"github.com/RongSec/CyberLook-Scan/portscan"
 	"asset-platform/internal/scanner"
 	"asset-platform/internal/version"
