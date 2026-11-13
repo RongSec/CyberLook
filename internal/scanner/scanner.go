@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"asset-platform/internal/portscan"
 	// sqlite 驱动注册在 sqlite_driver.go（!mipsle）/ sqlite_driver_unsupported.go（mipsle），
@@ -159,6 +161,10 @@ var (
 type taskCtrlHandle struct {
 	ctrl    *portscan.Controls
 	lastSeq int64 // 已应用的最大调控版本号（乱序防护）
+	// manualAt 最近一次「人工调控」（服务端下发的 limit/pause）时间。
+	// 智能调速靠它让位：人在调的时候机器不要抢方向盘，否则会出现
+	// "我设 60，十秒后被自动挡推回 1200"这种让人失去信任的行为。
+	manualAt time.Time
 }
 
 // EnsureTaskCtrl 返回任务级共享 limiter；**仅首次**调用用 conc/timeoutMs 建初值，
@@ -210,6 +216,67 @@ func UnregisterTaskCtrl(taskID uint) {
 	taskCtrlMu.Unlock()
 }
 
+// AutoManualHold 人工调控的"让位期"：这段时间内智能调速不再改这个任务的并发。
+// 人在调的时候机器不要抢方向盘 —— 否则会出现"我设 60，十秒后被自动挡推回 1200"。
+const AutoManualHold = 5 * time.Minute
+
+// 本地资源错误累计（进程级），供智能调速当反馈信号读差分。
+// 单调递增、只加不清零：调速器自己记上次读数算增量，避免两边各自维护窗口撞车。
+var localResTotal int64
+
+// AtomicAddLocalRes 由引擎在每轮扫描结束后累加 st.LocalResErrs。
+func AtomicAddLocalRes(n int64) {
+	if n > 0 {
+		atomic.AddInt64(&localResTotal, n)
+	}
+}
+
+// LocalResErrsTotal 累计的本地资源错误数（EMFILE/ENOBUFS 等）。
+func LocalResErrsTotal() int64 { return atomic.LoadInt64(&localResTotal) }
+
+// ActiveTaskIDs 当前持有 limiter 的任务（智能调速按这个列表推送推荐值）。
+func ActiveTaskIDs() []uint {
+	taskCtrlMu.RLock()
+	defer taskCtrlMu.RUnlock()
+	ids := make([]uint, 0, len(taskCtrls))
+	for id := range taskCtrls {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// SetTaskAutoLimit 智能调速专用入口：把机器算出的推荐在途数推到任务 limiter。
+//
+// 与 ApplyTaskCtrl 的分工：
+//   - ApplyTaskCtrl 处理**服务端指令**，带 seq 乱序防护，并写入 manualAt 抢占方向盘；
+//   - 本函数处理**机器自己的建议**，不参与 seq，且 manualAt 冷却期内直接放弃，
+//     暂停中的任务也不碰（暂停就是暂停，不该被"自动"复活）。
+//
+// 返回 true 表示本次确实改了。
+func SetTaskAutoLimit(taskID uint, n int) bool {
+	if taskID == 0 || n <= 0 {
+		return false
+	}
+	taskCtrlMu.Lock()
+	h, ok := taskCtrls[taskID]
+	if !ok {
+		taskCtrlMu.Unlock()
+		return false
+	}
+	if !h.manualAt.IsZero() && time.Since(h.manualAt) < AutoManualHold {
+		taskCtrlMu.Unlock()
+		return false
+	}
+	ctrl := h.ctrl
+	taskCtrlMu.Unlock()
+
+	if ctrl.Paused() || ctrl.Limit() == n {
+		return false
+	}
+	ctrl.SetLimit(n)
+	return true
+}
+
 // ApplyTaskCtrl 把一条心跳/claim 投影应用到任务级共享 limiter（幂等 + 乱序防护）。
 //
 // seq 语义：服务端每次状态变更自增，投影里带回。收到 seq 小于已应用值的
@@ -236,6 +303,13 @@ func ApplyTaskCtrl(taskID uint, ctl ScanCtl, seq int64) bool {
 	}
 	if seq > h.lastSeq {
 		h.lastSeq = seq
+	}
+	// 只有服务端下发的指令（seq>0）才算"人工调控"，本地调用不算。
+	if seq > 0 {
+		switch ctl.Action {
+		case "pause", "limit":
+			h.manualAt = time.Now()
+		}
 	}
 	ctrl := h.ctrl
 	taskCtrlMu.Unlock()

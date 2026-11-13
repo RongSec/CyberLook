@@ -330,6 +330,8 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	out := append([]ScanResult(nil), all...)
 	allMu.Unlock()
 	if st.LocalResErrs > 0 {
+		// 智能调速的信号源：EMFILE 出现说明在途数已越过本机 fd 能力。
+		AtomicAddLocalRes(st.LocalResErrs)
 		// 少量本地资源错误（低于整轮判废阈值）：结果仍可用，但必须留痕——
 		// 这类错误以前会被当成"端口关闭"，是最难发现的假阴性来源。
 		if serr != nil {
