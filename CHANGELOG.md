@@ -14,13 +14,16 @@
 ### 变化
 
 - **平台不再复制扫描引擎源码**：`internal/portscan`、`internal/svcid` 两份副本删除，
-  改为 `require github.com/RongSec/CyberLook-Scan v1.3.0`。此前是"平台一份、引擎一份"，
+  改为 `require github.com/RongSec/CyberLook-Scan v1.4.1`。此前是"平台一份、引擎一份"，
   靠手工同步（EMFILE 修复、规则加载优化都各改过两遍），必然会漂。
   现在扫描逻辑只有一处：引擎仓改代码 → 打 tag → 平台 bump 版本，功能与性能天然一致。
 - 新增 `scripts/check-engine-version.sh`：比对平台锁定版本与引擎最新 tag，暴露漂移
   （`STRICT=1` 时不一致返回非零，可挂 CI）。
-- 引擎 v1.3.0 内容：fd/端口耗尽不再假阴性（错误分类+重试）、纯端口扫描不再加载 11MB 规则、
-  存活探测端口集从 10 个扩到 16 个。
+- 引擎 v1.4.1 内容：fd/端口耗尽不再假阴性（错误分类+重试）、纯端口扫描不再加载 11MB 规则、
+  **存活探测（ICMP Echo + TCP 两阶段）也收进引擎模块**（此前平台在 service 层另写一套、
+  CLI 只有纯 TCP，同一个网段两边判活数能差一倍）。平台现在只做编排（进度回写/取消/建队），
+  判定逻辑与 CLI 完全同一份代码。
+- 引擎仓库把 `data/` 设为嵌套模块，把 11MB 指纹规则排除出模块 zip（否则代理拉取反复失败）。
 
 
 
