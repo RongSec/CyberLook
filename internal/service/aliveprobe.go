@@ -290,7 +290,13 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 
 		local := finishQueueActivation(&task, created, total, portCount)
 		if local {
+			// 单元此时才就绪，本机消费必须在这之后拉起（早启动会按全量 IP 展开）
 			log.Printf("[存活探测] 任务 #%d 无在线节点，转本机消费", task.ID)
+			go func() {
+				if err := ExecuteTaskQueue(task.ID); err != nil {
+					log.Printf("[存活探测] 任务 #%d 本机消费退出: %v", task.ID, err)
+				}
+			}()
 		}
 	}()
 	return true
