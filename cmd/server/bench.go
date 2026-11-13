@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"asset-platform/internal/portscan"
-	"asset-platform/internal/svcid"
+	"github.com/RongSec/CyberLook-Scan/portscan"
+	"github.com/RongSec/CyberLook-Scan/svcid"
 )
 
 type benchOut struct {
