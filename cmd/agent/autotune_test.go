@@ -154,3 +154,24 @@ func TestAutoUnitConcurrency(t *testing.T) {
 		t.Fatalf("K 应被钳到 32，实际 %d", k)
 	}
 }
+
+// ⑩ 首次采样必须"打点"：只记录 ticks、不算差值；第二次起必须能算出使用率。
+// 上一版只在 cpuOK 时存 lastTicks，导致它永远停在 0 → 之后每次都被判成"无 CPU 信号"，
+// 智能调速只剩 fd 一路生效（实测 CPU 从来没有被读进来过）。
+//
+// 注意：新进程的 utime+stime 合法地就是 0，所以不能拿"lastTicks != 0"当断言，
+// 只能断言"打点之后第二次采样算得出使用率"。
+func TestTunePrimesCPUSample(t *testing.T) {
+	tt := newAutoTuner(1500)
+	if _, _, ok := procCPUPercent(1, time.Now().Add(-time.Second)); !ok {
+		t.Skip("非 Linux 环境（读不到 /proc/self/stat），跳过")
+	}
+	tt.tune() // 第一次：只打点
+	time.Sleep(20 * time.Millisecond)
+	if !tt.lastAt.After(tt.winStart.Add(-time.Minute)) {
+		t.Fatal("lastAt 未被更新，采样时间戳失效")
+	}
+	if _, _, ok := procCPUPercent(tt.lastTicks, tt.lastAt); !ok {
+		t.Fatal("打点后仍算不出 CPU 使用率 —— CPU 信号永久失效，调速只剩 fd 一路")
+	}
+}
