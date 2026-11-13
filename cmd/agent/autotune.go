@@ -114,7 +114,9 @@ func newAutoTuner(fdBudget int) *autoTuner {
 	cur := base * 3 / 4
 	return &autoTuner{
 		cpuN: cpuN, memMB: mem, fdBudget: fdBudget, base: base, cur: cur,
-		reason: "启动初值", winStart: time.Now(), lastAt: time.Now(),
+		// lastAt 故意留零值：它同时充当"是否已经采过样"的标记。
+		// 不能用 lastTicks==0 当标记 —— 新进程的 utime+stime 合法地就是 0。
+		reason: "启动初值", winStart: time.Now(),
 	}
 }
 
@@ -154,9 +156,13 @@ func (t *autoTuner) tune() bool {
 
 	now := time.Now()
 	cpu, ticks, cpuOK := procCPUPercent(t.lastTicks, t.lastAt)
-	if cpuOK {
-		t.lastTicks, t.lastAt = ticks, now
-	}
+	// 无条件记录本次读数。两个坑都在这：
+	//   ① 上一版只在 cpuOK 时存 → 首次采样只有打点没有差值，lastTicks 永远停在 0，
+	//      之后每次都被判成"无 CPU 信号"，CPU 一路从来没生效过（实测发现）；
+	//   ② 用 "ticks > 0" 当"打过点"的判据也不行 —— 刚启动的进程 utime/stime 就是 0，
+	//      合法的 0 会被误判成"还没打点"。
+	// 所以直接存：读失败时 ticks 返回的是旧值，等价于没更新，无害。
+	t.lastTicks, t.lastAt = ticks, now
 
 	probes := t.winProbes
 	t.winProbes = 0
@@ -266,7 +272,10 @@ func procCPUPercent(prevTicks uint64, prevAt time.Time) (float64, uint64, bool) 
 		return 0, prevTicks, false
 	}
 	ticks := ut + st
-	if prevTicks == 0 || prevAt.IsZero() {
+	// 只用"上次采样时间"判断是否已经打过点。
+	// 原来还判断 prevTicks==0，但刚启动的进程 utime+stime 就是 0，会被误判成"没采过"，
+	// 导致 CPU 使用率永远算不出来。
+	if prevAt.IsZero() {
 		return 0, ticks, false
 	}
 	elapsed := time.Since(prevAt).Seconds()
