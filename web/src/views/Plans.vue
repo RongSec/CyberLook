@@ -54,14 +54,6 @@
           <n-select v-model:value="form.modules" multiple :options="moduleOptions" placeholder="默认端口扫描" />
         </n-form-item>
 
-        <n-form-item label="扫描引擎">
-          <n-select v-model:value="form.engine" :options="engineOptions" style="width: 220px" />
-          <span class="switch-tip">自研引擎：connect 扫描 + FingerprintHub 全量指纹，流式上报（v0.0.27 起唯一引擎）</span>
-        </n-form-item>
-
-        <n-form-item label="下发方式">
-          <span class="switch-tip" style="margin:0">单 IP 租约队列：目标展开为逐 IP 任务单元，空闲节点原子领取、崩溃自动回池重试（≤3 次），无需配置分片大小</span>
-        </n-form-item>
         <n-form-item label="扫描范围">
           <div class="range-box">
             <div class="range-line">
@@ -106,17 +98,13 @@
         <n-form-item label="指纹策略 -finger">
           <n-select v-model:value="form.finger" :options="fingerOptions" style="width: 140px" />
         </n-form-item>
-        <n-form-item label="服务端存活探测">
-          <n-switch v-model:value="form.aliveProbe" /> <span class="switch-tip">开启 = 平台先探测存活、只下发存活 IP；关闭 = 直接把全部目标 IP 分批下发</span>
+        <n-form-item label="存活探测">
+          <n-switch v-model:value="form.aliveProbe" />
+          <span class="switch-tip">开启后先探测目标存活，只扫描存活 IP</span>
         </n-form-item>
-        <n-form-item label="禁用存活探测(-np)">
-          <n-switch v-model:value="form.noPing" /> <span class="switch-tip">自研引擎：connect 扫描天然不发 ICMP（等价 -np，仅作记录）</span>
-        </n-form-item>
-        <n-form-item label="禁用启发式扫描">
-          <n-switch v-model:value="form.noSmart" /> <span class="switch-tip">自研引擎：按给定端口全扫，无启发式裁剪（等价 -nosmart，仅作记录）</span>
-        </n-form-item>
-        <n-form-item label="执行参数">
-          <n-code :code="previewCmd" language="bash" word-wrap />
+        <n-form-item label="启发式扫描">
+          <n-switch v-model:value="smartScan" />
+          <span class="switch-tip">按识别结果自动补充关联端口</span>
         </n-form-item>
         <n-form-item label="定时执行">
           <n-space align="center">
@@ -145,7 +133,7 @@
         <div class="cfg-item wide"><span>扫描范围</span><b>{{ configTask.ipRanges }}</b></div>
         <div class="cfg-item"><span>扫描模块</span><b>{{ configTask.modules || 'port' }}</b></div>
         <div class="cfg-item"><span>端口策略</span><b>{{ configTask.portMode === 'top100' ? 'Top100' : configTask.portMode === 'all' ? '全端口' : (configTask.ports || '-') }}</b></div>
-        <div class="cfg-item"><span>并发/超时</span><b>走节点设置</b></div>
+        <div class="cfg-item"><span>扫描速率</span><b>自动</b></div>
         <div class="cfg-item"><span>指纹策略</span><b>{{ configTask.finger || '-' }}</b></div>
         <div class="cfg-item"><span>定时</span><b>{{ cronText(configTask.cron) }}</b></div>
         <div class="cfg-item wide"><span>执行节点</span><b>{{ configTask.nodeIds === 'all' ? '全部节点' : configTask.nodeIds ? `节点 ${configTask.nodeIds}` : '本机' }}</b></div>
@@ -282,8 +270,7 @@
         <n-form-item label="指纹策略 -finger">
           <n-select v-model:value="tplForm.finger" :options="fingerOptions" style="width: 140px" />
         </n-form-item>
-        <n-form-item label="禁用存活探测"><n-switch v-model:value="tplForm.noPing" /></n-form-item>
-        <n-form-item label="禁用启发式扫描"><n-switch v-model:value="tplForm.noSmart" /></n-form-item>
+        <n-form-item label="启发式扫描"><n-switch v-model:value="tplSmart" /></n-form-item>
         <n-form-item label="额外参数">
           <n-input v-model:value="tplForm.extraArgs" placeholder="自由拼接参数，如 -pa 8080,9000" />
         </n-form-item>
@@ -308,30 +295,16 @@
         <span class="q-item q-probe">探针 <b>{{ fmtNum(logQueue.probesDone) }}</b> / {{ fmtNum(logQueue.probesTotal) }}</span>
         <span v-if="logTask?.error" class="q-error">{{ logTask.error }}</span>
       </div>
-      <!-- 实时调控条：暂停/继续 + 并发/超时动态调速（执行层内存态，≤2s 随心跳生效） -->
+      <!-- 调速条：速率由节点按机器规格与运行状态自适应，界面只保留暂停/继续 -->
       <div class="ctrl-bar">
         <n-tag :type="logTaskPaused ? 'warning' : 'success'" size="small" :bordered="false">
-          {{ logTaskPaused ? '已暂停（进度冻结）' : '执行中' }}
+          {{ logTaskPaused ? '已暂停' : '执行中' }}
         </n-tag>
         <n-button size="small" :type="logTaskPaused ? 'primary' : 'warning'"
           :disabled="!logTaskRunning" :loading="ctrlBusy" @click="toggleScanPause">
           {{ logTaskPaused ? '继续扫描' : '暂停扫描' }}
         </n-button>
-        <span class="ctrl-label">并发</span>
-        <n-slider v-model:value="ctrlForm.concurrency" :min="10" :max="8000" :step="10"
-          :tooltip="false" style="width: 140px" :disabled="!logTaskRunning" />
-        <n-input-number v-model:value="ctrlForm.concurrency" size="tiny" :min="10" :max="8000"
-          :show-button="false" style="width: 62px" :disabled="!logTaskRunning" />
-        <span class="ctrl-label">超时ms</span>
-        <n-slider v-model:value="ctrlForm.timeoutMs" :min="100" :max="30000" :step="100"
-          :tooltip="false" style="width: 100px" :disabled="!logTaskRunning" />
-        <n-input-number v-model:value="ctrlForm.timeoutMs" size="tiny" :min="100" :max="30000"
-          :show-button="false" style="width: 60px" :disabled="!logTaskRunning" />
-        <n-button size="small" type="primary" :disabled="!logTaskRunning" :loading="ctrlBusy"
-          @click="applyScanLimit">应用调速</n-button>
-        <span class="muted" style="font-size: 12px">
-          {{ logTaskRunning ? '调控只影响执行速率，不改任务配置；服务重启后回到默认' : '任务未在实时扫描中，调控不可用' }}
-        </span>
+        <span class="muted" style="font-size: 12px">扫描速率由节点自动调节</span>
       </div>
       <div class="terminal" ref="terminalEl">
         <div v-for="(line, i) in logLines" :key="i" class="log-line">{{ line }}</div>
@@ -362,7 +335,7 @@ const pagination = ref({ page: 1, pageSize: 20, itemCount: 0 })
 const showCreate = ref(false)
 const creating = ref(false)
 const engineOptions = [
-  { label: '自研引擎（唯一引擎）', value: 'builtin' },
+  { label: '内置引擎', value: 'builtin' },
 ]
 const form = ref({ name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
 const nodes = ref([])
@@ -420,21 +393,15 @@ function buildCron() {
   return `0 ${cronHour.value} */${cronInterval.value} * *`
 }
 
-const previewCmd = computed(() => {
-  // v0.0.27：引擎内置于 agent（无外部二进制），这里展示等价执行参数
-  const parts = ['[自研引擎]']
-  parts.push('-m ' + (form.value.modules.length ? form.value.modules.join(',') : 'port'))
-  if (form.value.name) parts.push(`-pr "${form.value.name}"`)
-  parts.push('-hf <目标IP列表>')
-  if (form.value.portMode === 'custom' && form.value.ports) parts.push(`-p ${form.value.ports}`)
-  if (form.value.portMode === 'all') parts.push('-p 1-65535')
-  if (form.value.thread) parts.push(`-t ${form.value.thread}`)
-  if (form.value.timeout) parts.push(`-time ${form.value.timeout}`)
-  if (form.value.modules.includes('url')) parts.push(`-finger ${form.value.finger}`)
-  if (form.value.noPing) parts.push('-np')
-  if (form.value.noSmart) parts.push('-nosmart')
-  if (form.value.extraArgs) parts.push(form.value.extraArgs)
-  return parts.join(' ')
+// 启发式扫描：界面用正向开关表达，后端字段是 noSmart（禁用）
+const tplSmart = computed({
+  get: () => !tplForm.value.noSmart,
+  set: (v) => { tplForm.value.noSmart = !v }
+})
+
+const smartScan = computed({
+  get: () => !form.value.noSmart,
+  set: (v) => { form.value.noSmart = !v }
 })
 
 const statusMap = {
@@ -463,12 +430,24 @@ const columns = [
       if (row.status !== 'running' && row.status !== 'paused') {
         return row.status === 'done' ? h(NProgress, { type: 'line', percentage: 100, height: 8, showIndicator: false, color: '#34d399' }) : '-'
       }
+      // 存活探测阶段：还没有扫描单元，单独显示"探测了多少 IP / 命中多少"
+      if (row.queue && row.queue.phase === 'probing') {
+        const total = row.totalIps || 0
+        const done = row.probeOffset || 0
+        const pct = total > 0 ? Math.min(99, Math.floor(done * 100 / total)) : 0
+        return h('div', {}, [
+          h(NProgress, { type: 'line', percentage: pct, height: 8, showIndicator: false, color: '#60a5fa' }),
+          h('div', { style: 'font-size:11px;color:#6b7280;margin-top:2px' },
+            `存活探测 ${fmtNum(done)}/${fmtNum(total)}｜存活 ${fmtNum(row.aliveCount || 0)}`)
+        ])
+      }
       if (row.percent >= 0) {
-        // 队列任务：真值 = Σprobes_done/Σprobes_total（后端注入），副行给 IP 粒度计数
         const kids = [h('span', {}, `${row.percent}%`)]
         if (row.queue) {
+          const q = row.queue
+          const uniTotal = q.total || (q.done + q.pending + q.leased + q.failed)
           kids.push(h('span', { style: 'font-size:10.5px;color:#9ca3af' },
-            `IP ${row.queue.done}/${row.queue.done + row.queue.pending + row.queue.leased + row.queue.failed}${row.queue.failed ? `（隔离${row.queue.failed}）` : ''}`))
+            `IP ${fmtNum(q.done)}/${fmtNum(uniTotal)}${q.failed ? `（隔离${q.failed}）` : ''}`))
         }
         return h('div', {}, [
           h(NProgress, { type: 'line', percentage: row.percent, height: 8, indicatorPlacement: 'inside',
@@ -767,7 +746,6 @@ function openLog(row) {
 
 // ===== 实时调控（暂停/继续/动态调速）：POST /tasks/:id/control =====
 const ctrlBusy = ref(false)
-const ctrlForm = ref({ concurrency: 600, timeoutMs: 3000 })
 const ctrlState = ref('none')
 const logTaskPaused = computed(() => ctrlState.value === 'pause')
 const logTask = computed(() => items.value.find(t => t.id === logTaskId.value))
@@ -789,8 +767,6 @@ async function sendControl(body, okMsg) {
     const res = await api.post(`/tasks/${logTaskId.value}/control`, body)
     const cmd = res?.cmd || {}
     ctrlState.value = cmd.paused ? 'pause' : (cmd.action || 'none')
-    if (cmd.concurrency) ctrlForm.value.concurrency = cmd.concurrency
-    if (cmd.timeoutMs) ctrlForm.value.timeoutMs = cmd.timeoutMs
     message.success(okMsg)
     load()
     return true
@@ -804,13 +780,6 @@ async function sendControl(body, okMsg) {
 function toggleScanPause() {
   if (logTaskPaused.value) sendControl({ action: 'resume' }, '已继续，下个心跳周期恢复扫描')
   else sendControl({ action: 'pause' }, '已暂停，在途探针自然结束后进度冻结')
-}
-function applyScanLimit() {
-  sendControl({
-    action: 'limit',
-    concurrency: ctrlForm.value.concurrency || 600,
-    timeoutMs: ctrlForm.value.timeoutMs || 3000
-  }, '调速已下发（≤2 秒生效，ETA 会随之重算）')
 }
 // SSE 进度行同步暂停态（调度级暂停：status=paused 时按钮也要变成"继续"）
 watch(logTask, (t) => {

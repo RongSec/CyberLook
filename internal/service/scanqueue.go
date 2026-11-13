@@ -75,6 +75,11 @@ type QueueStats struct {
 	FailedUnit  int64 `json:"failed"`
 	ProbesDone  int64 `json:"probesDone"`
 	ProbesTotal int64 `json:"probesTotal"`
+	// Total 单元总数（= 实际要扫的 IP 数）。进度按单元算，不按探针算：
+	// 探针口径下 94239 个 IP 各 100 端口 = 942 万探针，前几十秒永远是 0%。
+	Total int64 `json:"total"`
+	// Phase 阶段：probing=存活探测中 / scanning=扫IP中 / done=已完成
+	Phase string `json:"phase"`
 }
 
 // TaskPortsOf 任务端口串（引擎口径：top100→空、all→1-65535）。
@@ -105,6 +110,17 @@ func InitUnits(taskID uint, ipRanges string, portCount int) (int, int, error) {
 		return 0, 0, fmt.Errorf("端口数必须为正（当前 %d）", portCount)
 	}
 	ips := target.Resolve(parseTargets(ipRanges), ExcludeRangeStrings())
+	return InitUnitsFromIPs(taskID, ips, portCount)
+}
+
+// InitUnitsFromIPs 按给定 IP 列表建单元（存活探测后只把存活 IP 交给它）。
+func InitUnitsFromIPs(taskID uint, ips []string, portCount int) (int, int, error) {
+	if portCount <= 0 {
+		return 0, 0, fmt.Errorf("端口数必须为正（当前 %d）", portCount)
+	}
+	if len(ips) == 0 {
+		return 0, 0, fmt.Errorf("目标展开后无有效 IP")
+	}
 	seen := make(map[string]bool, len(ips))
 	rows := make([]model.TaskUnit, 0, len(ips))
 	for _, ip := range ips {
@@ -459,6 +475,13 @@ func QueueStatsOf(taskID uint) QueueStats {
 		}
 		s.ProbesDone += r.PDone
 		s.ProbesTotal += r.PTotal
+		s.Total += r.Cnt
+	}
+	switch {
+	case s.Total > 0:
+		s.Phase = "scanning"
+	case s.Total == 0:
+		s.Phase = "probing"
 	}
 	return s
 }
@@ -700,10 +723,26 @@ func DispatchQueueTask(task *model.ScanTask) (localFallback bool, err error) {
 		DropETAState(task.ID)
 	}
 	pc := PortCountOf(task)
+
+	// 开启存活探测时，先把目标探一遍再入队（异步，避免请求堵住几分钟）。
+	// 已有单元（重跑/并发下发）就跳过，避免重复探测。
+	if task.AliveProbe && unitCountOf(task.ID) == 0 {
+		if !startQueueAfterAliveProbe(*task, pc) {
+			return false, fmt.Errorf("存活探测启动失败")
+		}
+		return false, nil
+	}
+
 	created, total, err := InitUnits(task.ID, task.IPRanges, pc)
 	if err != nil {
 		return false, err
 	}
+	return finishQueueActivation(task, created, total, pc), nil
+}
+
+// finishQueueActivation 队列准备完成后的统一收尾：指派节点 → 落 running → 唤醒领取。
+// 抽出来是因为有两条入口：①无存活探测（直接展开全量 IP）；②存活探测完成（只有存活 IP）。
+func finishQueueActivation(task *model.ScanTask, created, total, pc int) (localFallback bool) {
 	if task.NodeIDs == "" {
 		// 未指定节点：有在线节点就自动指派（与分片制同策略），否则本机消费
 		var nodes []model.Node
@@ -748,8 +787,9 @@ func DispatchQueueTask(task *model.ScanTask) (localFallback bool, err error) {
 	if !localFallback {
 		wakeQueueConsumers(task)
 	}
-	return localFallback, nil
+	return localFallback
 }
+
 
 // wakeQueueConsumers 唤醒该任务允许的所有节点（拉醒领取循环）。
 func wakeQueueConsumers(task *model.ScanTask) {
@@ -794,11 +834,18 @@ func ExecuteTaskQueue(taskID uint) error {
 		return err
 	}
 	pc := PortCountOf(&task)
-	if _, total, err := InitUnits(task.ID, task.IPRanges, pc); err != nil {
-		return fmt.Errorf("队列初始化失败: %w", err)
+	// 单元可能已由「存活探测」阶段建好（只有存活 IP）。那种情况下绝不能再用
+	// task.IPRanges 全量展开一遍，否则死 IP 又被塞进队列，存活探测就白做了。
+	if unitCountOf(task.ID) == 0 {
+		if _, total, err := InitUnits(task.ID, task.IPRanges, pc); err != nil {
+			return fmt.Errorf("队列初始化失败: %w", err)
+		} else {
+			config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).
+				Updates(map[string]interface{}{"status": "running", "queue_mode": true, "total_ips": total})
+		}
 	} else {
 		config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).
-			Updates(map[string]interface{}{"status": "running", "queue_mode": true, "total_ips": total})
+			Updates(map[string]interface{}{"status": "running", "queue_mode": true})
 	}
 	tasklog.Clear(task.ID)
 	tasklog.AppendTS(task.ID, "[本机] 收到任务「%s」，进入单 IP 租约队列消费", task.Name)
