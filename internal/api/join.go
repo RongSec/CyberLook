@@ -1,13 +1,18 @@
 package api
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,7 +116,7 @@ case "$ARCH" in
   *) echo "不支持的架构: $ARCH（支持 amd64/arm64/386/mipsle）"; exit 1 ;;
 esac
 
-echo "[1/3] 安装到 $WORKDIR （架构 $ARCH）"
+echo "[1/4] 安装到 $WORKDIR （架构 $ARCH）"
 mkdir -p "$WORKDIR" && cd "$WORKDIR" || {
   echo "❌ 无法进入目录 $WORKDIR"; exit 1;
 }
@@ -138,7 +143,30 @@ fi
 mv -f scope-agent.part scope-agent
 chmod +x scope-agent
 
-echo "[2/3] 写入 systemd 服务（清除旧凭据，确保用本令牌重新注册）"
+# 指纹规则必须显式拉取：规则缺失时引擎不报错，只会「规则载入失败，仅做端口扫描」，
+# 表现为开放端口正常、但服务名/指纹/产品名全空（静默降级，最难发现）。
+echo "      下载指纹规则（全量 15,388 条，约 11MB，识别能力依赖它）..."
+RULES_DIR="$WORKDIR/data/fingerprint"
+mkdir -p "$RULES_DIR"
+rm -rf "${RULES_DIR:?}"/* 2>/dev/null || true
+if ! curl -fsSL "$SERVER/api/nodes/rules?token=$TOKEN" -o "$WORKDIR/data/fingerprint.tar.gz"; then
+  echo "❌ 下载指纹规则失败（识别能力会缺失）"
+  echo "   排查：curl -v -o /tmp/r.tar.gz \"$SERVER/api/nodes/rules?token=$TOKEN\""
+  exit 1
+fi
+if ! tar -xzf "$WORKDIR/data/fingerprint.tar.gz" -C "$RULES_DIR"; then
+  echo "❌ 规则包解压失败（系统缺少 tar？）"
+  exit 1
+fi
+rm -f "$WORKDIR/data/fingerprint.tar.gz"
+RULES_N=$(ls -1 "$RULES_DIR" 2>/dev/null | wc -l)
+if [ "$RULES_N" -lt 2 ]; then
+  echo "❌ 规则文件数异常（$RULES_N 个，至少应有 2 个 json）"
+  exit 1
+fi
+echo "      规则就绪：$RULES_N 个文件 → $RULES_DIR"
+
+echo "[2/4] 写入 systemd 服务（清除旧凭据，确保用本令牌重新注册）"
 rm -f "$WORKDIR/agent.json" "$WORKDIR/agent.token"
 cat > "$UNIT" <<EOF
 [Unit]
@@ -149,6 +177,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$WORKDIR
+# 显式指定规则目录（默认相对路径 data/fingerprint 也指向这里，写死更抗误操作）
+Environment=SCAN_RULES_DIR=$WORKDIR/data/fingerprint
+# 引擎是 connect 扫描：每个在途探针占一个 socket。systemd 默认 soft=1024，
+# 高并发下 fd 耗尽会让探针发不出去（单元会按失败重试，不会假报"端口关闭"，但吞吐上不去）。
+LimitNOFILE=65535
 ExecStart=$WORKDIR/scope-agent -server $SERVER -name $NODE -token $TOKEN
 Restart=always
 RestartSec=5
@@ -158,7 +191,7 @@ StartLimitIntervalSec=0
 WantedBy=multi-user.target
 EOF
 
-echo "[3/3] 启用开机自启并启动"
+echo "[3/4] 启用开机自启并启动"
 systemctl daemon-reload
 systemctl enable weijian-agent >/dev/null 2>&1
 systemctl restart weijian-agent
@@ -252,6 +285,23 @@ if (Test-Path $Exe) {
 
 Write-Host "      下载 scope-agent.exe（内置自研扫描引擎，单文件）..."
 Invoke-WebRequest -Uri "$Server/api/nodes/agent-binary?os=windows&token=$Token" -OutFile $Exe -UseBasicParsing
+
+# 指纹规则单独下发：缺了不会报错，只会降级成纯端口扫描（端口有、服务名/指纹全空）
+Write-Host "      下载指纹规则（约 11MB，识别能力依赖它）..."
+$RulesDir = Join-Path $Dir "data\fingerprint"
+New-Item -ItemType Directory -Force -Path $RulesDir | Out-Null
+Get-ChildItem $RulesDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$RulesTar = Join-Path $Dir "fingerprint.tar.gz"
+Invoke-WebRequest -Uri "$Server/api/nodes/rules?token=$Token" -OutFile $RulesTar -UseBasicParsing
+tar -xzf $RulesTar -C $RulesDir
+if (-not (Test-Path (Join-Path $RulesDir "service_fingerprint_v4.json"))) {
+    Write-Host "❌ 指纹规则解压失败（识别能力会缺失）。请确认系统自带 tar（Win10 1803+ 自带）"
+    Read-Host "按回车关闭"
+    return
+}
+Remove-Item $RulesTar -Force -ErrorAction SilentlyContinue
+[Environment]::SetEnvironmentVariable("SCAN_RULES_DIR", $RulesDir, "Machine")
+Write-Host "      规则就绪：$((Get-ChildItem $RulesDir -File).Count) 个文件 → $RulesDir"
 
 Write-Host "[2/4] 首次注册（消耗加入令牌，生成本地凭据 agent.json）"
 Remove-Item (Join-Path $Dir "agent.json") -Force -ErrorAction SilentlyContinue
@@ -395,26 +445,130 @@ func agentBinaryName(osType, arch string) (string, string) {
 // 支持两种认证：
 //   - 首次安装：一次性加入令牌（?token=）
 //   - 节点升级：节点自身凭据（?nodeId= + X-Node-Token 头）
-func AgentBinary(c *gin.Context) {
-	authed := false
+// nodeDownloadAuthed 校验「节点下载类」接口的调用方身份。
+// 两种合法方式：① 一次性加入令牌（首次安装）；② 节点自己的长期令牌（升级/补发规则）。
+func nodeDownloadAuthed(c *gin.Context) bool {
 	if tk := c.Query("token"); tk != "" && PeekJoinToken(tk) {
-		authed = true
+		return true
 	}
-	if !authed {
-		// 升级场景：节点用自己的长期令牌
-		if nid := c.Query("nodeId"); nid != "" {
-			var n model.Node
-			if err := config.DB.First(&n, nid).Error; err == nil &&
-				n.Token != "" && n.Token == c.GetHeader("X-Node-Token") {
-				authed = true
-			}
+	if nid := c.Query("nodeId"); nid != "" {
+		var n model.Node
+		if err := config.DB.First(&n, nid).Error; err == nil &&
+			n.Token != "" && n.Token == c.GetHeader("X-Node-Token") {
+			return true
 		}
 	}
-	if !authed {
+	return false
+}
+
+// rulesPackDir 解析服务端指纹规则目录。
+// 口径与 scanner.BuiltinRulesDir 一致，但这里不反向依赖 scanner 包：
+// 环境变量优先，其次容器内固定路径 /app/data/fingerprint，最后相对路径 data/fingerprint。
+func rulesPackDir() string {
+	if p := strings.TrimSpace(os.Getenv("SCAN_RULES_DIR")); p != "" {
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			return p
+		}
+	}
+	for _, p := range []string{"/app/data/fingerprint", "data/fingerprint"} {
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+// RulesPack 下发指纹规则包（tar.gz）。
+//
+// 为什么必须有这个接口：扫描引擎的服务识别依赖 data/fingerprint 下的规则文件，
+// 而裸机安装（install.sh / install.ps1）只下载了 scope-agent 二进制。
+// 规则缺失时引擎不会报错，只会打一行「规则载入失败，仅做端口扫描」然后降级成纯端口扫描
+// —— 端口结果照常、识别/指纹/产品名全空，属于最难发现的一类故障。
+// 所以安装脚本必须显式拉这个包，并且装完要校验文件数。
+func RulesPack(c *gin.Context) {
+	if !nodeDownloadAuthed(c) {
+		c.String(http.StatusForbidden, "令牌无效或已过期")
+		return
+	}
+	dir := rulesPackDir()
+	if dir == "" {
+		c.String(http.StatusInternalServerError, "服务端缺少指纹规则目录，无法下发")
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "读取规则目录失败: "+err.Error())
+		return
+	}
+	type item struct {
+		name string
+		size int64
+		mod  time.Time
+	}
+	var files []item
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil || fi.Size() == 0 {
+			continue
+		}
+		files = append(files, item{e.Name(), fi.Size(), fi.ModTime()})
+		total += fi.Size()
+	}
+	if len(files) == 0 {
+		c.String(http.StatusInternalServerError, "规则目录为空，拒绝下发空的规则包")
+		return
+	}
+
+	// 先写头、再流式打包（打包过程中出错只能中断连接，无法再改状态码）
+	c.Header("Content-Type", "application/gzip")
+	c.Header("Content-Disposition", `attachment; filename="fingerprint.tar.gz"`)
+	c.Header("X-Rules-Count", fmt.Sprintf("%d", len(files)))
+
+	gz := gzip.NewWriter(c.Writer)
+	tw := tar.NewWriter(gz)
+	defer func() {
+		_ = tw.Close()
+		_ = gz.Close()
+	}()
+	for _, f := range files {
+		hdr := &tar.Header{
+			Name:     f.name,
+			Mode:     0o644,
+			Size:     f.size,
+			ModTime:  f.mod,
+			Typeflag: tar.TypeReg,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			log.Printf("[规则下发] 写 tar 头失败 %s: %v", f.name, err)
+			return
+		}
+		fh, err := os.Open(filepath.Join(dir, f.name))
+		if err != nil {
+			log.Printf("[规则下发] 打开 %s 失败: %v", f.name, err)
+			return
+		}
+		if _, err := io.Copy(tw, fh); err != nil {
+			_ = fh.Close()
+			log.Printf("[规则下发] 传输 %s 中断: %v", f.name, err)
+			return
+		}
+		_ = fh.Close()
+	}
+	log.Printf("[规则下发] 已下发 %d 个文件 / %d 字节 给 %s", len(files), total, c.ClientIP())
+}
+
+// AgentBinary 下发节点二进制
+func AgentBinary(c *gin.Context) {
+	if !nodeDownloadAuthed(c) {
 		c.String(http.StatusForbidden, "令牌无效或已过期")
 		return
 	}
 	osType := c.DefaultQuery("os", "linux")
+
 	arch := c.DefaultQuery("arch", "amd64") // amd64 / arm64 / 386 / mipsle
 	path, name := agentBinaryName(osType, arch)
 	// 兼容历史命名（老镜像里是 scope-agent-linux 无架构后缀）
