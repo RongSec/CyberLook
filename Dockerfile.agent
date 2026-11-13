@@ -11,7 +11,11 @@ RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Versio
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
+# 运行期只需要 CA 根证书（扫 https 用），直接从构建阶段复制，不再跑 apt：
+# apt 源对国内网络经常握手失败/极慢，一次失败就让整次构建废掉，而这个镜像
+# 本来只需要一个 200KB 的证书文件。时区由 Go 内嵌的 time/tzdata 提供
+# （见 cmd/agent/main.go），不依赖系统 tzdata 包。
+COPY --from=go-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 
