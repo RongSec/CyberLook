@@ -21,6 +21,7 @@ package scanner
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -323,5 +324,30 @@ func PruneAuditProjectsIn(dbPath, projectPrefix string, keepSessions map[uint]bo
 			removed = append(removed, p)
 		}
 	}
+	// 删行只是把页标成空闲，文件不会自己变小：WAL 会一直涨，主库也留着空洞。
+	// 节点上这个库是 exe 同目录的 config.db，长期跑下来能吃掉几十 MB 纯垃圾。
+	if len(removed) > 0 {
+		CompactAuditDBIn(dbPath)
+	}
 	return removed
+}
+
+// CompactAuditDBIn 回收审计库空间：WAL checkpoint + VACUUM。
+// 只在真的删过行之后调用（VACUUM 会锁库重写整个文件，频繁做没意义）。
+func CompactAuditDBIn(dbPath string) {
+	if dbPath == "" {
+		dbPath = EngineDBPath()
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return
+	}
+	defer db.Close()
+	// TRUNCATE：把 WAL 文件截回 0，否则它只增不减
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		log.Printf("[审计库] WAL checkpoint 失败（忽略）: %v", err)
+	}
+	if _, err := db.Exec("VACUUM"); err != nil {
+		log.Printf("[审计库] VACUUM 失败（忽略）: %v", err)
+	}
 }

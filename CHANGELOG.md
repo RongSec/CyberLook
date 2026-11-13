@@ -22,12 +22,32 @@
 
 ### 优化
 
+- 新增 agent 运行状态自报（每 60s 一行）：`goroutines / heap / rss / fds / 在途上限`，
+  连续 5 分钟单调上涨会打 ⚠️ 警告 —— 判断泄漏靠趋势而不是等 OOM。
 - 节点吞吐不再依赖人工试参数：同机实测 K/limit 从固定值改为自动后，小机器的失败重试明显减少，
   大机器能自己吃到更高的在途数。
 
 ### 修复
 
-- **裸机安装不下发指纹规则**（与镜像那个缺陷同源，但脚本是另一条路径，之前只修了镜像）：
+- **内存 / goroutine / fd 泄漏共 13 项**（专项审计后逐条修，以下是已确认会累积的）：
+  - `internal/service/dispatch.go`：`pipelines`（每个任务持有完整 IP 清单，/16 就是十几万字符串）
+    与 `stallCache` 任务结束从不清理 → 服务端常驻内存随任务数单调上涨，只能靠重启。
+    现在任务终态时显式 `pipelines.Delete` + `delete(stallCache)`。
+  - `internal/service/notify.go`：`smtp.NewClient` 失败分支漏 `conn.Close()` → 每封失败告警邮件
+    漏一个 socket，持续告警时 fd 被吃光。
+  - `cmd/agent`：HTTP 客户端无任何超时（`DefaultClient` 零值）→ 服务端半死不活时
+    心跳/领任务的请求永久阻塞，goroutine 与连接都回不来。补 `ResponseHeaderTimeout=30s`
+    与总超时 120s。
+  - `cmd/agent`：`claimUnits` 返回 `(nil, nil)` 时直接读 `c.Cmd` → nil pointer panic（节点挂掉）。
+  - `cmd/agent`：取消后仍按空位继续 claim（只在 `inflight==0` 才退出循环）→ 取消后又有单元被领走、
+    扫完上报失败，凭空产生 failed_unit。改为取消即停止补位、只等在途收工。
+  - `internal/scanner/builtin.go`：K 路并发首次载入规则时 N 个 goroutine 同时解析 11MB JSON →
+    加锁串行化（后到者直接命中缓存）；结果集 `all` 与 `out` 双份保留 → 拷贝后立即 `all = nil`。
+  - `internal/scanner/auditdb.go`：清理只删行不回收空间，WAL 只增不减 → 清理后补
+    `PRAGMA wal_checkpoint(TRUNCATE)` + `VACUUM`。
+  - `cmd/agent`：新增单元硬超时（10min ~ 2h，按探针数×超时估算）—— 暂停是"冻结"不是取消 ctx，
+    控制链路失联时单元会永久挂在 limiter 上。
+- 裸机安装不下发指纹规则（与镜像那个缺陷同源，但脚本是另一条路径，之前只修了镜像）：
   `install.sh` / `install.ps1` 只下载 `scope-agent` 二进制，没拉 `data/fingerprint`，
   systemd 单元也没有 `SCAN_RULES_DIR` 与 `LimitNOFILE`。结果是裸机节点「端口扫得到、服务名与指纹全空」，
   日志只有一行「规则载入失败，仅做端口扫描」——静默降级。现在安装脚本会拉规则并校验文件数

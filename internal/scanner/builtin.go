@@ -54,9 +54,17 @@ type ruleCacheEntry struct {
 
 var ruleCache sync.Map // rulesDir -> *ruleCacheEntry
 
+// ruleLoadMu 串行化规则载入。
+// 作用：K 路单元同时首次进来时，避免 N 个 goroutine 各自解析同一份 11MB JSON
+// （实测 K=16 时 16 份同时解析直接把 CPU 打满、75s 零完成）。后到的 goroutine
+// 拿到锁后直接命中缓存返回，代价只有一次加锁。
+var ruleLoadMu sync.Mutex
+
 // loadRulesCached 载入并缓存规则集与主动探针索引。
 // 并发下可能重复构建，但结果幂等，sync.Map 覆盖写安全。
 func loadRulesCached(paths string) (*svcid.RuleSet, *svcid.ProbeIndex, error) {
+	ruleLoadMu.Lock()
+	defer ruleLoadMu.Unlock()
 	sum, err := ruleFilesFingerprint(paths)
 	if err != nil {
 		return nil, nil, err
@@ -328,6 +336,7 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 
 	allMu.Lock()
 	out := append([]ScanResult(nil), all...)
+	all = nil // 立刻放开第二份：out 已独立，保留 all 等于结果集占两倍内存
 	allMu.Unlock()
 	if st.LocalResErrs > 0 {
 		// 智能调速的信号源：EMFILE 出现说明在途数已越过本机 fd 能力。
