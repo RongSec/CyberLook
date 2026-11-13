@@ -129,3 +129,28 @@ func TestAutoLimitManualHoldDefinedOnce(t *testing.T) {
 		t.Fatalf("让位期 %v 太短，人调完十秒就被推回去等于没有", scanner.AutoManualHold)
 	}
 }
+
+// ⑨ K 必须随"在途目标 ÷ 单元端口数"变化，但不能把全端口扫描推出天文数字。
+func TestAutoUnitConcurrency(t *testing.T) {
+	old := autoPilot
+	defer func() { autoPilot = old }()
+	autoPilot = &autoTuner{cpuN: 4, memMB: 8000, fdBudget: 1500, base: 1400, cur: 1050}
+
+	// top100：1050 在途 ÷ 100 端口 → 11 个单元并行（旧实现固定 6，在途被钉死在 600）
+	if k := autoUnitConcurrency(100); k != 11 {
+		t.Fatalf("100 端口/单元期望 K=11，实际 %d", k)
+	}
+	// 全端口：1050 ÷ 65535 → 向上取整为 1，且不低于节点配置的 K（默认 6）
+	if k := autoUnitConcurrency(65535); k < 1 || k > 32 {
+		t.Fatalf("全端口 K 越界: %d", k)
+	}
+	// 读数不可用时不改
+	if k := autoUnitConcurrency(0); k != 0 {
+		t.Fatalf("端口数未知时应返回 0，实际 %d", k)
+	}
+	// 上限 32
+	autoPilot.cur = 999999
+	if k := autoUnitConcurrency(100); k != 32 {
+		t.Fatalf("K 应被钳到 32，实际 %d", k)
+	}
+}

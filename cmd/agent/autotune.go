@@ -340,3 +340,30 @@ func envInt(key string, def int) int {
 	}
 	return def
 }
+
+// autoUnitConcurrency 由"想要的在途探针数"和"单个单元的端口数"反推该并行几个单元。
+//
+// 为什么需要：limit 决定流量，K 决定有多少单元同时在跑，两者是乘起来的关系
+// （总在途 ≈ min(K × 单元端口数, limit)）。top100 的单元只有 100 个探针，
+// K=6 就把在途钉死在 600 —— 此时把 limit 调到 1400 也毫无意义。
+// 反过来，全端口扫描（65535/单元）不能给大 K，否则一个单元就 spawn 6 万个探针 goroutine。
+//
+// 返回 0 表示"不改"（未启用调速或读数不可用）。
+func autoUnitConcurrency(probesPerUnit int64) int {
+	if autoPilot == nil || probesPerUnit <= 0 {
+		return 0
+	}
+	inflight := autoPilot.recommended()
+	k := (inflight + int(probesPerUnit) - 1) / int(probesPerUnit)
+	hard := queueUnitConcurrency() // 节点配置的 K 作为下限：不要比人工配的更保守
+	if k < hard {
+		k = hard
+	}
+	if k > 32 { // 服务端批量领取上限
+		k = 32
+	}
+	if k < 1 {
+		k = 1
+	}
+	return k
+}
