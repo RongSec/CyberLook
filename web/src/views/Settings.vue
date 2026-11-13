@@ -4,7 +4,7 @@
       <n-descriptions :column="1" bordered label-placement="left" size="small">
         <n-descriptions-item label="平台名称">未见</n-descriptions-item>
         <n-descriptions-item label="版本">v{{ curVersion }}</n-descriptions-item>
-        <n-descriptions-item label="扫描引擎">自研引擎（portscan + FingerprintHub 全量指纹，v0.0.27 起唯一）</n-descriptions-item>
+        <n-descriptions-item label="扫描引擎">内置</n-descriptions-item>
       </n-descriptions>
           <n-alert v-if="updateLog.length" type="info" :bordered="false" style="margin-top: 12px">
         <div style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap">
