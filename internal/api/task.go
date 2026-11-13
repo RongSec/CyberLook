@@ -154,7 +154,10 @@ func ListTasks(c *gin.Context) {
 		AgentTotal int64  `json:"agentTotal"` // 分片总数
 		AgentDone  int64  `json:"agentDone"`  // 已完成分片
 		AgentNodes string `json:"agentNodes"` // 参与的节点名，逗号分隔
-		EtaSeconds int64  `json:"etaSeconds"` // 预计剩余秒数（-1=已暂停）
+		EtaSeconds int64  `json:"etaSeconds"` // 预计剩余秒数（-1=已暂停/无法估算）
+		PPS        float64 `json:"pps"`        // 当前估算速率（探针/秒）
+		EthConf    string  `json:"etaConfidence"` // low=样本不足（前端显示"估算中"）
+		Phase      string  `json:"phase"`      // probing / scanning / done
 		// Queue 队列概览（pending/leased/done/failed + 探针真值；非队列任务为 null）
 		Queue    *gin.H `json:"queue"`
 		Overview gin.H  `json:"overview"` // 概览：IP/存活/应用/违规
@@ -166,14 +169,20 @@ func ListTasks(c *gin.Context) {
 		if t.QueueMode {
 			percent := -1
 			var eta int64
+			var pps float64
+			var conf, phase string
 			if t.Status == "running" || t.Status == "paused" {
-				percent, eta = service.QueueProgress(t.ID)
+				snap := service.Progress(t.ID)
+				percent, eta, pps, conf, phase = snap.Percent, snap.ETASeconds, snap.PPS, string(snap.Confidence), snap.Phase
 			} else if t.Status == "done" {
 				percent = 100
+				phase = "done"
+				conf = "high"
 			}
 			qs := service.QueueStatsOf(t.ID)
 			q := gin.H{"pending": qs.Pending, "leased": qs.Leased, "done": qs.Done,
-				"failed": qs.FailedUnit, "probesDone": qs.ProbesDone, "probesTotal": qs.ProbesTotal}
+				"failed": qs.FailedUnit, "probesDone": qs.ProbesDone, "probesTotal": qs.ProbesTotal,
+				"total": qs.Total, "phase": qs.Phase}
 			// 卡死兜底：单元全终态但没人触发收敛（比如会话行没建过）
 			if t.Status == "running" && qs.Pending == 0 && qs.Leased == 0 && qs.Done+qs.FailedUnit > 0 {
 				service.CheckQueueDone(t.ID)
@@ -186,6 +195,7 @@ func ListTasks(c *gin.Context) {
 			_, prog := tasklog.Get(t.ID)
 			out[i] = taskWithProgress{
 				ScanTask: t, Progress: prog, Percent: percent, EtaSeconds: eta, Queue: &q,
+				PPS: pps, EthConf: conf, Phase: phase,
 				Overview:   buildOverview(t.ID, t.TotalIPs, t.AliveCount),
 				AgentTotal: qs.Done + qs.FailedUnit,
 				AgentDone:  qs.Done,

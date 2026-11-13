@@ -58,15 +58,19 @@ func TaskOverview(c *gin.Context) {
 	if t.QueueMode {
 		qs := service.QueueStatsOf(uint(id))
 		percent, eta := -1, int64(0)
+		pps, conf, phase := 0.0, "low", qs.Phase
 		if t.Status == "running" || t.Status == "paused" {
-			percent, eta = service.QueueProgress(uint(id))
+			snap := service.Progress(uint(id))
+			percent, eta, pps = snap.Percent, snap.ETASeconds, snap.PPS
+			conf, phase = string(snap.Confidence), snap.Phase
 		} else if t.Status == "done" {
-			percent = 100
+			percent, conf, phase = 100, "high", "done"
 		}
 		queue = gin.H{
 			"pending": qs.Pending, "leased": qs.Leased, "done": qs.Done, "failed": qs.FailedUnit,
 			"probesDone": qs.ProbesDone, "probesTotal": qs.ProbesTotal,
-			"percent": percent, "etaSeconds": eta,
+			"total": qs.Total, "phase": phase,
+			"percent": percent, "etaSeconds": eta, "pps": pps, "etaConfidence": conf,
 		}
 	}
 
