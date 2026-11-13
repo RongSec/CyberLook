@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"sync/atomic"
 	"strconv"
 	"strings"
@@ -996,9 +997,38 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 			fd = ft // 快单元没赶上进度行：按满额计
 		}
 		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "done")
-		log.Printf("[queue] 单元 %s 完成：%d 探针 %d 条结果", u.IP, fd, len(results))
+		// 行里带上开放端口清单：终端只滚一行"100 探针 0 条结果"太干，看不出扫到了什么。
+		log.Printf("[queue] 单元 %s 完成：%d 探针，开放 %d 个%s", u.IP, fd, len(results), openPortsBrief(results))
 	}
 	return wasCancelled
+}
+
+// openPortsBrief 把本单元开放的端口压成一行（最多 12 个，超出用 … 收尾）。
+// 例：`（22,80,135,139,445）`，用于终端里一眼看出这台机器上有什么。
+func openPortsBrief(results []scanner.ScanResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+	ports := make([]int, 0, len(results))
+	for _, r := range results {
+		ports = append(ports, r.Port)
+	}
+	sort.Ints(ports)
+	const maxShow = 12
+	var b strings.Builder
+	b.WriteString("（")
+	for i, p := range ports {
+		if i >= maxShow {
+			b.WriteString("…")
+			break
+		}
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(strconv.Itoa(p))
+	}
+	b.WriteString("）")
+	return b.String()
 }
 
 // unitHardTimeout 单个单元的绝对耗时上限。

@@ -285,14 +285,22 @@
 
     <!-- 终端弹窗 -->
     <n-modal v-model:show="showLog" preset="card" :title="`扫描引擎终端输出${logTaskName ? ' — ' + logTaskName : ''}`" style="width: 860px">
-      <!-- 队列概览条（IP 租约队列任务）：pending/进行中/完成/隔离 -->
+      <!-- 队列概览条：区分「存活探测中」与「扫描中」两个阶段 -->
       <div v-if="logQueue" class="queue-bar">
-        <n-tag size="small" :bordered="false" type="info">队列</n-tag>
-        <span class="q-item">待领取 <b>{{ logQueue.pending }}</b></span>
-        <span class="q-item q-run">进行中 <b>{{ logQueue.leased }}</b></span>
-        <span class="q-item q-done">完成 <b>{{ logQueue.done }}</b></span>
-        <span class="q-item" :class="{ 'q-fail': logQueue.failed > 0 }">隔离 <b>{{ logQueue.failed }}</b></span>
-        <span class="q-item q-probe">探针 <b>{{ fmtNum(logQueue.probesDone) }}</b> / {{ fmtNum(logQueue.probesTotal) }}</span>
+        <n-tag size="small" :bordered="false" :type="logQueue.phase === 'probing' ? 'info' : 'success'">
+          {{ logQueue.phase === 'probing' ? '存活探测' : '扫描' }}
+        </n-tag>
+        <template v-if="logQueue.phase === 'probing'">
+          <span class="q-item">已探测 <b>{{ fmtNum(logTask?.probeOffset) }}</b> / {{ fmtNum(logTask?.totalIps) }}</span>
+          <span class="q-item q-done">存活 <b>{{ fmtNum(logTask?.aliveCount) }}</b></span>
+        </template>
+        <template v-else>
+          <span class="q-item q-done">已完成 <b>{{ fmtNum(logQueue.done) }}</b> / {{ fmtNum(logQueue.total) }}</span>
+          <span class="q-item q-run">进行中 <b>{{ logQueue.leased }}</b></span>
+          <span class="q-item">待领取 <b>{{ fmtNum(logQueue.pending) }}</b></span>
+          <span v-if="logQueue.failed > 0" class="q-item q-fail">隔离 <b>{{ logQueue.failed }}</b></span>
+          <span class="q-item q-probe">探针 <b>{{ fmtNum(logQueue.probesDone) }}</b> / {{ fmtNum(logQueue.probesTotal) }}</span>
+        </template>
         <span v-if="logTask?.error" class="q-error">{{ logTask.error }}</span>
       </div>
       <!-- 调速条：速率由节点按机器规格与运行状态自适应，界面只保留暂停/继续 -->
@@ -304,7 +312,14 @@
           :disabled="!logTaskRunning" :loading="ctrlBusy" @click="toggleScanPause">
           {{ logTaskPaused ? '继续扫描' : '暂停扫描' }}
         </n-button>
-        <span class="muted" style="font-size: 12px">扫描速率由节点自动调节</span>
+        <span class="muted" style="font-size: 12px">
+          <template v-if="logQueue && logQueue.phase === 'probing'">
+            探测目标存活中，完成后自动开始扫描
+          </template>
+          <template v-else-if="logTask">
+            {{ logTask.percent }}%｜{{ etaText(logTask.etaSeconds) }}｜速率自动调节
+          </template>
+        </span>
       </div>
       <div class="terminal" ref="terminalEl">
         <div v-for="(line, i) in logLines" :key="i" class="log-line">{{ line }}</div>
@@ -752,6 +767,18 @@ const logTask = computed(() => items.value.find(t => t.id === logTaskId.value))
 const logTaskRunning = computed(() => logTask.value && (logTask.value.status === 'running' || logTask.value.status === 'paused'))
 // 队列概览（列表接口注入的 queue 字段；非队列任务为 null 不显示概览条）
 const logQueue = computed(() => logTask.value?.queue || null)
+
+// etaText 把秒数换成"预计剩余 x"；-1 = 已暂停/探测中不算 ETA
+function etaText(sec) {
+  if (sec == null || sec < 0) return '预计剩余 —'
+  if (sec === 0) return '即将完成'
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const ss = sec % 60
+  if (h > 0) return `预计剩余 ${h} 小时 ${m} 分`
+  if (m > 0) return `预计剩余 ${m} 分 ${ss} 秒`
+  return `预计剩余 ${ss} 秒`
+}
 
 function fmtNum(n) {
   if (n == null) return '-'
