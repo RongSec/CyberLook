@@ -621,7 +621,14 @@ func consumeQueue() int {
 		if !t.Claimable {
 			continue
 		}
-		done := make(chan struct{}, K)
+		// 目标并发单元数。注意 K 与 limit 是**两个不同的闸**：
+		//   limit = 同时在途的探针数（真正决定流量）
+		//   K     = 同时跑几个 IP 单元
+		// 总在途 ≈ min(K × 单元端口数, limit)。所以当单元端口数小（top100）时，
+		// K 才是瓶颈：K=6×100=600 在途，limit 给到 1400 也用不上，白白浪费一半。
+		// 这里按"想要的在途数 ÷ 单元端口数"反推 K，上限 32（服务端批量领取上限）。
+		target := K
+		done := make(chan struct{}, 64)
 		inflight := 0
 		// stopped 会被 K 个 worker 并发写、主循环并发读：必须是原子的。
 		// （早前是裸 bool，go test -race 下是 data race；语义上是"服务端取消该任务 →
@@ -639,7 +646,7 @@ func consumeQueue() int {
 				inflight--
 				continue
 			}
-			want := K - inflight
+			want := target - inflight
 			if want <= 0 {
 				<-done // 等任一单元收工再补位
 				inflight--
@@ -669,6 +676,13 @@ func consumeQueue() int {
 			// 后一轮响应（task 配置 / nodeConf / sessionID 兜底全可能对不上）。
 			batch := c
 			units := batch.unitList()
+			// 用本批单元的端口数反推该跑几个单元：想跑满在途，就得让 K 足够大。
+			// 全端口扫描（65535/单元）时会算出 K=1，正好避免 2M 个探针 goroutine。
+			if len(units) > 0 && units[0].ProbesTotal > 0 {
+				if n := autoUnitConcurrency(units[0].ProbesTotal); n > 0 {
+					target = n
+				}
+			}
 			if len(units) == 0 {
 				if c != nil && c.Paused {
 					log.Printf("[queue] 任务 #%d 已暂停，停领新单元（在途单元跑完即止）", t.TaskID)

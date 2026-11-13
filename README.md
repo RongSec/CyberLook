@@ -696,6 +696,11 @@ docker logs asset-agent 2>&1 | grep "识别=true"                  # 期望「�
 | `SCAN_INFLIGHT_AUTO` | 开 | `off` 关闭，回到节点固定并发 |
 | `SCAN_INFLIGHT_MAX` | 无 | 硬上限，覆盖算出来的 base（例如给节点限流 800） |
 
+**K 也跟着自动算**：`K = ceil(在途目标 ÷ 单元端口数)`，钳在 `[节点配置的 K, 32]`。
+原因是 limit 与 K 是两个不同的闸——总在途 ≈ `min(K × 单元端口数, limit)`。
+top100 的单元只有 100 个探针，固定 K=6 会把在途钉死在 600，此时 limit 调到 1400 也用不上；
+反过来全端口扫描（65535/单元）会被算成 K=1，避免一个单元 spawn 6 万个探针 goroutine。
+
 > 手动挡仍然有效：`/control limit` 想在自动挡之上"钉死一个值"时，把 `SCAN_INFLIGHT_AUTO=off` 关掉更干脆。
 
 ### 并发与 fd 调参表（v0.0.27 实测，4 核 / 8GB / connect 扫描）
