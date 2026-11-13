@@ -16,7 +16,9 @@ package service
 //	c) 理论初值（并发 ÷ 假定单探针延迟）：连一个样本都没有时给个量级，标低置信度。
 //
 // 有 a 时 rate = 0.65a + 0.35b；只有 b 时用 b；都没有用 c。ETA = 剩余探针 ÷ rate。
-// 置信度随样本量上升：样本 < 2 个 → low（前端显示"估算中"），>=2 → high。
+// 置信度随样本量上升：样本 < 3 个 → low（前端显示"估算中"），>=3 → high。
+// 为什么是 3 而不是 1：队列刚起来的那一两个窗口还在爬坡（在途单元才领了几个），
+// 用它算 ETA 会给出比实际大一个量级的数字，宁可先显示"估算中"。
 
 import (
 	"strconv"
@@ -99,9 +101,14 @@ func SampleQueueETA() {
 			if inst < 0 {
 				inst = 0 // 重跑清零
 			}
-			const alpha = 0.3
-			st.ewma = alpha*inst + (1-alpha)*st.ewma
-			st.samples++
+			// 只有真正出活了的窗口才算样本：探测阶段（还没有单元）与刚开始那一两个
+			// tick 的 inst 恒为 0，把它们算进来会让 confidence 提前变 high，
+			// 界面就会拿着"0 探针/秒"算出一个 1.5 小时的假 ETA。
+			if inst > 0 {
+				const alpha = 0.3
+				st.ewma = alpha*inst + (1-alpha)*st.ewma
+				st.samples++
+			}
 			st.lastDone = s.ProbesDone
 			st.lastAt = now
 		}
@@ -224,7 +231,7 @@ func Progress(taskID uint) ProgressSnapshot {
 	if snap.ETASeconds < 1 {
 		snap.ETASeconds = 1
 	}
-	if samples >= 2 {
+	if samples >= 3 {
 		snap.Confidence = ConfHigh
 	}
 	return snap

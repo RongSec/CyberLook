@@ -33,8 +33,12 @@ import (
 )
 
 const (
-	// aliveProbeConc 并发主机数。纯 connect/ICMP，1000 并发约 1000 个 socket。
-	aliveProbeConc = 1000
+	// aliveProbeConc 并发主机数。纯 connect/ICMP，3000 并发约 3000 个 socket。
+	// 为什么是 3000：一个 /16 要发 65536×16 ≈ 105 万次 dial，被过滤的端口每个都要
+	// 等满超时。1000 并发时实测约 6 分钟，界面看着像卡死；3000 并发压到 2 分钟左右。
+	// 服务端容器 nofile 是 1048576，留足余量；若部署环境 nofile 只有 1024，
+	// 引擎会把 fd 耗尽当成"本地资源不足"重试而不是判成端口关闭（见 engine resource.go）。
+	aliveProbeConc = 3000
 	// aliveProbeTCPTimeout 单端口 TCP 超时（引擎默认 400ms，这里略微收紧）。
 	aliveProbeTCPTimeout = 350 * time.Millisecond
 )
@@ -50,7 +54,10 @@ func ProbeAlive(ctx context.Context, ips []string, onProgress func(done, alive i
 		Concurrency: aliveProbeConc,
 		TCPTimeout:  aliveProbeTCPTimeout,
 		ICMP:        true,
-		OnProgress:  onProgress,
+		// 平台只要"这台活着/不活着"：ICMP 已经判活的主机不用再跑一轮 TCP，
+		// 端口真值交给后面的扫描阶段（那里本来就是全端口/前 N 端口扫）。
+		SkipTCPIfAlive: true,
+		OnProgress:     onProgress,
 	})
 	alive := make([]string, 0, len(hosts))
 	for _, h := range hosts {

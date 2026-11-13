@@ -80,6 +80,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
+      args:
+        # 不传这个，镜像里的二进制版本号就是 dev，节点每次心跳都会认为
+        # "中心版本比我新"从而自我升级一次（多了 26MB 下载 + 一次重启）。
+        VERSION: ${APP_VERSION:-dev}
     container_name: asset-agent
     restart: always
     # network_mode: host

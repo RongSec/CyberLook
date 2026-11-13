@@ -478,10 +478,13 @@ func QueueStatsOf(taskID uint) QueueStats {
 		s.Total += r.Cnt
 	}
 	switch {
-	case s.Total > 0:
-		s.Phase = "scanning"
 	case s.Total == 0:
 		s.Phase = "probing"
+	case s.Pending == 0 && s.Leased == 0:
+		// 没有待领也没有在途：扫描已经收敛（终态是 done 还是 failed 由任务自身状态说）
+		s.Phase = "done"
+	default:
+		s.Phase = "scanning"
 	}
 	return s
 }
