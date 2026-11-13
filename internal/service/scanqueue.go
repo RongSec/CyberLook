@@ -724,9 +724,15 @@ func DispatchQueueTask(task *model.ScanTask) (localFallback bool, err error) {
 	}
 	pc := PortCountOf(task)
 
+	// 单元已经就绪（可能是存活探测阶段建好的，也可能是重跑/重复下发）→ 直接收尾，
+	// **绝不能再按 IPRanges 展开一遍**：那会把存活探测判死的 IP 重新塞回队列，
+	// 存活探测就白做了（实测：99 个存活 IP 的任务被二次下发成 256 个单元）。
+	if n := unitCountOf(task.ID); n > 0 {
+		return finishQueueActivation(task, 0, int(n), pc), nil
+	}
+
 	// 开启存活探测时，先把目标探一遍再入队（异步，避免请求堵住几分钟）。
-	// 已有单元（重跑/并发下发）就跳过，避免重复探测。
-	if task.AliveProbe && unitCountOf(task.ID) == 0 {
+	if task.AliveProbe {
 		if !startQueueAfterAliveProbe(*task, pc) {
 			return false, fmt.Errorf("存活探测启动失败")
 		}
