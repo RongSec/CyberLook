@@ -191,8 +191,12 @@ func (t *autoTuner) tune() bool {
 // 规则（按优先级）：
 //
 //	1. 出现 EMFILE 等本地资源错误 → 乘 0.6（硬错误，退得很）
-//	2. CPU > 85% 连续两个窗口   → 乘 0.8（再加并发只会拉长每个探针延迟，纯亏）
-//	3. CPU < 55%               → 乘 1.15 试探（撞墙下一轮退回来，代价很小）
+//	2. CPU > 90% 连续两个窗口   → 乘 0.8（再加并发只会拉长每个探针延迟，纯亏）
+//	3. CPU < 70%               → 乘 1.15 试探（撞墙下一轮退回来，代价很小）
+//
+// 阈值取自实测：4 核机器跑 /24+top100 时进程 CPU 在 60~68% 稳定摆动，
+// 旧阈值（>85 才降、<55 才涨）会造成"永远停在中间不动"，等于白白浪费 20~30% 余量。
+// 现在 70% 以下继续爬、90% 以上才退，中间 70~90 留作迟滞区避免反复抖动。
 //	4. 其它                    → 维持
 //	5. 本窗口零探针（暂停/无任务）→ 不动，避免凭"CPU 低"空推
 func (t *autoTuner) decide(probes, localRes int64, cpu float64, cpuOK bool) string {
@@ -205,7 +209,7 @@ func (t *autoTuner) decide(probes, localRes int64, cpu float64, cpuOK bool) stri
 		t.cur = t.cur * 6 / 10
 		t.highCPU = 0
 		why = "本地资源错误 " + strconv.FormatInt(localRes, 10) + " 次"
-	case cpuOK && cpu > 85:
+	case cpuOK && cpu > 90:
 		t.highCPU++
 		if t.highCPU >= 2 {
 			t.cur = t.cur * 8 / 10
@@ -213,7 +217,7 @@ func (t *autoTuner) decide(probes, localRes int64, cpu float64, cpuOK bool) stri
 		} else {
 			why = "CPU 首次冲高，观察"
 		}
-	case cpuOK && cpu < 55:
+	case cpuOK && cpu < 70:
 		t.highCPU = 0
 		t.cur = t.cur * 115 / 100
 		why = "CPU 有余量"

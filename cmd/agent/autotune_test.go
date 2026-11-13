@@ -28,11 +28,11 @@ func TestAutoTuneShrinkOnLocalResourceErr(t *testing.T) {
 // ② CPU 首次冲高只观察，连续两次才降 —— 避免被单个窗口的尖峰带着抖。
 func TestAutoTuneCPUHighNeedsTwoWindows(t *testing.T) {
 	tt := newTestTuner(1000)
-	tt.decide(20000, 0, 95, true)
+	tt.decide(20000, 0, 95, true) // 首窗口只观察
 	if tt.cur != 1000 {
 		t.Fatalf("首个高 CPU 窗口不应调整，实际 %d", tt.cur)
 	}
-	tt.decide(20000, 0, 95, true)
+	tt.decide(20000, 0, 95, true) // 第二窗口才降
 	if tt.cur != 800 {
 		t.Fatalf("连续两个高 CPU 窗口应降到 800，实际 %d", tt.cur)
 	}
