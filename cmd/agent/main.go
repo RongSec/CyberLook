@@ -297,6 +297,8 @@ func main() {
 	// （下载 exe 到哪、审计库就生成到哪；不可写自动回退 ./config/）
 	scanner.EnableAudit()
 	checkNoFileLimit()
+	// nofile 自检给出 fd 预算，智能调速拿它当三堵墙之一，另两堵是 CPU 与内存。
+	startAutoTuner(safeInflight)
 	// 所有日志带主机名前缀，便于在中心端区分是哪个节点在执行
 	if hn, err := os.Hostname(); err == nil && hn != "" {
 		log.SetPrefix("[" + hn + "] ")
@@ -429,7 +431,22 @@ func queueUnitConcurrency() int {
 //
 // 生命周期：任务收敛时 scanner.UnregisterTaskCtrl(taskID) 释放，否则会随任务数泄漏。
 func queueLimiter(taskID uint, conc, timeoutMs int) *portscan.Controls {
+	// 智能调速开启时以它为准（它已把 fd/CPU/内存三堵墙算进去）；
+	// 关闭或未就绪时回落到节点配置的固定并发。两者都要过 clampInflight 兜底。
+	if n := autoInflight(); n > 0 {
+		conc = n
+	}
 	return scanner.EnsureTaskCtrl(taskID, clampInflight(conc), timeoutMs)
+}
+
+// activeTaskIDs / applyAutoLimit 是给 autotune.go 用的薄封装，
+// 让调速器不必直接依赖 scanner 的注册表细节。
+func activeTaskIDs() []uint { return scanner.ActiveTaskIDs() }
+
+func applyAutoLimit(taskID uint, n int) {
+	if scanner.SetTaskAutoLimit(taskID, n) {
+		log.Printf("[queue] 任务 #%d 智能调速：在途上限 → %d", taskID, n)
+	}
 }
 
 // ===== 本机 fd 上限自检（v0.0.27 假阴性防护）=====
@@ -900,6 +917,11 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	finished = true
 	mu.Unlock()
 	wg.Wait()
+
+	// 反馈给智能调速：这一单元实际扫了多少探针（用于判断窗口内是否真在干活）
+	if autoPilot != nil && !wasCancelled {
+		autoPilot.note(int(fd))
+	}
 
 	switch {
 	case wasCancelled:
