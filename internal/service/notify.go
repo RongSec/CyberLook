@@ -148,6 +148,7 @@ func SendEmail(s NotifySettings, title, content string) error {
 		}
 		client, err := smtp.NewClient(conn, s.EmailSMTP)
 		if err != nil {
+			_ = conn.Close() // 不关就是每封失败邮件漏一个 socket，反复告警时 fd 会被吃光
 			return err
 		}
 		defer client.Close()

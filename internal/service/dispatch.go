@@ -688,6 +688,15 @@ func CheckTaskAllDone(taskID uint) {
 		Updates(map[string]interface{}{"status": status, "finished_at": time.Now()})
 	FinishTaskRun(taskID, status)
 
+	// 任务已终态，内存里这些按 taskID 索引的条目不再有人读，必须显式释放：
+	//   pipelines  → taskPipeline 持有整个 IP 清单（/16 就是十几万个字符串）
+	//   stallCache → 每任务一个 Duration，只进不出会随任务数无限增长
+	// 不释放的话，服务端跑上几千个任务就是几百 MB 的常驻内存。重启后才"好"。
+	pipelines.Delete(taskID)
+	shardActMu.Lock()
+	delete(stallCache, taskID)
+	shardActMu.Unlock()
+
 	var t model.ScanTask
 	if err := config.DB.First(&t, taskID).Error; err == nil {
 		label := map[string]string{"done": "完成", "failed": "失败", "interrupted": "中断"}[status]

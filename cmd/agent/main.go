@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sync/atomic"
 	"strconv"
 	"strings"
 	"sync"
@@ -283,8 +284,14 @@ func disableProxyTransport() {
 		MaxIdleConns:        64,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
+		// ResponseHeaderTimeout：TCP 连上但服务端不回包时会一直挂在 Read 上。
+		// 没有它，DefaultClient 无超时 = 心跳/领任务的 goroutine 永久阻塞（内存与 fd 都回不来）。
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
 	}
 	http.DefaultClient.Transport = http.DefaultTransport
+	// 总超时兜底：body 读到一半卡住也能断（下载自身升级包时按需覆盖，见 selfUpgrade）
+	http.DefaultClient.Timeout = 120 * time.Second
 }
 
 func main() {
@@ -299,6 +306,8 @@ func main() {
 	checkNoFileLimit()
 	// nofile 自检给出 fd 预算，智能调速拿它当三堵墙之一，另两堵是 CPU 与内存。
 	startAutoTuner(safeInflight)
+	// 每 60s 自报 goroutines/heap/rss/fds —— 判断泄漏靠趋势，不靠猜。
+	startMetricsLogger()
 	// 所有日志带主机名前缀，便于在中心端区分是哪个节点在执行
 	if hn, err := os.Hostname(); err == nil && hn != "" {
 		log.SetPrefix("[" + hn + "] ")
@@ -614,10 +623,21 @@ func consumeQueue() int {
 		}
 		done := make(chan struct{}, K)
 		inflight := 0
-		stopped := false // 服务端取消该任务 → 不再补位，等在途跑完即退
+		// stopped 会被 K 个 worker 并发写、主循环并发读：必须是原子的。
+		// （早前是裸 bool，go test -race 下是 data race；语义上是"服务端取消该任务 →
+		//  不再补位，等在途跑完即退"。）
+		var stopped atomic.Bool
 		for {
-			if stopped && inflight == 0 {
-				break
+			// 已取消：绝不再领新单元，只等在途收工。
+			// （旧写法只在 inflight==0 时退出，等于"取消后还按空位继续领"——
+			//  实测表现为取消后又有单元被领走、扫完上报失败，产生 failed_unit。）
+			if stopped.Load() {
+				if inflight == 0 {
+					break
+				}
+				<-done
+				inflight--
+				continue
 			}
 			want := K - inflight
 			if want <= 0 {
@@ -626,6 +646,12 @@ func consumeQueue() int {
 				continue
 			}
 			c, err := claimUnits(t.TaskID, want)
+			if err == nil && c == nil {
+				// 服务端 200 + 空 body 时上游会返回 (nil,nil)；后面要读 c.Cmd，
+				// 不兜住就是 nil pointer panic（node 挂掉，等 watchdog 拉起）。
+				log.Printf("[queue] 任务 #%d 领取响应为空，本轮跳过", t.TaskID)
+				break
+			}
 			if err != nil {
 				log.Printf("[queue] 任务 #%d 领取失败: %v", t.TaskID, err)
 				if inflight > 0 { // 别空转打服务端：没活就等在途收工
@@ -638,7 +664,11 @@ func consumeQueue() int {
 			// 任务级持久投影：把任务当前 pause/limit 状态应用到该任务共享 limiter。
 			// 键是 taskID（K 路单元共用一个 ctrl），带 seq 乱序防护；幂等，可每轮调用。
 			applyQueueCtrl(t.TaskID, c.Cmd)
-			units := c.unitList()
+			// batch 必须是本轮 claim 的**快照**：c 会在下一轮 claimUnits 被重新赋值，
+			// 而下面 URL 起的 goroutine 是异步执行的 —— 直接捕 c 会让先起的单元读到
+			// 后一轮响应（task 配置 / nodeConf / sessionID 兜底全可能对不上）。
+			batch := c
+			units := batch.unitList()
 			if len(units) == 0 {
 				if c != nil && c.Paused {
 					log.Printf("[queue] 任务 #%d 已暂停，停领新单元（在途单元跑完即止）", t.TaskID)
@@ -660,8 +690,8 @@ func consumeQueue() int {
 						}
 						done <- struct{}{}
 					}()
-					if runQueueUnit(t.TaskID, c, u) {
-						stopped = true // 取消：多 worker 下幂等——在途跑完就不再补位
+					if runQueueUnit(t.TaskID, batch, u) {
+						stopped.Store(true) // 取消：多 worker 下幂等——在途跑完就不再补位
 					}
 				}(u)
 			}
@@ -671,7 +701,7 @@ func consumeQueue() int {
 			<-done
 			inflight--
 		}
-		if stopped {
+		if stopped.Load() {
 			log.Printf("[queue] 任务 #%d 已被取消，退出领取循环", t.TaskID)
 		}
 		// 任务收敛（完成/取消/本轮领空）→ 释放任务级共享 limiter，避免句柄泄漏。
@@ -848,6 +878,17 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		}
 	}()
 
+	// 硬超时兜底。暂停（pause）在引擎里是"冻结在途探针"而不是取消 ctx —— 这是刻意的，
+	// 为了恢复后能原地接着跑。代价是：如果控制链路失联（服务端挂了/节点被摘掉），
+	// 没人再发 resume，这个单元就会永远挂在 limiter 上，goroutine 与 socket 都回不来。
+	// 所以给一个与暂停状态无关的绝对上限：理论最坏耗时 = 探针数 × 超时 ÷ 最小在途。
+	hard := unitHardTimeout(u.ProbesTotal, timeout)
+	hardTimer := time.AfterFunc(hard, func() {
+		log.Printf("[queue] 单元 %s 超过硬上限 %s，强制中止（可能是暂停后控制链路失联）", u.IP, hard)
+		scanner.StopScan(opts.ProjectID)
+	})
+	defer hardTimer.Stop()
+
 	results, err := scanner.RunPortScan([]string{u.IP}, fetchExcludes(), opts,
 		func(line string, isProgress bool) {
 			if isProgress {
@@ -944,6 +985,29 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		log.Printf("[queue] 单元 %s 完成：%d 探针 %d 条结果", u.IP, fd, len(results))
 	}
 	return wasCancelled
+}
+
+// unitHardTimeout 单个单元的绝对耗时上限。
+//
+//	下限 10 分钟：正常单元（100 端口 × 1.5s ÷ 数百在途）只要几秒，10 分钟足够容错；
+//	上限 2 小时：全端口扫描（65535 端口）单 IP 也要跑很久，不能一刀切。
+//	估算口径：探针数 × 单探针超时 ÷ 最小在途(100)，再乘 3 留余量。
+func unitHardTimeout(probes int64, timeoutMs int) time.Duration {
+	const minInflight = 100
+	if probes <= 0 {
+		return 10 * time.Minute
+	}
+	if timeoutMs <= 0 {
+		timeoutMs = 1500
+	}
+	est := time.Duration(probes) * time.Duration(timeoutMs) * time.Millisecond / minInflight * 3
+	if est < 10*time.Minute {
+		est = 10 * time.Minute
+	}
+	if est > 2*time.Hour {
+		est = 2 * time.Hour
+	}
+	return est
 }
 
 // reportUnitProgress 队列心跳（带 ip）：续租 + 单元读数；返回取消/调控指令。
