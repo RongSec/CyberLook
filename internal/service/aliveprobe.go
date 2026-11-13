@@ -19,7 +19,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"sort"
@@ -126,12 +125,21 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 		}
 		sortIPsStable(alive)
 
-		icmpDesc := "ICMP 不可用（无权限，已退化为纯 TCP）"
-		if !st.ICMPSkip {
-			icmpDesc = fmt.Sprintf("ICMP 命中 %d", st.ByICMP)
+		// ICMP 与 TCP 的命中集合有交集，直接并列会让人算不平（96 + 97 ≠ 99）。
+		// 这里换算成互斥口径：只被 ICMP 判到的、只被 TCP 判到的、两边都判到的。
+		inter := st.ByICMP + st.ByTCP - len(alive)
+		if inter < 0 {
+			inter = 0
 		}
-		tasklog.AppendTS(task.ID, "[存活探测] 判定：%s，TCP 判活 %d，不可达 %d，耗时 %s",
-			icmpDesc, st.ByTCP, st.Unreach, st.Elapsed.Round(time.Second))
+		onlyICMP := st.ByICMP - inter
+		onlyTCP := st.ByTCP - inter
+		if st.ICMPSkip {
+			tasklog.AppendTS(task.ID, "[存活探测] 判定：ICMP 不可用（无权限，退化为纯 TCP），TCP 判活 %d，不可达 %d，耗时 %s",
+				st.ByTCP, st.Unreach, st.Elapsed.Round(time.Second))
+		} else {
+			tasklog.AppendTS(task.ID, "[存活探测] 判定：两者都判到 %d，仅 ICMP 判到 %d，仅 TCP 判到 %d，不可达 %d，耗时 %s",
+				inter, onlyICMP, onlyTCP, st.Unreach, st.Elapsed.Round(time.Second))
+		}
 
 		if len(alive) == 0 {
 			config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
