@@ -314,10 +314,12 @@
         </n-button>
         <span class="muted" style="font-size: 12px">
           <template v-if="logQueue && logQueue.phase === 'probing'">
-            探测目标存活中，完成后自动开始扫描
+            探测目标存活中<template v-if="logQueue.etaSeconds >= 0">，{{ etaText(logQueue.etaSeconds, logQueue.etaConfidence) }}</template>
           </template>
           <template v-else-if="logTask">
-            {{ logTask.percent }}%｜{{ etaText(logTask.etaSeconds) }}｜速率自动调节
+            {{ logTask.percent }}%｜{{ etaText(logTask.etaSeconds, logTask.etaConfidence, logTask.status === 'paused') }}
+            <template v-if="logTask.pps > 0">｜{{ fmtNum(Math.round(logTask.pps)) }} 探针/秒</template>
+            ｜速率自动调节
           </template>
         </span>
       </div>
@@ -453,7 +455,9 @@ const columns = [
         return h('div', {}, [
           h(NProgress, { type: 'line', percentage: pct, height: 8, showIndicator: false, color: '#60a5fa' }),
           h('div', { style: 'font-size:11px;color:#6b7280;margin-top:2px' },
-            `存活探测 ${fmtNum(done)}/${fmtNum(total)}｜存活 ${fmtNum(row.aliveCount || 0)}`)
+            `存活探测 ${fmtNum(done)}/${fmtNum(total)}｜存活 ${fmtNum(row.aliveCount || 0)}`),
+          h('div', { style: 'font-size:10.5px;color:#9ca3af;margin-top:1px' },
+            etaText(row.etaSeconds, row.etaConfidence, row.status === 'paused'))
         ])
       }
       if (row.percent >= 0) {
@@ -464,12 +468,16 @@ const columns = [
           kids.push(h('span', { style: 'font-size:10.5px;color:#9ca3af' },
             `IP ${fmtNum(q.done)}/${fmtNum(uniTotal)}${q.failed ? `（隔离${q.failed}）` : ''}`))
         }
+        // 剩余时间直接挂在进度条下面：不用点开详情就能判断"还要不要等"
+        const etaLine = etaText(row.etaSeconds, row.etaConfidence, row.status === 'paused')
         return h('div', {}, [
           h(NProgress, { type: 'line', percentage: row.percent, height: 8, indicatorPlacement: 'inside',
             color: row.status === 'paused' ? '#8b5cf6' : '#f59e0b' }),
-          h('div', { style: 'display:flex;justify-content:space-between;font-size:11px;color:#6b7280;margin-top:2px' }, kids)
+          h('div', { style: 'display:flex;justify-content:space-between;font-size:11px;color:#6b7280;margin-top:2px' }, kids),
+          h('div', { style: 'font-size:10.5px;color:#9ca3af;margin-top:1px' }, etaLine)
         ])
       }
+
       return h(NProgress, { type: 'line', processing: true, percentage: 40, height: 8, showIndicator: false })
     }
   },
@@ -768,16 +776,23 @@ const logTaskRunning = computed(() => logTask.value && (logTask.value.status ===
 // 队列概览（列表接口注入的 queue 字段；非队列任务为 null 不显示概览条）
 const logQueue = computed(() => logTask.value?.queue || null)
 
-// etaText 把秒数换成"预计剩余 x"；-1 = 已暂停/探测中不算 ETA
-function etaText(sec) {
-  if (sec == null || sec < 0) return '预计剩余 —'
+// etaText 把秒数换成"剩余 x"。
+// -1 有两种含义：任务暂停（显示"已暂停"）、样本不足（显示"估算中"），由 conf/状态区分。
+// 超过一天不封顶，按天/小时给，否则慢任务会显示一个骗人的"1 天"。
+function etaText(sec, conf, paused) {
+  if (paused) return '已暂停'
+  if (sec == null || sec < 0) {
+    return conf === 'high' ? '剩余时间计算中' : '估算中…'
+  }
   if (sec === 0) return '即将完成'
-  const h = Math.floor(sec / 3600)
+  const d = Math.floor(sec / 86400)
+  const h = Math.floor((sec % 86400) / 3600)
   const m = Math.floor((sec % 3600) / 60)
   const ss = sec % 60
-  if (h > 0) return `预计剩余 ${h} 小时 ${m} 分`
-  if (m > 0) return `预计剩余 ${m} 分 ${ss} 秒`
-  return `预计剩余 ${ss} 秒`
+  if (d > 0) return `剩余约 ${d} 天 ${h} 小时`
+  if (h > 0) return `剩余 ${h} 小时 ${m} 分`
+  if (m > 0) return `剩余 ${m} 分 ${ss} 秒`
+  return `剩余 ${ss} 秒`
 }
 
 function fmtNum(n) {
