@@ -54,6 +54,9 @@ type ruleCacheEntry struct {
 
 var ruleCache sync.Map // rulesDir -> *ruleCacheEntry
 
+// engineParamOnce 只让"扫描参数"那一行打一次（队列模式每单元都会调进来）。
+var engineParamOnce sync.Once
+
 // ruleLoadMu 串行化规则载入。
 // 作用：K 路单元同时首次进来时，避免 N 个 goroutine 各自解析同一份 11MB JSON
 // （实测 K=16 时 16 份同时解析直接把 CPU 打满、75s 零完成）。后到的 goroutine
@@ -232,8 +235,13 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	}
 
 	total := int64(len(ips)) * int64(len(ports))
-	logf(logFn, fmt.Sprintf("[自研引擎] 目标 %d 个 × 端口 %d 个 = %d 探针，并发 %d，超时 %dms，识别=%v，识别并发 %d，全量指纹=%v",
-		len(ips), len(ports), total, conc, timeoutMs, workers > 0, workers, fullFinger))
+	// 这行描述的是"本次调用的扫描参数"，队列模式下每个 IP 单元都会进来一次，
+	// 984 个单元就是 984 行一模一样的内容，把终端刷得看不见真东西。
+	// 参数在同一进程里基本恒定，只在第一次打印。
+	engineParamOnce.Do(func() {
+		logf(logFn, fmt.Sprintf("[自研引擎] 扫描参数：并发 %d，超时 %dms，识别=%v（识别并发 %d，全量指纹 %v）；本次 %d 目标 × %d 端口 = %d 探针",
+			conc, timeoutMs, workers > 0, workers, fullFinger, len(ips), len(ports), total))
+	})
 
 	// ===== 审计库（仅 agent 进程启用；旁路，建库失败只记日志不中断扫描）=====
 	audit := newAuditWriter(opts.ProjectID, logFn)

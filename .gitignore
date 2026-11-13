@@ -68,3 +68,4 @@ third_party/tscanclient_win/config/CheckKB-CVEs.csv
 
 # 多平台出包产物
 dist/
+.tmp_tok

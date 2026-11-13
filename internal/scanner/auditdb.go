@@ -35,6 +35,9 @@ import (
 // server / bench 进程保持 false，**不写审计库**（避免中心容器磁盘无界增长）。
 var auditEnabled atomic.Bool
 
+// auditPathOnce 落库路径只报一次（每个扫描单元都会建一次 writer）。
+var auditPathOnce sync.Once
+
 // EnableAudit 开启审计落库。只在 cmd/agent 的 main 里调用一次。
 // 测试中用于验证开启态；开启后不可逆（进程级开关）。
 func EnableAudit() { auditEnabled.Store(true) }
@@ -126,7 +129,7 @@ func newAuditWriter(project string, logFn LogFunc) *auditWriter {
 		return nil
 	}
 	_ = db.Ping()
-	logf(logFn, "[审计库] 落库路径 "+dbPath)
+	auditPathOnce.Do(func() { logf(logFn, "[审计库] 落库路径 "+dbPath) })
 	return &auditWriter{db: db, project: project, logFn: logFn}
 }
 

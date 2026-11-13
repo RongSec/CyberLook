@@ -25,7 +25,18 @@ RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Versio
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei postgresql-client && rm -rf /var/lib/apt/lists/*
+# apt 源可换：国内网络直连 deb.debian.org 经常卡在 Packages 索引上（反复 Ign/超时），
+# 一次抖动就让整次构建作废。CI 在境外不需要换，本地构建传
+#   --build-arg APT_MIRROR=mirrors.aliyun.com
+# 即可，默认行为与官方源完全一致。
+ARG APT_MIRROR=deb.debian.org
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    else \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei postgresql-client && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 
