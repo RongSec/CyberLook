@@ -32,6 +32,7 @@ func RegisterRoutes(r *gin.Engine) {
 	r.GET("/api/nodes/install.sh", InstallSh)
 	r.GET("/api/nodes/install.ps1", InstallPs1)
 	r.GET("/api/nodes/agent-binary", AgentBinary)
+	r.GET("/api/nodes/rules", RulesPack)
 
 	// agent 长连接（SSE 唤醒）与子任务上报（agent 调用，不依赖 JWT）
 	r.GET("/api/agent/stream/:id", AgentAuth(), AgentStream)
