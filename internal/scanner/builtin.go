@@ -28,8 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"asset-platform/internal/portscan"
-	"asset-platform/internal/svcid"
+	"github.com/RongSec/CyberLook-Scan/portscan"
+	"github.com/RongSec/CyberLook-Scan/svcid"
 	"asset-platform/internal/target"
 )
 

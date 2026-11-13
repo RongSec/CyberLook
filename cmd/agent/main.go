@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"asset-platform/internal/portscan"
+	"github.com/RongSec/CyberLook-Scan/portscan"
 	"asset-platform/internal/scanner"
 	"asset-platform/internal/version"
 )
