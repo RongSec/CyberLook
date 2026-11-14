@@ -68,11 +68,11 @@ var autoOnce sync.Once
 func startAutoTuner(fdBudget int) {
 	autoOnce.Do(func() {
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("SCAN_INFLIGHT_AUTO")), "off") {
-			log.Printf("[auto] 智能调速已关闭（SCAN_INFLIGHT_AUTO=off），使用固定并发")
+			log.Printf("[调速] 智能调速已关闭（SCAN_INFLIGHT_AUTO=off），使用固定并发")
 			return
 		}
 		autoPilot = newAutoTuner(fdBudget)
-		log.Printf("[auto] 智能调速启用：本机 %d 核 / %s，fd 预算 %d → 在途天花板 %d，起步 %d",
+		log.Printf("[调速] 智能调速启用：本机 %d 核 / %s，fd 预算 %d → 在途天花板 %d，起步 %d",
 			autoPilot.cpuN, memDesc(autoPilot.memMB), fdBudget, autoPilot.base, autoPilot.cur)
 		go autoPilot.loop()
 	})
@@ -181,7 +181,7 @@ func (t *autoTuner) tune() bool {
 	why := t.decide(probes, localRes, cpu, cpuOK)
 	if t.cur != prev {
 		t.reason = why
-		log.Printf("[auto] 在途上限 %d → %d（%s；CPU %s，本机 %d 核 / %s，fd 预算 %d，本窗口 %d 探针）",
+		log.Printf("[调速] 在途上限 %d → %d（%s；CPU %s，本机 %d 核 / %s，fd 预算 %d，本窗口 %d 探针）",
 			prev, t.cur, why, fmtPct(cpu, cpuOK), t.cpuN, memDesc(t.memMB), t.fdBudget, probes)
 		return true
 	}

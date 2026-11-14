@@ -567,3 +567,9 @@ func inferService(protocol, banner, mid string) string {
 	}
 	return "unknown"
 }
+
+// InterceptedPortsOf 对外暴露中间件接管端口检测（存活探测在 service 层调用）。
+// 结果带缓存，重复调用不产生额外探测开销。
+func InterceptedPortsOf(ports []int) []int {
+	return interceptedPorts(ports)
+}

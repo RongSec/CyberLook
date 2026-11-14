@@ -831,9 +831,11 @@ func wakeQueueConsumers(task *model.ScanTask) {
 
 var (
 	// 引擎进度行：「进度 21% (283200/1279104) [3m4s:10m23s] 5500探针/秒 开放 3 已识别 2」
-	unitProgRe = regexp.MustCompile(`\((\d+)\s*/\s*(\d+)\)`)
-	unitPpsRe  = regexp.MustCompile(`([\d.]+)探针/秒`)
-	unitOpenRe = regexp.MustCompile(`开放 (\d+) 已识别 (\d+)`)
+	// 与 internal/scanner/builtin.go 的进度行文案对齐：
+	// 「[自研引擎] 扫描中 45%（4500/10000 探针，已用 3s，剩余 6s）｜613 探针/秒｜开放端口 2 个，已识别 2 个」
+	unitProgRe = regexp.MustCompile(`(\d+)\s*/\s*(\d+)\s*探针|\((\d+)\s*/\s*(\d+)\)`)
+	unitPpsRe  = regexp.MustCompile(`([\d.]+)\s*探针/秒`)
+	unitOpenRe = regexp.MustCompile(`开放端口 (\d+) 个[，,]?\s*(?:已识别|识别服务) (\d+) 个|开放 (\d+) 已识别 (\d+)`)
 )
 
 // ExecuteTaskQueue 本机队列消费主循环。返回任务级错误（队列空返回 nil 由收敛判定收尾）。
@@ -964,9 +966,7 @@ func runLocalUnit(taskID uint, opts scanner.ScanOptions, u *QueueUnit) {
 			return
 		}
 		tasklog.SetProgress(taskID, line)
-		if m := unitProgRe.FindStringSubmatch(line); len(m) == 3 {
-			a, _ := strconv.ParseInt(m[1], 10, 64)
-			b, _ := strconv.ParseInt(m[2], 10, 64)
+		if a, b, ok := progPairOf(line); ok {
 			mu.Lock()
 			if a > pd {
 				pd = a
@@ -983,9 +983,7 @@ func runLocalUnit(taskID uint, opts scanner.ScanOptions, u *QueueUnit) {
 				mu.Unlock()
 			}
 		}
-		if m := unitOpenRe.FindStringSubmatch(line); len(m) == 3 {
-			a, _ := strconv.ParseInt(m[1], 10, 64)
-			b, _ := strconv.ParseInt(m[2], 10, 64)
+		if a, b, ok := openPairOf(line); ok {
 			mu.Lock()
 			if a > open {
 				open = a
@@ -1048,4 +1046,41 @@ func runLocalUnit(taskID uint, opts scanner.ScanOptions, u *QueueUnit) {
 	}
 	tasklog.AppendTS(taskID, "[本机] 单元 %s 完成：%d 探针 %d 开放，耗时 %v",
 		u.IP, fd, fo, time.Since(t0).Round(time.Millisecond))
+}
+
+// progPairOf / openPairOf 解析引擎进度行（同时兼容新旧两代文案）。
+func progPairOf(line string) (int64, int64, bool) {
+	m := unitProgRe.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return 0, 0, false
+	}
+	pick := func(i int) int64 {
+		if i < len(m) && m[i] != "" {
+			v, _ := strconv.ParseInt(m[i], 10, 64)
+			return v
+		}
+		return 0
+	}
+	if m[1] != "" {
+		return pick(1), pick(2), true
+	}
+	return pick(3), pick(4), true
+}
+
+func openPairOf(line string) (int64, int64, bool) {
+	m := unitOpenRe.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return 0, 0, false
+	}
+	pick := func(i int) int64 {
+		if i < len(m) && m[i] != "" {
+			v, _ := strconv.ParseInt(m[i], 10, 64)
+			return v
+		}
+		return 0
+	}
+	if m[1] != "" {
+		return pick(1), pick(2), true
+	}
+	return pick(3), pick(4), true
 }

@@ -274,11 +274,11 @@ func NodeTerminal(c *gin.Context) {
 	var tasks []model.AgentTask
 	config.DB.Where("node_id = ?", id).Order("id desc").Limit(5).Find(&tasks)
 	head := []string{
-		fmt.Sprintf("[node] %s (%s) 状态=%s 并发=%d 超时=%dms 最近心跳=%s",
+		fmt.Sprintf("[节点] %s (%s) 状态=%s 并发=%d 超时=%dms 最近心跳=%s",
 			node.Name, node.IP, node.Status, node.Concurrency, node.Timeout, node.LastHeartbeat),
 	}
 	for _, t := range tasks {
-		head = append(head, fmt.Sprintf("[agent-task #%d] task=%d status=%s progress=%d%% %d/%d %s",
+		head = append(head, fmt.Sprintf("[任务 #%d] 任务=%d 状态=%s 进度=%d%% %d/%d %s",
 			t.ID, t.TaskID, t.Status, t.Progress, t.Scanned, t.Total, t.Message))
 	}
 	head = append(head, "──────── agent 实时日志 ────────")
@@ -372,14 +372,27 @@ func updateNodeLog(nodeID uint, logText string) {
 // agent 上报的是进程级累积日志（一次任务跑几百个分片都堆在一起），
 // 直接看节点日志会把不同分片混在一起，AI 诊断也会误读。
 func updateShardLog(shardID uint, logText string) {
-	marker := fmt.Sprintf("[agent-task #%d]", shardID)
+	// 同时认旧前缀 [agent-task #N] 与新前缀 [任务 #N]：
+	// 节点是自升级的，升级窗口里会有一批老版本节点还在打英文前缀，
+	// 只认新的话它们的日志会全部归不到分片上（AI 诊断会看到空日志）。
+	markers := []string{
+		fmt.Sprintf("[任务 #%d]", shardID),
+		fmt.Sprintf("[agent-task #%d]", shardID),
+	}
 	lines := strings.Split(logText, "\n")
 	keep := make([]string, 0, len(lines))
 	for _, ln := range lines {
-		if strings.Contains(ln, marker) {
+		var hit string
+		for _, m := range markers {
+			if strings.Contains(ln, m) {
+				hit = m
+				break
+			}
+		}
+		if hit != "" {
 			// 去掉前缀，终端里只留扫描器原始输出
-			if i := strings.Index(ln, marker); i >= 0 {
-				ln = strings.TrimSpace(ln[i+len(marker):])
+			if i := strings.Index(ln, hit); i >= 0 {
+				ln = strings.TrimSpace(ln[i+len(hit):])
 			}
 			keep = append(keep, ln)
 		}

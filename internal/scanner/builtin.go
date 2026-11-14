@@ -20,6 +20,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,6 +54,49 @@ type ruleCacheEntry struct {
 }
 
 var ruleCache sync.Map // rulesDir -> *ruleCacheEntry
+
+// interceptedPorts 返回"被链路中间件接管的端口"（10 分钟缓存）。
+//
+// 为什么必须有这一步：实测该环境对 192.0.2.1（保留地址）连 80/443 会 1ms "成功"，
+// 说明有设备在替所有地址完成 TCP 握手。不识别的话扫描结果里 80/443 会显示
+// "全网开放"，存活探测会报出 8800 台并不存在的"存活主机"。
+var (
+	interceptMu      sync.Mutex
+	interceptPorts   []int
+	interceptAt      time.Time
+	interceptChecked bool
+)
+
+func interceptedPorts(probePorts []int) []int {
+	interceptMu.Lock()
+	defer interceptMu.Unlock()
+	if interceptChecked && time.Since(interceptAt) < 10*time.Minute {
+		return interceptPorts
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	bad, found := portscan.DetectInterceptedPorts(ctx, probePorts, 400*time.Millisecond)
+	interceptChecked = true
+	interceptAt = time.Now()
+	interceptPorts = bad
+	if found {
+		log.Printf("[中间件] 检测到 %d 个端口被链路设备代答（对保留地址也返回连接成功）：%v —— 这些端口不参与扫描与存活判定",
+			len(bad), bad)
+	}
+	return interceptPorts
+}
+
+// perHostPPS 单目标探针速率上限（探针/秒）。0 表示不限制。
+// 300 是折中：常见防火墙每目的 IP 的 SYN 限速在 100~1000pps，
+// 300 既不会触发丢弃，扫一台 65535 端口也只要约 3.5 分钟。
+func perHostPPS() int {
+	if v := os.Getenv("SCAN_PER_HOST_PPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 300
+}
 
 // engineParamOnce 只让"扫描参数"那一行打一次（队列模式每单元都会调进来）。
 var engineParamOnce sync.Once
@@ -339,7 +383,7 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	if s := elapsed.Seconds(); s > 0 {
 		pps = float64(st.Probes) / s
 	}
-	logProgressLine(logFn, fmt.Sprintf("[自研引擎] 扫描结束 (%d/%d) [100%%] [%s:0s] %.0f探针/秒 开放 %d 已识别 %d",
+	logProgressLine(logFn, fmt.Sprintf("[自研引擎] 扫描完成 %d/%d 探针，耗时 %s，平均 %.0f 探针/秒，开放端口 %d 个，识别服务 %d 个",
 		st.Probes, total, elapsed.Round(time.Second), pps, st.Open, identified.Load()))
 
 	allMu.Lock()
@@ -383,6 +427,11 @@ func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string
 		Timeout:       time.Duration(timeoutMs) * time.Millisecond,
 		ProgressEvery: time.Second,
 		Controls:      ctrl,
+		// 单目标时的每主机速率上限：扫一台主机的全端口不能把全部并发砸上去，
+		// 防火墙对"同一目的 IP 的新建连接"有每秒上限，超了就是静默丢包 → 开着也判关闭。
+		// 多目标时引擎靠派发轮转摊薄，这个值不起作用（见 engine scan.go 派发注释）。
+		PerHostPPS:       perHostPPS(),
+		InterceptedPorts: interceptedPorts(ports),
 		OnOpen: func(ip string, port int) {
 			if workers == 0 {
 				// 纯端口模式：不进识别池，直接产出裸 TCP 结果
@@ -472,7 +521,10 @@ func emitProgress(fn LogFunc, done, total, open, ident int64, elapsed time.Durat
 		}
 		eta = (time.Duration(rem) * time.Second).Round(time.Second).String()
 	}
-	logProgressLine(fn, fmt.Sprintf("[自研引擎] 进度 %d%% (%d/%d) [%s:%s] %.0f探针/秒 开放 %d 已识别 %d",
+	if eta == "" || eta == "-" {
+		eta = "计算中"
+	}
+	logProgressLine(fn, fmt.Sprintf("[自研引擎] 扫描中 %d%%（%d/%d 探针，已用 %s，剩余 %s）｜%.0f 探针/秒｜开放端口 %d 个，已识别 %d 个",
 		pct, done, total, used, eta, pps, open, ident))
 }
 

@@ -41,6 +41,13 @@ var (
 
 var nodeID uint
 
+// 队列运行期统计（只用于终端里那行"人要看"的进度，不参与上报）
+var (
+	statUnitsDone int64 // 已完成单元数
+	statUnitsOpen int64 // 其中扫到开放端口的单元数
+	statWebFound  int64 // 其中识别出 Web 服务的单元数
+)
+
 // scanTask 服务端任务配置
 type scanTask struct {
 	ID        uint   `json:"id"`
@@ -201,7 +208,7 @@ var myVersion = "unknown"
 func selfUpgrade(target string) {
 	exe, err := os.Executable()
 	if err != nil {
-		log.Printf("[agent] 获取自身路径失败: %v", err)
+		log.Printf("[节点] 获取自身路径失败: %v", err)
 		return
 	}
 	tmp := exe + ".new"
@@ -211,30 +218,30 @@ func selfUpgrade(target string) {
 		*serverURL, runtime.GOOS, runtime.GOARCH, nodeID)
 	req, err := http.NewRequest("GET", dlURL, nil)
 	if err != nil {
-		log.Printf("[agent] 构造下载请求失败: %v", err)
+		log.Printf("[节点] 构造下载请求失败: %v", err)
 		return
 	}
 	req.Header.Set("X-Node-Token", nodeToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[agent] 下载新控制文件失败: %v", err)
+		log.Printf("[节点] 下载新控制文件失败: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-		log.Printf("[agent] 下载新控制文件失败: HTTP %d %s", resp.StatusCode, string(body))
+		log.Printf("[节点] 下载新控制文件失败: HTTP %d %s", resp.StatusCode, string(body))
 		return
 	}
 	f, err := os.Create(tmp)
 	if err != nil {
-		log.Printf("[agent] 创建临时文件失败: %v", err)
+		log.Printf("[节点] 创建临时文件失败: %v", err)
 		return
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
 		os.Remove(tmp)
-		log.Printf("[agent] 写入临时文件失败: %v", err)
+		log.Printf("[节点] 写入临时文件失败: %v", err)
 		return
 	}
 	f.Close()
@@ -242,7 +249,7 @@ func selfUpgrade(target string) {
 	// 信任 Release（校验二进制可执行：文件非空）
 	if fi, err := os.Stat(tmp); err != nil || fi.Size() < 1024 {
 		os.Remove(tmp)
-		log.Printf("[agent] 下载的控制文件异常（太小）")
+		log.Printf("[节点] 下载的控制文件异常（太小）")
 		return
 	}
 	_ = os.Chmod(tmp, 0755)
@@ -251,11 +258,11 @@ func selfUpgrade(target string) {
 	_ = os.Remove(exe + ".old")
 	_ = os.Rename(exe, exe+".old")
 	if err := os.Rename(tmp, exe); err != nil {
-		log.Printf("[agent] 替换失败: %v，回滚", err)
+		log.Printf("[节点] 替换失败: %v，回滚", err)
 		_ = os.Rename(exe+".old", exe)
 		return
 	}
-	log.Printf("[agent] 控制文件已更新 %s -> %s，正在交接重启", myVersion, target)
+	log.Printf("[节点] 控制文件已更新 %s -> %s，正在交接重启", myVersion, target)
 
 	// Windows 不支持 syscall.Exec，改用 exec.Command 启动新进程
 	if runtime.GOOS == "windows" {
@@ -263,16 +270,16 @@ func selfUpgrade(target string) {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Start(); err != nil {
-			log.Printf("[agent] 启动新进程失败: %v（watchdog 会拉起）", err)
+			log.Printf("[节点] 启动新进程失败: %v（watchdog 会拉起）", err)
 		} else {
-			log.Printf("[agent] 新进程已启动 PID=%d，旧进程退出", cmd.Process.Pid)
+			log.Printf("[节点] 新进程已启动 PID=%d，旧进程退出", cmd.Process.Pid)
 		}
 		os.Exit(0)
 	}
 
 	// Linux/Mac：原子替换当前进程
 	if err := syscallExec(exe); err != nil {
-		log.Printf("[agent] 重启失败: %v（watchdog 会拉起）", err)
+		log.Printf("[节点] 重启失败: %v（watchdog 会拉起）", err)
 	}
 }
 
@@ -316,14 +323,14 @@ func main() {
 	// 所有日志带主机名前缀，便于在中心端区分是哪个节点在执行
 	if hn, err := os.Hostname(); err == nil && hn != "" {
 		log.SetPrefix("[" + hn + "] ")
-		log.Printf("[agent] 启动，主机名=%s", hn)
+		log.Printf("[节点] 启动，主机名=%s", hn)
 	}
 	if *serverURL == "" || *nodeName == "" {
 		fmt.Println("用法: scope-agent -server http://中心IP:8080 -name 节点名 [-token xxx]")
 		os.Exit(1)
 	}
 	*serverURL = strings.TrimRight(*serverURL, "/")
-	log.Printf("[agent] 扫描引擎：自研（portscan+svcid，进程内执行，无需外部二进制）；审计库=%s", scanner.EngineDBPath())
+	log.Printf("[节点] 扫描引擎：自研（portscan+svcid，进程内执行，无需外部二进制）；审计库=%s", scanner.EngineDBPath())
 
 	// 注册失败自动重试（服务端可能还没就绪）
 	for i := 1; i <= 60; i++ {
@@ -331,15 +338,15 @@ func main() {
 			break
 		}
 		if i < 60 {
-			log.Printf("[agent] 注册未成功（第 %d 次），5 秒后重试", i)
+			log.Printf("[节点] 注册未成功（第 %d 次），5 秒后重试", i)
 			time.Sleep(5 * time.Second)
 		}
 	}
 	if nodeID == 0 {
-		log.Fatal("[agent] 注册失败：未能获取节点 ID，退出")
+		log.Fatal("[节点] 注册失败：未能获取节点 ID，退出")
 	}
-	log.Printf("[agent] 注册成功，节点 ID=%d，中心=%s", nodeID, *serverURL)
-	log.Printf("[agent] 已建立唤醒通道，空闲时不轮询（有任务服务端会主动唤醒）")
+	log.Printf("[节点] 注册成功，节点 ID=%d，中心=%s", nodeID, *serverURL)
+	log.Printf("[节点] 已建立唤醒通道，空闲时不轮询（有任务服务端会主动唤醒）")
 
 	go heartbeatLoop()
 	go streamLoop()   // SSE 长连接：有任务时被唤醒
@@ -459,7 +466,7 @@ func activeTaskIDs() []uint { return scanner.ActiveTaskIDs() }
 
 func applyAutoLimit(taskID uint, n int) {
 	if scanner.SetTaskAutoLimit(taskID, n) {
-		log.Printf("[queue] 任务 #%d 智能调速：在途上限 → %d", taskID, n)
+		log.Printf("[队列] 任务 #%d 智能调速：在途上限 → %d", taskID, n)
 	}
 }
 
@@ -480,7 +487,7 @@ var safeInflight int = 800
 func checkNoFileLimit() {
 	soft, err := nofileSoft()
 	if err != nil {
-		log.Printf("[agent] 警告：读取 RLIMIT_NOFILE 失败（%v），按 nofile=1024 保守处理", err)
+		log.Printf("[节点] 警告：读取 RLIMIT_NOFILE 失败（%v），按 nofile=1024 保守处理", err)
 		safeInflight = 700
 		return
 	}
@@ -490,17 +497,17 @@ func checkNoFileLimit() {
 		if safeInflight < 200 {
 			safeInflight = 200
 		}
-		log.Printf("[agent] ⚠️ nofile=%d，高并发会触发假阴性风险（fd 耗尽的探针会被误判为端口关闭）；"+
+		log.Printf("[节点] ⚠️ nofile=%d，高并发会触发假阴性风险（fd 耗尽的探针会被误判为端口关闭）；"+
 			"已将扫描在途上限钳到 %d。生产环境请 `ulimits.nofile: 65535`", soft, safeInflight)
 	case soft >= 8192:
 		safeInflight = 1500
-		log.Printf("[agent] nofile=%d ≥ 8192，扫描在途上限按 %d 运行（足以跑满 800+ pps）", soft, safeInflight)
+		log.Printf("[节点] nofile=%d ≥ 8192，扫描在途上限按 %d 运行（足以跑满 800+ pps）", soft, safeInflight)
 	default:
 		safeInflight = soft - 256
 		if safeInflight > 1500 {
 			safeInflight = 1500
 		}
-		log.Printf("[agent] nofile=%d，扫描在途上限按 %d 运行", soft, safeInflight)
+		log.Printf("[节点] nofile=%d，扫描在途上限按 %d 运行", soft, safeInflight)
 	}
 }
 
@@ -635,6 +642,10 @@ func consumeQueue() int {
 		target := K
 		done := make(chan struct{}, 64)
 		inflight := 0
+		atomic.StoreInt64(&statUnitsDone, 0)
+		atomic.StoreInt64(&statUnitsOpen, 0)
+		atomic.StoreInt64(&statWebFound, 0)
+		lastStat := time.Now()
 		// stopped 会被 K 个 worker 并发写、主循环并发读：必须是原子的。
 		// （早前是裸 bool，go test -race 下是 data race；语义上是"服务端取消该任务 →
 		//  不再补位，等在途跑完即退"。）
@@ -651,6 +662,14 @@ func consumeQueue() int {
 				inflight--
 				continue
 			}
+			// 终端里"人要看"的一行：扫了多少、其中多少有开放端口、多少是 Web 服务。
+			// 每 5s 一行，取代原来"每个单元两行"（1112 个单元就是 2000 行噪音）。
+			if time.Since(lastStat) >= 5*time.Second {
+				lastStat = time.Now()
+				log.Printf("[队列] 任务 #%d 进行中：已扫 %d 台，其中 %d 台有开放端口、%d 台有 Web 服务，在途单元 %d",
+					t.TaskID, atomic.LoadInt64(&statUnitsDone), atomic.LoadInt64(&statUnitsOpen),
+					atomic.LoadInt64(&statWebFound), inflight)
+			}
 			want := target - inflight
 			if want <= 0 {
 				<-done // 等任一单元收工再补位
@@ -661,11 +680,11 @@ func consumeQueue() int {
 			if err == nil && c == nil {
 				// 服务端 200 + 空 body 时上游会返回 (nil,nil)；后面要读 c.Cmd，
 				// 不兜住就是 nil pointer panic（node 挂掉，等 watchdog 拉起）。
-				log.Printf("[queue] 任务 #%d 领取响应为空，本轮跳过", t.TaskID)
+				log.Printf("[队列] 任务 #%d 领取响应为空，本轮跳过", t.TaskID)
 				break
 			}
 			if err != nil {
-				log.Printf("[queue] 任务 #%d 领取失败: %v", t.TaskID, err)
+				log.Printf("[队列] 任务 #%d 领取失败: %v", t.TaskID, err)
 				if inflight > 0 { // 别空转打服务端：没活就等在途收工
 					<-done
 					inflight--
@@ -690,7 +709,7 @@ func consumeQueue() int {
 			}
 			if len(units) == 0 {
 				if c != nil && c.Paused {
-					log.Printf("[queue] 任务 #%d 已暂停，停领新单元（在途单元跑完即止）", t.TaskID)
+					log.Printf("[队列] 任务 #%d 已暂停，停领新单元（在途单元跑完即止）", t.TaskID)
 				}
 				if inflight > 0 {
 					<-done
@@ -705,7 +724,7 @@ func consumeQueue() int {
 				go func(u claimUnitRef) {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("[queue] 单元 %s 执行异常: %v", u.IP, r)
+							log.Printf("[队列] 单元 %s 执行异常: %v", u.IP, r)
 						}
 						done <- struct{}{}
 					}()
@@ -721,7 +740,7 @@ func consumeQueue() int {
 			inflight--
 		}
 		if stopped.Load() {
-			log.Printf("[queue] 任务 #%d 已被取消，退出领取循环", t.TaskID)
+			log.Printf("[队列] 任务 #%d 已被取消，退出领取循环", t.TaskID)
 		}
 		// 任务收敛（完成/取消/本轮领空）→ 释放任务级共享 limiter，避免句柄泄漏。
 		// 若任务之后又被领取，EnsureTaskCtrl 会用节点默认并发重建，pause/limit 由
@@ -745,7 +764,7 @@ func claimUnits(taskID uint, n int) (*claimResp, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
-		log.Printf("[queue] claim 任务 #%d 被拒 HTTP %d: %s", taskID, resp.StatusCode, string(b))
+		log.Printf("[队列] claim 任务 #%d 被拒 HTTP %d: %s", taskID, resp.StatusCode, string(b))
 		return nil, nil
 	}
 	var c claimResp
@@ -797,7 +816,8 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		// 并发先按本机 nofile 钳一次，避免把机器推到 fd 墙（那会产出假阴性）。
 		Ctrl: queueLimiter(taskID, thread, timeout),
 	}
-	log.Printf("[queue] 单元领取成功：任务 #%d IP=%s（探针 %d，会话 #%d）", taskID, u.IP, u.ProbesTotal, at)
+	// 逐单元的"领取成功"不再打印：1112 个单元就是 1112 行，人眼看不到任何信息。
+	// 需要跟踪单个单元时看"进行中/开放端口"那两行就够，排查再开日志级别。
 
 	// 取消通道：心跳响应 cancelled=true → StopScan 重试直至命中句柄（预算 <5s）
 	scanReturned := make(chan struct{})
@@ -857,7 +877,7 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 			n++
 			r := reportUnitProgress(at, taskID, u.IP, s, t2, pp, of, idf, pct, n%2 == 1)
 			if r.Cancelled {
-				log.Printf("[queue] 会话 #%d 收到取消：停掉单元 %s 的扫描并退出领取循环", at, u.IP)
+				log.Printf("[队列] 会话 #%d 收到取消：停掉单元 %s 的扫描并退出领取循环", at, u.IP)
 				mu.Lock()
 				cancelled = true
 				finished = true
@@ -877,19 +897,19 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 				switch action {
 				case "pause":
 					if !appliedPaused {
-						log.Printf("[queue] 会话 #%d 调控：全部在途单元已暂停（task#%d seq=%d）", at, taskID, cc.Seq)
+						log.Printf("[队列] 会话 #%d 调控：全部在途单元已暂停（task#%d seq=%d）", at, taskID, cc.Seq)
 						appliedPaused = true
 					}
 				case "limit":
 					if cc.Seq != lastCtrlSeq {
-						log.Printf("[queue] 会话 #%d 调控：限速 limit=%d 超时=%dms seq=%d（下一探针生效）",
+						log.Printf("[队列] 会话 #%d 调控：限速 limit=%d 超时=%dms seq=%d（下一探针生效）",
 							at, cc.Concurrency, cc.TimeoutMs, cc.Seq)
 						lastCtrlSeq = cc.Seq
 					}
 					appliedPaused = false
 				default:
 					if appliedPaused {
-						log.Printf("[queue] 会话 #%d 调控：扫描已恢复 seq=%d", at, cc.Seq)
+						log.Printf("[队列] 会话 #%d 调控：扫描已恢复 seq=%d", at, cc.Seq)
 						appliedPaused = false
 					}
 				}
@@ -903,7 +923,7 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	// 所以给一个与暂停状态无关的绝对上限：理论最坏耗时 = 探针数 × 超时 ÷ 最小在途。
 	hard := unitHardTimeout(u.ProbesTotal, timeout)
 	hardTimer := time.AfterFunc(hard, func() {
-		log.Printf("[queue] 单元 %s 超过硬上限 %s，强制中止（可能是暂停后控制链路失联）", u.IP, hard)
+		log.Printf("[队列] 单元 %s 超过硬上限 %s，强制中止（可能是暂停后控制链路失联）", u.IP, hard)
 		scanner.StopScan(opts.ProjectID)
 	})
 	defer hardTimer.Stop()
@@ -911,30 +931,22 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	results, err := scanner.RunPortScan([]string{u.IP}, fetchExcludes(), opts,
 		func(line string, isProgress bool) {
 			if isProgress {
-				if m := portRe.FindStringSubmatch(line); len(m) == 3 {
-					if a, e1 := strconv.Atoi(m[1]); e1 == nil {
-						if b, e2 := strconv.Atoi(m[2]); e2 == nil && b > 0 {
-							mu.Lock()
-							if b > total {
-								total = b
-							}
-							if a > scanned && a <= total {
-								scanned = a
-							}
-							mu.Unlock()
-						}
+				if a, b, ok := progPair(line); ok && b > 0 {
+					mu.Lock()
+					if b > total {
+						total = b
 					}
-				}
-				if m := ppsRe.FindStringSubmatch(line); len(m) == 2 {
-					if v, e := strconv.ParseFloat(m[1], 64); e == nil {
-						mu.Lock()
-						ppsVal = v
-						mu.Unlock()
+					if a > scanned && a <= total {
+						scanned = a
 					}
+					mu.Unlock()
 				}
-				if m := openRe.FindStringSubmatch(line); len(m) == 3 {
-					a, _ := strconv.Atoi(m[1])
-					b, _ := strconv.Atoi(m[2])
+				if v, ok := ppsOf(line); ok {
+					mu.Lock()
+					ppsVal = v
+					mu.Unlock()
+				}
+				if a, b, ok := openPair(line); ok {
 					mu.Lock()
 					if a > openFound {
 						openFound = a
@@ -944,18 +956,26 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 					}
 					mu.Unlock()
 				}
-				if m := pctRe.FindStringSubmatch(line); len(m) == 2 {
-					if v, e := strconv.Atoi(m[1]); e == nil {
-						mu.Lock()
-						if v > lastPct {
-							lastPct = v
-						}
-						mu.Unlock()
+				if v, ok := pctOf(line); ok {
+					mu.Lock()
+					if v > lastPct {
+						lastPct = v
 					}
+					mu.Unlock()
 				}
 			}
-			// 带 [agent-task #会话] 前缀：服务端 updateShardLog 按该标记切分会话日志
-			log.Printf("[agent-task #%d] [queue] %s", at, line)
+			// 进度行不往终端打：它有 2s 一次的节奏、而且是"每单元一份"，
+			// 7 个单元就 7 行/2s，1112 个单元能把终端刷爆。真正的进度看
+			// 「[队列] 任务 #N 进行中：已扫 X 台…」那一行（5s 一次，全局口径）。
+			if isProgress {
+				return
+			}
+			// 逐单元恒定不变的样板行也不打（引擎参数、审计库路径、落库条数）。
+			if strings.Contains(line, "扫描参数：") || strings.Contains(line, "[审计库]") {
+				return
+			}
+			// 带 [任务 #会话] 前缀：服务端 updateShardLog 按该标记切分会话日志
+			log.Printf("[任务 #%d] [引擎] %s", at, line)
 		},
 		func(batch []scanner.ScanResult) {
 			for i := 0; i < len(batch); i += 200 {
@@ -986,13 +1006,13 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	switch {
 	case wasCancelled:
 		// 取消：单元由服务端 StopTask 已回 pending；结果已随流 flush，这里只停不报。
-		log.Printf("[queue] 单元 %s 已取消（部分结果 %d 条已流式上报）", u.IP, len(results))
+		log.Printf("[队列] 单元 %s 已取消（部分结果 %d 条已流式上报）", u.IP, len(results))
 	case err != nil:
 		if errors.Is(err, portscan.ErrLocalResourceExhausted) {
 			// 本机 fd/端口不够，这一轮的结果不可信：绝不能落 done（否则就是静默假阴性）
-			log.Printf("[queue] ERROR 本地 fd/资源不足，单元 %s 结果不可信，已退回队列（请调大 nofile 或调小并发）：%v", u.IP, err)
+			log.Printf("[队列] 错误：本地句柄/资源不足，单元 %s 结果不可信，已退回队列（请调大 nofile 或调小并发）：%v", u.IP, err)
 		} else {
-			log.Printf("[queue] 单元 %s 失败: %v（回池重试）", u.IP, err)
+			log.Printf("[队列] 单元 %s 失败: %v（回池重试）", u.IP, err)
 		}
 		// 带 failed 终报让 reaper 逻辑即时回池（不等租约过期；迟到心跳命中不到 leased 会静默忽略）
 		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "failed")
@@ -1001,8 +1021,18 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 			fd = ft // 快单元没赶上进度行：按满额计
 		}
 		reportUnitFinal(at, taskID, u.IP, fd, ft, of, idf, pp, "done")
-		// 行里带上开放端口清单：终端只滚一行"100 探针 0 条结果"太干，看不出扫到了什么。
-		log.Printf("[queue] 单元 %s 完成：%d 探针，开放 %d 个%s", u.IP, fd, len(results), openPortsBrief(results))
+		// 只打"真扫到东西"的单元。1112 个单元里九成是"开放 0 个"，全打出来
+		// 就是 2000 行噪音，人眼反而看不到关键信息：哪台活着、上面跑的是什么。
+		if len(results) > 0 {
+			atomic.AddInt64(&statUnitsOpen, 1)
+			if w := webBrief(results); w != "" {
+				atomic.AddInt64(&statWebFound, 1)
+				log.Printf("[队列] %s 开放 %d 个端口%s｜Web：%s", u.IP, len(results), openPortsBrief(results), w)
+			} else {
+				log.Printf("[队列] %s 开放 %d 个端口%s", u.IP, len(results), openPortsBrief(results))
+			}
+		}
+		atomic.AddInt64(&statUnitsDone, 1)
 	}
 	return wasCancelled
 }
@@ -1033,6 +1063,45 @@ func openPortsBrief(results []scanner.ScanResult) string {
 	}
 	b.WriteString("）")
 	return b.String()
+}
+
+// webBrief 把本单元识别到的 Web 服务压成一行（最多 4 个）：
+// `10.193.0.106:80 nginx/1.20（200 登录页）`
+// 终端里最该看清的两件事就是"哪台活着""上面跑什么"，其余都是过程噪音。
+func webBrief(results []scanner.ScanResult) string {
+	var parts []string
+	for _, r := range results {
+		if !strings.EqualFold(r.Protocol, "HTTP") && !strings.EqualFold(r.Protocol, "HTTPS") && r.Fingerprint == "" && r.Title == "" {
+			continue
+		}
+		item := fmt.Sprintf("%s:%d", r.IP, r.Port)
+		if r.Mid != "" {
+			item += " " + r.Mid
+		} else if r.Service != "" {
+			item += " " + r.Service
+		}
+		if r.StatusCode != "" {
+			item += " " + r.StatusCode
+		}
+		if r.Title != "" {
+			item += "（" + truncRunes(r.Title, 24) + "）"
+		}
+		parts = append(parts, item)
+		if len(parts) >= 4 {
+			parts = append(parts, "…")
+			break
+		}
+	}
+	return strings.Join(parts, "；")
+}
+
+// truncRunes 按字符截断（中文标题不能按字节切）。
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // unitHardTimeout 单个单元的绝对耗时上限。
@@ -1191,7 +1260,7 @@ func doHeartbeat() {
 	// 节点在中心已被删除时，本地凭据即失效：
 	// 清掉凭据并退出，由 systemd / 计划任务带着 -token 重启完成重新注册。
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
-		log.Printf("[agent] 凭据已失效（HTTP %d），节点可能已在中心被删除，正在清除本地凭据并重新注册", resp.StatusCode)
+		log.Printf("[节点] 凭据已失效（HTTP %d），节点可能已在中心被删除，正在清除本地凭据并重新注册", resp.StatusCode)
 		_ = os.Remove(agentStateFile)
 		_ = os.Remove(legacyTokenFile)
 		os.Exit(2)
@@ -1204,12 +1273,12 @@ func doHeartbeat() {
 	_ = json.NewDecoder(resp.Body).Decode(&r)
 	// UpgradeReq=true 就强制重新下载（即使版本号相同，也允许用户手动重刷控制文件）
 	if r.Upgrade && r.LatestVersion != "" {
-		log.Printf("[agent] 收到升级指令 -> %s（当前 %s）", r.LatestVersion, myVersion)
+		log.Printf("[节点] 收到升级指令 -> %s（当前 %s）", r.LatestVersion, myVersion)
 		selfUpgrade(r.LatestVersion)
 	}
 	// Uninstall=true → 清理并退出
 	if r.Uninstall {
-		log.Printf("[agent] 收到卸载指令，开始清理...")
+		log.Printf("[节点] 收到卸载指令，开始清理...")
 		selfUninstall()
 	}
 }
@@ -1248,7 +1317,7 @@ Remove-Item -Force -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue
 			"-ExecutionPolicy", "Bypass", "-File", cleanup)
 		cmd.Dir = os.Getenv("TEMP")
 		cmd.Start()
-		log.Printf("[agent] 清理脚本已启动（Windows），退出")
+		log.Printf("[节点] 清理脚本已启动（Windows），退出")
 	} else {
 		// Linux/Mac：写清理脚本到 /tmp
 		cleanup := "/tmp/weijian-cleanup.sh"
@@ -1271,7 +1340,7 @@ rm -f /tmp/weijian-cleanup.sh
 		cmd := exec.Command("bash", cleanup)
 		cmd.Dir = "/"
 		cmd.Start()
-		log.Printf("[agent] 清理脚本已启动（Linux），退出")
+		log.Printf("[节点] 清理脚本已启动（Linux），退出")
 	}
 	os.Exit(0)
 }
@@ -1290,7 +1359,7 @@ func streamLoop() {
 		for sc.Scan() {
 			line := sc.Text()
 			if strings.HasPrefix(line, "event: wake") {
-				log.Printf("[agent] 收到唤醒信号，拉取任务")
+				log.Printf("[节点] 收到唤醒信号，拉取任务")
 				go fetchAndRun()
 				go kickQueue() // 队列模式：同样踢醒领取循环
 			}
@@ -1336,22 +1405,22 @@ func runAgentTask(at AgentTask) {
 		if len(projects) > 0 {
 			dbPath := scanner.EngineDBPath()
 			if err := scanner.DeleteProjects(dbPath, projects); err == nil {
-				log.Printf("[agent-task #%d] 已清理 %d 个 project: %v", at.ID, len(projects), projects)
+				log.Printf("[任务 #%d] 已清理 %d 个 project: %v", at.ID, len(projects), projects)
 			} else {
-				log.Printf("[agent-task #%d] 清理失败: %v", at.ID, err)
+				log.Printf("[任务 #%d] 清理失败: %v", at.ID, err)
 			}
 		}
 		reportFinish(at.ID, true)
 		return
 	}
 
-	log.Printf("[agent-task #%d] 开始：%s", at.ID, at.IPRanges)
+	log.Printf("[任务 #%d] 开始：%s", at.ID, at.IPRanges)
 
 	// 拉取任务配置 + 节点参数
 	var detail taskDetail
 	dResp, err := agentReq("GET", fmt.Sprintf("%s/api/agent/tasks/%d", *serverURL, at.ID), nil)
 	if err != nil {
-		log.Printf("[agent-task #%d] 拉详情失败: %v", at.ID, err)
+		log.Printf("[任务 #%d] 拉详情失败: %v", at.ID, err)
 		reportFinish(at.ID, false)
 		return
 	}
@@ -1454,7 +1523,7 @@ func runAgentTask(at AgentTask) {
 			reportCount++
 			cmd := reportProgressWithLog(at.ID, t, s, pct, eta, "扫描中", reportCount%2 == 1)
 			if cmd.Cancelled {
-				log.Printf("[agent-task #%d] 收到取消指令，终止扫描（保留部分结果）", at.ID)
+				log.Printf("[任务 #%d] 收到取消指令，终止扫描（保留部分结果）", at.ID)
 				mu.Lock()
 				cancelledByServer = true
 				finished = true
@@ -1467,19 +1536,19 @@ func runAgentTask(at AgentTask) {
 			switch {
 			case c.Paused || c.Action == "pause":
 				if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{Action: "pause"}) && !appliedPaused {
-					log.Printf("[agent-task #%d] 调控：扫描已暂停（许可清零，在途探针自然结束）", at.ID)
+					log.Printf("[任务 #%d] 调控：扫描已暂停（许可清零，在途探针自然结束）", at.ID)
 					appliedPaused = true
 				}
 			case c.Action == "limit":
 				if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{
 					Action: "limit", Concurrency: c.Concurrency, TimeoutMs: c.TimeoutMs}) && appliedPaused {
-					log.Printf("[agent-task #%d] 调控：限速 %d/%dms 并解除暂停", at.ID, c.Concurrency, c.TimeoutMs)
+					log.Printf("[任务 #%d] 调控：限速 %d/%dms 并解除暂停", at.ID, c.Concurrency, c.TimeoutMs)
 					appliedPaused = false
 				}
 			default: // none/resume：若本地处于暂停态，恢复
 				if appliedPaused {
 					if scanner.ControlScan(opts.ProjectID, scanner.ScanCtl{Action: "resume"}) {
-						log.Printf("[agent-task #%d] 调控：扫描已恢复", at.ID)
+						log.Printf("[任务 #%d] 调控：扫描已恢复", at.ID)
 						appliedPaused = false
 					}
 				}
@@ -1490,39 +1559,31 @@ func runAgentTask(at AgentTask) {
 	// 流式扫描：onResult 每批（≤200 条）实时回传；引擎内部已按批回调，这里直接转发
 	results, err := scanner.RunPortScan(targets, fetchExcludes(), opts, func(line string, isProgress bool) {
 		if isProgress {
-			// 引擎进度行格式：「(done/total) ... [已用:剩余]」
-			if m := portRe.FindStringSubmatch(line); len(m) == 3 {
-				if a, err1 := strconv.Atoi(m[1]); err1 == nil {
-					if b, err2 := strconv.Atoi(m[2]); err2 == nil && b > 0 {
-						mu.Lock()
-						if b > total {
-							total = b
-						}
-						if a > scanned && a <= total {
-							scanned = a
-						}
-						mu.Unlock()
-					}
+			// 进度行：「[自研引擎] 扫描中 45%（4500/10000 探针，已用 3s，剩余 6s）｜613 探针/秒｜开放端口 2 个，已识别 2 个」
+			if a, b, ok := progPair(line); ok && b > 0 {
+				mu.Lock()
+				if b > total {
+					total = b
 				}
+				if a > scanned && a <= total {
+					scanned = a
+				}
+				mu.Unlock()
 			}
-			if m := pctRe.FindStringSubmatch(line); len(m) == 2 {
-				if v, err := strconv.Atoi(m[1]); err == nil {
-					mu.Lock()
-					if v > lastPct {
-						lastPct = v
-					}
-					mu.Unlock()
+			if v, ok := pctOf(line); ok {
+				mu.Lock()
+				if v > lastPct {
+					lastPct = v
 				}
+				mu.Unlock()
 			}
-			if m := etaRe.FindStringSubmatch(line); len(m) == 2 {
-				if sec := parseDurationSec(m[1]); sec > 0 {
-					mu.Lock()
-					etaSec = sec
-					mu.Unlock()
-				}
+			if sec := etaOf(line); sec > 0 {
+				mu.Lock()
+				etaSec = sec
+				mu.Unlock()
 			}
 		}
-		log.Printf("[agent-task #%d] %s", at.ID, line)
+		log.Printf("[任务 #%d] %s", at.ID, line)
 	}, func(batch []scanner.ScanResult) {
 		// 实时回传（引擎聚合器已按 ≤200 条分批，这里再兜一层切片防超限）
 		for i := 0; i < len(batch); i += 200 {
@@ -1545,16 +1606,16 @@ func runAgentTask(at AgentTask) {
 			// 取消：**不报 finish、不改分片状态**（平台 StopTask 已把分片置 cancelled、
 			// 主任务置 stopped，agent 只负责停扫描并收尾；补报会把 cancelled 判成 done）。
 			// 部分结果照常上传：引擎回调里已 flush 的批次不重发（results 与回调同源）。
-			log.Printf("[agent-task #%d] 已取消，保留 %d 条部分结果（已随流式回调上报）", at.ID, len(results))
+			log.Printf("[任务 #%d] 已取消，保留 %d 条部分结果（已随流式回调上报）", at.ID, len(results))
 			return
 		}
-		log.Printf("[agent-task #%d] 失败: %v", at.ID, err)
+		log.Printf("[任务 #%d] 失败: %v", at.ID, err)
 		reportFinish(at.ID, false)
 		return
 	}
 	reportProgressPlain(at.ID, total, total, 100, "完成")
 	reportFinish(at.ID, true)
-	log.Printf("[agent-task #%d] 完成，%d 条结果（实时流式已上报）", at.ID, len(results))
+	log.Printf("[任务 #%d] 完成，%d 条结果（实时流式已上报）", at.ID, len(results))
 }
 
 // progressResp 心跳响应：取消标记 + 调控指令（幂等状态）
@@ -1611,7 +1672,7 @@ func postResults(taskID uint, results []scanner.ScanResult) {
 	body, _ := json.Marshal(map[string]interface{}{"taskId": taskID, "results": results})
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/api/nodes/%d/results", *serverURL, nodeID), bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[agent] 结果上报请求构造失败: %v", err)
+		log.Printf("[节点] 结果上报请求构造失败: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -1620,23 +1681,24 @@ func postResults(taskID uint, results []scanner.ScanResult) {
 	}
 	resp, err := resultClient.Do(req)
 	if err != nil {
-		log.Printf("[agent] 结果上报失败（%d 条）: %v", len(results), err)
+		log.Printf("[节点] 结果上报失败（%d 条）: %v", len(results), err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		log.Printf("[agent] 结果上报被拒绝（HTTP %d）: %s", resp.StatusCode, string(b))
+		log.Printf("[节点] 结果上报被拒绝（HTTP %d）: %s", resp.StatusCode, string(b))
 	}
 }
 
 var (
-	// 进度条形如：进度 21% (283200/1279104) [3m4s:10m23s]
-	pctRe  = regexp.MustCompile(`(\d{1,3})\s*%`)
-	portRe = regexp.MustCompile(`\((\d+)\s*/\s*(\d+)\)`)
+	// 进度条形如：扫描中 21%（283200/1279104 探针，已用 3m4s，剩余 10m23s）
+	pctRe = regexp.MustCompile(`扫描中 (\d{1,3})%|进度 (\d{1,3})%|扫描完成`)
+	// 两代文案都认：新版「4500/10000 探针」、老版「(4500/10000)」
+	progRe = regexp.MustCompile(`(\d+)\s*/\s*(\d+)\s*探针|\((\d+)\s*/\s*(\d+)\)`)
 	// 队列单元心跳抽取：速率与发现数（emitProgress 行格式，与 builtin.go 对齐）
-	ppsRe  = regexp.MustCompile(`([\d.]+)探针/秒`)
-	openRe = regexp.MustCompile(`开放 (\d+) 已识别 (\d+)`)
+	ppsRe  = regexp.MustCompile(`([\d.]+)\s*探针/秒`)
+	openRe = regexp.MustCompile(`开放端口 (\d+) 个[，,]?\s*(?:已识别|识别服务) (\d+) 个|开放 (\d+) 已识别 (\d+)`)
 	// 进度条尾部 [已用:剩余]，如 [2m36s:10m54s]
 	etaRe = regexp.MustCompile(`\[([0-9hms]+):([0-9hms]+)\]`)
 	durRe = regexp.MustCompile(`(\d+)([hms])`)
@@ -1692,4 +1754,83 @@ func fetchExcludes() []string {
 		}
 	}
 	return out
+}
+
+// ===== 进度行解析 =====
+//
+// 引擎进度行有两代文案（老版带英文括号、新版全中文），节点要同时认：
+//   老：`[自研引擎] 进度 45% (4500/10000) [3s:6s] 613探针/秒 开放 2 已识别 2`
+//   新：`[自研引擎] 扫描中 45%（4500/10000 探针，已用 3s，剩余 6s）｜613 探针/秒｜开放端口 2 个，已识别 2 个`
+// 直接写在调用处会导致同一个正则匹配不到另一代文案，抽成函数集中一处。
+
+func progPair(line string) (int, int, bool) {
+	m := progRe.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return 0, 0, false
+	}
+	get := func(i int) int {
+		if i < len(m) {
+			if v, err := strconv.Atoi(m[i]); err == nil {
+				return v
+			}
+		}
+		return 0
+	}
+	// 分支 1：`4500/10000 探针`；分支 2：`(4500/10000)`
+	if m[1] != "" {
+		return get(1), get(2), true
+	}
+	return get(3), get(4), true
+}
+
+func ppsOf(line string) (float64, bool) {
+	m := ppsRe.FindStringSubmatch(line)
+	if len(m) != 2 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	return v, err == nil
+}
+
+func openPair(line string) (int, int, bool) {
+	m := openRe.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return 0, 0, false
+	}
+	get := func(i int) int {
+		if i < len(m) {
+			if v, err := strconv.Atoi(m[i]); err == nil {
+				return v
+			}
+		}
+		return 0
+	}
+	if m[1] != "" {
+		return get(1), get(2), true
+	}
+	return get(3), get(4), true
+}
+
+func pctOf(line string) (int, bool) {
+	m := pctRe.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return 0, false
+	}
+	if m[1] != "" {
+		v, err := strconv.Atoi(m[1])
+		return v, err == nil
+	}
+	if len(m) > 2 && m[2] != "" {
+		v, err := strconv.Atoi(m[2])
+		return v, err == nil
+	}
+	return 100, true // 「扫描完成」＝100%
+}
+
+func etaOf(line string) int {
+	m := etaRe.FindStringSubmatch(line)
+	if len(m) != 2 {
+		return 0
+	}
+	return parseDurationSec(m[1])
 }
