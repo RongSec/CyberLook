@@ -39,8 +39,8 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: 5 * time.Second,
-		DialContext: (&net.Dialer{Timeout: 4 * time.Second}).DialContext,
-		DisableCompression: false,
+		DialContext:         (&net.Dialer{Timeout: 4 * time.Second}).DialContext,
+		DisableCompression:  false,
 	}
 	client := &http.Client{
 		Transport: tr,

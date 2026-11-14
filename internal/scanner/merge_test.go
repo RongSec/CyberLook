@@ -8,11 +8,11 @@ import "testing"
 //  3. 两边都是通用词 → 保留旧值（避免 Login/Loading 抖动刷"新变更"）
 func TestMergeIdentification(t *testing.T) {
 	cases := []struct {
-		name          string
-		old, new      string
-		wantMerged    string
-		wantChanged   bool
-		wantSourceAt  string // 只校验 changed 时有意义的来源，空表示不校验
+		name         string
+		old, new     string
+		wantMerged   string
+		wantChanged  bool
+		wantSourceAt string // 只校验 changed 时有意义的来源，空表示不校验
 	}{
 		// ── 表意一致：写法不同，业务是同一套，必须保留旧值 ──
 		{"纯后缀：登录", "中化云盘", "中化云盘 - 登录", "中化云盘", false, ""},

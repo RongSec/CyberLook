@@ -29,9 +29,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"asset-platform/internal/target"
 	"github.com/RongSec/CyberLook-Scan/portscan"
 	"github.com/RongSec/CyberLook-Scan/svcid"
-	"asset-platform/internal/target"
 )
 
 // BuiltinRulesDir 规则目录（可用 SCAN_RULES_DIR 覆盖）
@@ -84,6 +84,15 @@ func interceptedPorts(probePorts []int) []int {
 			len(bad), bad)
 	}
 	return interceptPorts
+}
+
+// pickIntercepted 优先用节点自检的结论，没有才用中心侧探测的结果。
+// 被代答的是"节点→目标"这段链路，节点自己最清楚；中心只覆盖"中心→目标"。
+func pickIntercepted(nodeReported []int, ports []int) []int {
+	if len(nodeReported) > 0 {
+		return nodeReported
+	}
+	return interceptedPorts(ports)
 }
 
 // perHostPPS 单目标探针速率上限（探针/秒）。0 表示不限制。
@@ -361,7 +370,7 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	t0 := time.Now()
 	var lastProgNs atomic.Int64
 	lastProgNs.Store(t0.UnixNano())
-	st, serr := runStreamingScan(ctx, ctrl, ips, ports, conc, timeoutMs, workers, identCh, resCh,
+	st, serr := runStreamingScan(ctx, ctrl, ips, ports, conc, timeoutMs, workers, opts.InterceptedPorts, identCh, resCh,
 		func(done, tot, open int64) {
 			// 每秒 ≤1 次进度行
 			now := time.Now().UnixNano()
@@ -419,7 +428,8 @@ func max64(a, b int64) int64 {
 // runStreamingScan 调 portscan.Scan 并把 OnOpen 接进流水线；返回统计与错误。
 // ctrl 为运行期调控句柄（/control 的 pause/resume/limit 直接作用其上）。
 func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string, ports []int,
-	conc, timeoutMs, workers int, identCh chan<- portscan.Result, resCh chan<- ScanResult,
+	conc, timeoutMs, workers int, nodeIntercepted []int,
+	identCh chan<- portscan.Result, resCh chan<- ScanResult,
 	onProgress func(done, total, open int64)) (portscan.Stats, error) {
 
 	_, st, err := portscan.Scan(ctx, ips, ports, portscan.Options{
@@ -431,7 +441,7 @@ func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string
 		// 防火墙对"同一目的 IP 的新建连接"有每秒上限，超了就是静默丢包 → 开着也判关闭。
 		// 多目标时引擎靠派发轮转摊薄，这个值不起作用（见 engine scan.go 派发注释）。
 		PerHostPPS:       perHostPPS(),
-		InterceptedPorts: interceptedPorts(ports),
+		InterceptedPorts: pickIntercepted(nodeIntercepted, ports),
 		OnOpen: func(ip string, port int) {
 			if workers == 0 {
 				// 纯端口模式：不进识别池，直接产出裸 TCP 结果
