@@ -19,9 +19,11 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/RongSec/CyberLook-Scan/portscan"
@@ -189,6 +191,8 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 				"alive_count": len(alive)})
 		tasklog.AppendTS(task.ID, "[存活探测] 完成：%d/%d 存活（%.1f%%）；入队 %d 个 IP × %d 端口",
 			len(alive), len(all), 100*float64(len(alive))/float64(len(all)), total, portCount)
+		// 存活主机清单直接写进任务日志：这是人最想看的一行，不该逼人去导表。
+		tasklog.AppendTS(task.ID, "[存活探测] 存活主机（%d）：%s", len(alive), aliveListBrief(alive, 60))
 
 		local := finishQueueActivation(&task, created, total, portCount)
 		if local {
@@ -201,4 +205,15 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 		}
 	}()
 	return true
+}
+
+// aliveListBrief 把存活主机压成一行（最多 n 台，超出用 "…（共 N 台）" 收尾）。
+func aliveListBrief(ips []string, n int) string {
+	if len(ips) == 0 {
+		return "无"
+	}
+	if len(ips) <= n {
+		return strings.Join(ips, ", ")
+	}
+	return strings.Join(ips[:n], ", ") + fmt.Sprintf(" …（共 %d 台，完整清单见资产表）", len(ips))
 }
