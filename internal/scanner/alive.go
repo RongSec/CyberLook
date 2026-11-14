@@ -4,9 +4,9 @@ import (
 	"context"
 	"os"
 
+	"fmt"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -128,9 +128,11 @@ func (a *AliveCheck) Probe(ctx context.Context, ips []string, onProgress func(do
 // 探测端口：<b>故意不含 80/443</b>。
 //
 // 实测本网络有透明代理/上网行为管理设备，对**任意** IP 的 80/443 都会回 SYN-ACK：
-//   192.0.2.1:80  OK 10ms   ← 192.0.2.1 是 RFC5737 保留测试地址，不可能有服务
-//   192.0.2.1:443 OK 12ms
-//   192.0.2.1:445 FAIL 800ms（i/o timeout）
+//
+//	192.0.2.1:80  OK 10ms   ← 192.0.2.1 是 RFC5737 保留测试地址，不可能有服务
+//	192.0.2.1:443 OK 12ms
+//	192.0.2.1:445 FAIL 800ms（i/o timeout）
+//
 // 用 80/443 判存活会把整个网段判成「全部在线」（实测 256/256 全存活）。
 var fastPorts = []string{"445", "22", "3389", "8080", "443"}
 

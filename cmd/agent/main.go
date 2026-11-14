@@ -18,19 +18,19 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"sync/atomic"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// 内嵌 IANA 时区库：节点镜像不再需要装 tzdata 包（省掉一次 apt 下载，
 	// 也让镜像能跑在没有 tzdata 的极简 base 上）。TZ=Asia/Shanghai 依然生效。
 	_ "time/tzdata"
 
-	"github.com/RongSec/CyberLook-Scan/portscan"
 	"asset-platform/internal/scanner"
 	"asset-platform/internal/version"
+	"github.com/RongSec/CyberLook-Scan/portscan"
 )
 
 var (
@@ -40,6 +40,10 @@ var (
 )
 
 var nodeID uint
+
+// linkIntercepted 链路自检发现的"被代答端口"（对不存在的地址也返回连接成功）。
+// 这些端口在本节点上扫出来的"开放"是假的，扫描时直接跳过。
+var linkIntercepted []int
 
 // 队列运行期统计（只用于终端里那行"人要看"的进度，不参与上报）
 var (
@@ -347,6 +351,7 @@ func main() {
 	}
 	log.Printf("[节点] 注册成功，节点 ID=%d，中心=%s", nodeID, *serverURL)
 	log.Printf("[节点] 已建立唤醒通道，空闲时不轮询（有任务服务端会主动唤醒）")
+	linkSelfCheck()
 
 	go heartbeatLoop()
 	go streamLoop()   // SSE 长连接：有任务时被唤醒
@@ -815,6 +820,8 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		// "/control limit" 与 pause 一次对所有在途单元生效（键=taskID，不会被后启动单元覆盖）。
 		// 并发先按本机 nofile 钳一次，避免把机器推到 fd 墙（那会产出假阴性）。
 		Ctrl: queueLimiter(taskID, thread, timeout),
+		// 本节点链路自检发现的"被代答端口"（如 Docker Desktop 代理接管 80/443）
+		InterceptedPorts: linkIntercepted,
 	}
 	// 逐单元的"领取成功"不再打印：1112 个单元就是 1112 行，人眼看不到任何信息。
 	// 需要跟踪单个单元时看"进行中/开放端口"那两行就够，排查再开日志级别。
@@ -1455,7 +1462,8 @@ func runAgentTask(at AgentTask) {
 		ProjectID: fmt.Sprintf("agent-%d", at.ID),
 		Modules:   task.Modules, Finger: task.Finger, Ports: ports,
 		Thread: thread, Timeout: timeout, NoPing: task.NoPing, NoSmart: task.NoSmart,
-		ExtraArgs: task.ExtraArgs,
+		ExtraArgs:        task.ExtraArgs,
+		InterceptedPorts: linkIntercepted,
 	}
 
 	// 取消 = 唯一入口 scanner.StopScan(opts.ProjectID)（评审拍板，不给 RunPortScan 塞 ctx）。
@@ -1833,4 +1841,44 @@ func etaOf(line string) int {
 		return 0
 	}
 	return parseDurationSec(m[1])
+}
+
+// linkSelfCheck 节点侧链路自检：本机到目标的路径上，有没有设备/软件替我们"代答"。
+//
+// 为什么节点要做这件事而不是平台做：被代答的是**节点到目标**这段路径，
+// 平台（中心）的路径完全是另一条。同一张网，中心测出来干净、某个节点测出来脏
+// 是很常见的（节点在装了终端安全软件的机器上、或走了不同的出口）。
+//
+// 判据：对 RFC5737 保留地址（192.0.2.1 / 198.51.100.1，真实网络里不可能有主机）
+// 连扫描会用到的端口。任何"连上"的端口都是被代答的，这类端口的结果不可信。
+func linkSelfCheck() {
+	ports := []int{}
+	ports = append(ports, portscan.DefaultAlivePorts...)
+	// 再补几个最常用的扫描端口：很多代理只接管 80/443，但也有配了 8080/8443 的
+	ports = append(ports, 8080, 8443, 8081, 3128, 1080)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	bad, found := portscan.DetectInterceptedPorts(ctx, ports, 500*time.Millisecond)
+	linkIntercepted = bad // 供每次单元扫描过滤（节点侧结论比中心侧准）
+	if !found {
+		log.Printf("[节点] 链路自检：正常（对保留地址 %d 个端口的探测全部不可达，结果可信）", len(ports))
+		return
+	}
+	log.Printf("[节点] ⚠️ 链路自检：端口 %v 被本机/链路上的中间件代答 —— 对不存在的地址也返回『连接成功』", bad)
+	log.Printf("[节点] ⚠️ 这些端口的扫描结果不可信（会把不存在的主机判成存活、把关闭的端口判成开放）。")
+	// 再判一下是不是 Docker Desktop 自己的代理：容器环境的 80/443 经常先被它接住，
+	// 这跟"网络安全设备"是完全不同的两件事，不能让人白查一轮。
+	if c, err := (&net.Dialer{Timeout: 1500 * time.Millisecond}).Dial("tcp", "http.docker.internal:3128"); err == nil {
+		{
+			addr := c.RemoteAddr().String()
+			_ = c.Close()
+			log.Printf("[节点] ⚠️ 判定：这是 Docker Desktop 的 HTTP 代理（http.docker.internal:3128 → %s），"+
+				"不是网络里的设备。扫描结果在 80/443 上不可信。", addr)
+			log.Printf("[节点] ⚠️ 修复：Docker Desktop → Settings → Resources → Proxies，" +
+				"关闭 “Use system proxy” 或清空 Manual proxy，Apply & restart 后重启节点。")
+			return
+		}
+	}
+	log.Printf("[节点] ⚠️ 排查方向：本机是否装了 VPN/零信任/终端安全客户端（它们会对 HTTP(S) 做透明代理），" +
+		"或节点所在网段的防火墙是否开了 HTTP 代理。平台侧已自动剔除这些端口。")
 }

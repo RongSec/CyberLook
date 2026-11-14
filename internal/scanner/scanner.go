@@ -61,6 +61,10 @@ type ScanOptions struct {
 	//   - 一次 SetLimit/Pause 对所有路同时生效（全局调速语义）
 	// 传 nil = 老行为（每次扫描自建限速器，按 opts.Thread 初始化）。
 	Ctrl *portscan.Controls
+
+	// InterceptedPorts 本节点链路自检发现的"被代答端口"（见 cmd/agent 的 linkSelfCheck）。
+	// 非空时以节点结论为准：被代答的是"节点到目标"这段路，中心探测不到。
+	InterceptedPorts []int
 }
 
 // LogFunc 实时日志回调（isProgress 表示是否为进度条行）
