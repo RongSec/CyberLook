@@ -36,7 +36,7 @@ func startMetricsLogger() {
 				g := runtime.NumGoroutine()
 				fd := countFDs()
 
-				log.Printf("[agent] 运行状态 goroutines=%d heap=%.1fMB rss=%.1fMB fds=%d 在途上限=%d",
+				log.Printf("[节点] 运行状态：协程 %d，堆 %.1fMB，内存 %.1fMB，句柄 %d，在途上限 %d",
 					g, float64(ms.HeapAlloc)/1048576, rssMB(), fd, autoInflight())
 
 				// 连续 5 次（5 分钟）单调上涨才警告：避免被突发任务量的正常波动误报
@@ -51,11 +51,11 @@ func startMetricsLogger() {
 					warnFd = 0
 				}
 				if warnG >= 5 {
-					log.Printf("[agent] ⚠️ goroutines 连续 5 分钟上涨（%d→%d），疑似协程泄漏，请抓 goroutine dump", lastG, g)
+					log.Printf("[节点] ⚠️ goroutines 连续 5 分钟上涨（%d→%d），疑似协程泄漏，请抓 goroutine dump", lastG, g)
 					warnG = 0
 				}
 				if warnFd >= 5 {
-					log.Printf("[agent] ⚠️ fds 连续 5 分钟上涨（%d→%d），疑似连接/文件未关闭", lastFd, fd)
+					log.Printf("[节点] ⚠️ fds 连续 5 分钟上涨（%d→%d），疑似连接/文件未关闭", lastFd, fd)
 					warnFd = 0
 				}
 				lastG, lastFd = g, fd

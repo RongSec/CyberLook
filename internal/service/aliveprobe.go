@@ -28,17 +28,18 @@ import (
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/scanner"
 	"asset-platform/internal/target"
 	"asset-platform/internal/tasklog"
 )
 
 const (
 	// aliveProbeConc 并发主机数。纯 connect/ICMP，3000 并发约 3000 个 socket。
-	// 为什么是 3000：一个 /16 要发 65536×16 ≈ 105 万次 dial，被过滤的端口每个都要
-	// 等满超时。1000 并发时实测约 6 分钟，界面看着像卡死；3000 并发压到 2 分钟左右。
-	// 服务端容器 nofile 是 1048576，留足余量；若部署环境 nofile 只有 1024，
-	// 引擎会把 fd 耗尽当成"本地资源不足"重试而不是判成端口关闭（见 engine resource.go）。
-	aliveProbeConc = 3000
+	// 为什么是 1200：一个 /16 要发 65536×16 ≈ 105 万次 dial，被过滤的端口每个都要
+	// 等满超时。并发太低（几百）界面看着像卡死，太高（3000+）又会让目标的限速/IPS
+	// 丢掉我们的 SYN，把活主机判死。1200 是实测的平衡点，且引擎侧还有抽样复核兜底：
+	// 一旦发现漏判就自动降速重扫（Adaptive），所以这里给得高一点也不会硬伤准确性。
+	aliveProbeConc = 1200
 	// aliveProbeTCPTimeout 单端口 TCP 超时（引擎默认 400ms，这里略微收紧）。
 	aliveProbeTCPTimeout = 350 * time.Millisecond
 )
@@ -57,7 +58,13 @@ func ProbeAlive(ctx context.Context, ips []string, onProgress func(done, alive i
 		// 平台只要"这台活着/不活着"：ICMP 已经判活的主机不用再跑一轮 TCP，
 		// 端口真值交给后面的扫描阶段（那里本来就是全端口/前 N 端口扫）。
 		SkipTCPIfAlive: true,
-		OnProgress:     onProgress,
+		// 中间件代答的端口（实测 80/443 对任意地址 1ms "连接成功"）不参与判活，
+		// 否则整张网都会变成"存活"。
+		InterceptedPorts: scanner.InterceptedPortsOf(portscan.DefaultAlivePorts),
+		// 抽样复核：抽一小批判死的主机低速重探，发现漏判就降速重扫。
+		// 这是唯一能在"自己的探测把目标打限速了"时自己发现的办法。
+		Adaptive:   true,
+		OnProgress: onProgress,
 	})
 	alive := make([]string, 0, len(hosts))
 	for _, h := range hosts {
@@ -118,6 +125,12 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 	tasklog.AppendTS(task.ID, "[存活探测] 开始：%d 个 IP，ICMP Echo + TCP（%d 端口）两阶段判定",
 		len(all), len(portscan.DefaultAlivePorts))
 
+	// 先报一次链路中间件识别结果：它决定了"哪些端口不能信"，
+	// 不写进任务日志的话，用户看到"存活 7 台"会以为是漏报。
+	if bad := scanner.InterceptedPortsOf(portscan.DefaultAlivePorts); len(bad) > 0 {
+		tasklog.AppendTS(task.ID, "[存活探测] 链路检测：端口 %v 被中间设备代答（对保留地址也返回连接成功），已从判活端口集中剔除", bad)
+	}
+
 	go func() {
 		alive, st, err := ProbeAlive(context.Background(), all, func(done, aliveCnt int) bool {
 			config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).
@@ -140,6 +153,18 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 		} else {
 			tasklog.AppendTS(task.ID, "[存活探测] 判定：ICMP 判活 %d（不再跑 TCP），TCP 补判 %d，不可达 %d，耗时 %s",
 				st.ByICMP, st.ByTCP, st.Unreach, st.Elapsed.Round(time.Second))
+		}
+		// 复核结论必须写进日志：这张网"判死的主机里有多少其实活着"是判断
+		// 探测速率是否合适唯一的一手数据，比任何经验参数都可靠。
+		if st.SampledN > 0 {
+			if st.SampledAlive == 0 {
+				tasklog.AppendTS(task.ID, "[存活探测] 复核：抽查 %d 台判死主机全部确实无响应，首轮速率 %d 合适",
+					st.SampledN, aliveProbeConc)
+			} else {
+				missRate := float64(st.SampledAlive) * 100 / float64(st.SampledN)
+				tasklog.AppendTS(task.ID, "[存活探测] 复核：抽查 %d 台判死主机发现 %d 台其实存活（%.1f%%），已降速重扫 %d 轮，并发降到 %d",
+					st.SampledN, st.SampledAlive, missRate, st.Passes, st.ConcUsed)
+			}
 		}
 
 		if len(alive) == 0 {
