@@ -92,6 +92,10 @@
             <n-radio value="custom">自定义端口</n-radio>
           </n-radio-group>
         </n-form-item>
+        <n-form-item label="超时 -time（秒）">
+          <n-input-number v-model:value="form.timeout" :min="1" :max="60" style="width: 120px" />
+          <span class="switch-tip">单探针等待时长，只由任务决定（节点不再有此配置）。跨网段/专线延迟高时调大，否则开着的端口会被判成关闭</span>
+        </n-form-item>
         <n-form-item v-if="form.portMode === 'custom'" label="端口">
           <n-input v-model:value="form.ports" placeholder="如 22,80,443,3306,6379" />
         </n-form-item>
@@ -101,10 +105,6 @@
         <n-form-item label="存活探测">
           <n-switch v-model:value="form.aliveProbe" />
           <span class="switch-tip">开启后先探测目标存活，只扫描存活 IP</span>
-        </n-form-item>
-        <n-form-item label="启发式扫描">
-          <n-switch v-model:value="smartScan" />
-          <span class="switch-tip">按识别结果自动补充关联端口</span>
         </n-form-item>
         <n-form-item label="定时执行">
           <n-space align="center">
@@ -265,12 +265,11 @@
         <n-form-item v-if="tplForm.portMode === 'custom'" label="端口">
           <n-input v-model:value="tplForm.ports" placeholder="如 22,80,443,3306,6379" />
         </n-form-item>
-        <n-form-item label="并发 -t"><n-input-number v-model:value="tplForm.thread" :min="1" :max="5000" style="width: 160px" /></n-form-item>
-        <n-form-item label="超时 -time"><n-input-number v-model:value="tplForm.timeout" :min="1" :max="60" style="width: 160px" /></n-form-item>
+        <n-form-item label="并发 -t"><n-input-number v-model:value="tplForm.thread" :min="1" :max="5000" style="width: 160px" /><span class="switch-tip">智能调速开启时以本机自动值为准，这里只是下限</span></n-form-item>
+        <n-form-item label="超时 -time（秒）"><n-input-number v-model:value="tplForm.timeout" :min="1" :max="60" style="width: 160px" /></n-form-item>
         <n-form-item label="指纹策略 -finger">
           <n-select v-model:value="tplForm.finger" :options="fingerOptions" style="width: 140px" />
         </n-form-item>
-        <n-form-item label="启发式扫描"><n-switch v-model:value="tplSmart" /></n-form-item>
         <n-form-item label="额外参数">
           <n-input v-model:value="tplForm.extraArgs" placeholder="自由拼接参数，如 -pa 8080,9000" />
         </n-form-item>
@@ -409,17 +408,6 @@ function buildCron() {
   if (cronInterval.value === '1') return `0 ${cronHour.value} * * *`
   return `0 ${cronHour.value} */${cronInterval.value} * *`
 }
-
-// 启发式扫描：界面用正向开关表达，后端字段是 noSmart（禁用）
-const tplSmart = computed({
-  get: () => !tplForm.value.noSmart,
-  set: (v) => { tplForm.value.noSmart = !v }
-})
-
-const smartScan = computed({
-  get: () => !form.value.noSmart,
-  set: (v) => { form.value.noSmart = !v }
-})
 
 const statusMap = {
   pending: { text: '待执行', type: 'default' },
@@ -659,7 +647,6 @@ function applyTemplate(id) {
   form.value.timeout = t.timeout || 3
   form.value.finger = t.finger || 'tiny'
   form.value.noPing = !!t.noPing
-  form.value.noSmart = !!t.noSmart
   form.value.extraArgs = t.extraArgs || ''
 }
 
@@ -685,7 +672,6 @@ async function create(run) {
       finger: form.value.finger,
       noPing: form.value.noPing,
       aliveProbe: form.value.aliveProbe,
-      noSmart: form.value.noSmart,
       extraArgs: form.value.extraArgs,
       templateId: form.value.templateId,
       cron: buildCron(),

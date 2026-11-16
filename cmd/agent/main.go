@@ -821,13 +821,10 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	if thread <= 0 {
 		thread = 1000
 	}
-	// 超时优先级：任务填的 > 节点默认 > 1500ms。
-	// 之前是节点优先，节点配了 3000 就永远盖掉任务的 1s，实测 A/B 对照时
-	// “改任务超时没反应”就是这条倒挂造成的——任务级参数必须能覆盖节点默认。
+	// 超时**只由任务设定**：节点侧不再有超时配置（同一批节点跑同一个任务，
+	// 超时必须是任务属性，否则两台机器对同一目标给出不同结论）。
+	// 任务没填才兜底 1500ms。
 	timeout := task.Timeout * 1000
-	if timeout <= 0 {
-		timeout = conf.Timeout
-	}
 	if timeout <= 0 {
 		timeout = 1500
 	}
@@ -879,6 +876,11 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	scanned, total := 0, int(u.ProbesTotal)
 	ppsVal := 0.0
 	openFound, identified := 0, 0
+	// doneLine 引擎的完成行原文（`[扫描] 完成 65535/65535 探针，耗时 …，开放 6 个…`）。
+	// 单独跑二进制时这行直接打在终端；平台上它属于 progress 行（会刷屏所以不逐行打），
+	// 但**每个单元就一行**，值得留到最后和命中明细一起打出来 —— 这样两个入口的
+	// 「完成」措辞完全一致，对着看不用翻译。
+	doneLine := ""
 	lastPct := -1
 	finished := false
 	cancelled := false
@@ -1000,10 +1002,16 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 					mu.Unlock()
 				}
 			}
-			// 进度行不往终端打：它有 2s 一次的节奏、而且是"每单元一份"，
-			// 7 个单元就 7 行/2s，1112 个单元能把终端刷爆。真正的进度看
-			// 「[队列] 任务 #N 进行中：已扫 X 台…」那一行（5s 一次，全局口径）。
+			// 完成行只留不给终端（下面在单元收尾时连同命中明细一起打）
 			if isProgress {
+				if strings.Contains(line, "[扫描] 完成") {
+					mu.Lock()
+					doneLine = line
+					mu.Unlock()
+				}
+				// 其余进度行不打：它有 2s 一次的节奏、而且是"每单元一份"，
+				// 7 个单元就 7 行/2s，1112 个单元能把终端刷爆。真正的进度看
+				// 「[队列] 任务 #N 进行中：已扫 X 台…」那一行（5s 一次，全局口径）。
 				return
 			}
 			// 只过滤「落库路径」这一行（每单元都打，且只是路径）。
@@ -1065,11 +1073,19 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 		// 就是 2000 行噪音，人眼反而看不到关键信息：哪台活着、上面跑的是什么。
 		if len(results) > 0 {
 			atomic.AddInt64(&statUnitsOpen, 1)
+			mu.Lock()
+			dl := doneLine
+			mu.Unlock()
+			tail := fmt.Sprintf("%s 开放 %d 个%s", u.IP, len(results), openPortsBrief(results))
 			if w := webBrief(results); w != "" {
 				atomic.AddInt64(&statWebFound, 1)
-				log.Printf("[队列] %s 开放 %d 个端口%s｜Web：%s", u.IP, len(results), openPortsBrief(results), w)
+				tail += "｜Web：" + w
+			}
+			if dl != "" {
+				// 与 CLI 完全同一个前缀与措辞，后面接本 IP 的命中明细
+				log.Printf("%s｜%s", dl, tail)
 			} else {
-				log.Printf("[队列] %s 开放 %d 个端口%s", u.IP, len(results), openPortsBrief(results))
+				log.Printf("[扫描] 完成 %s", tail)
 			}
 		}
 		atomic.AddInt64(&statUnitsDone, 1)
@@ -1473,11 +1489,8 @@ func runAgentTask(at AgentTask) {
 	if thread <= 0 {
 		thread = 1000
 	}
-	// 同上：任务超时 > 节点默认 > 1500ms（任务填的单位是秒）
+	// 同上：超时只由任务设定（任务填的单位是秒），没填兜底 1500ms
 	timeout := task.Timeout * 1000
-	if timeout <= 0 {
-		timeout = conf.Timeout
-	}
 	if timeout <= 0 {
 		timeout = 1500
 	}
@@ -1732,18 +1745,27 @@ func postResults(taskID uint, results []scanner.ScanResult) {
 	}
 }
 
+// 进度行解析统一走 scanner.ParseProgress（正则只有一份，见 internal/scanner/progline.go）。
+// 这里只保留一个"同一行只解析一次"的缓存：logFn 里一行会被问 4~5 次。
 var (
-	// 进度条形如：扫描中 21%（283200/1279104 探针，已用 3m4s，剩余 10m23s）
-	pctRe = regexp.MustCompile(`扫描中 (\d{1,3})%|进度 (\d{1,3})%|扫描完成`)
-	// 两代文案都认：新版「4500/10000 探针」、老版「(4500/10000)」
-	progRe = regexp.MustCompile(`(\d+)\s*/\s*(\d+)\s*探针|\((\d+)\s*/\s*(\d+)\)`)
-	// 队列单元心跳抽取：速率与发现数（emitProgress 行格式，与 builtin.go 对齐）
-	ppsRe  = regexp.MustCompile(`([\d.]+)\s*探针/秒`)
-	openRe = regexp.MustCompile(`开放端口 (\d+) 个[，,]?\s*(?:已识别|识别服务) (\d+) 个|开放 (\d+) 已识别 (\d+)`)
-	// 进度条尾部 [已用:剩余]，如 [2m36s:10m54s]
-	etaRe = regexp.MustCompile(`\[([0-9hms]+):([0-9hms]+)\]`)
+	progCacheMu   sync.Mutex
+	progCacheLine string
+	progCacheInfo scanner.ProgInfo
+	progCacheOK   bool
+
 	durRe = regexp.MustCompile(`(\d+)([hms])`)
 )
+
+func progParseOnce(line string) (scanner.ProgInfo, bool) {
+	progCacheMu.Lock()
+	defer progCacheMu.Unlock()
+	if line != "" && line == progCacheLine {
+		return progCacheInfo, progCacheOK
+	}
+	info, ok := scanner.ParseProgress(line)
+	progCacheLine, progCacheInfo, progCacheOK = line, info, ok
+	return info, ok
+}
 
 // parseDurationSec 把 10m54s / 1h2m3s / 45s 转成秒
 func parseDurationSec(s string) int {
@@ -1805,75 +1827,43 @@ func fetchExcludes() []string {
 // 直接写在调用处会导致同一个正则匹配不到另一代文案，抽成函数集中一处。
 
 func progPair(line string) (int, int, bool) {
-	m := progRe.FindStringSubmatch(line)
-	if len(m) == 0 {
+	p, ok := progParseOnce(line)
+	if !ok || !p.HasPair {
 		return 0, 0, false
 	}
-	get := func(i int) int {
-		if i < len(m) {
-			if v, err := strconv.Atoi(m[i]); err == nil {
-				return v
-			}
-		}
-		return 0
-	}
-	// 分支 1：`4500/10000 探针`；分支 2：`(4500/10000)`
-	if m[1] != "" {
-		return get(1), get(2), true
-	}
-	return get(3), get(4), true
+	return int(p.Done), int(p.Total), true
 }
 
 func ppsOf(line string) (float64, bool) {
-	m := ppsRe.FindStringSubmatch(line)
-	if len(m) != 2 {
+	p, ok := progParseOnce(line)
+	if !ok || !p.HasPPS {
 		return 0, false
 	}
-	v, err := strconv.ParseFloat(m[1], 64)
-	return v, err == nil
+	return p.PPS, true
 }
 
 func openPair(line string) (int, int, bool) {
-	m := openRe.FindStringSubmatch(line)
-	if len(m) == 0 {
+	p, ok := progParseOnce(line)
+	if !ok || !p.HasOpen {
 		return 0, 0, false
 	}
-	get := func(i int) int {
-		if i < len(m) {
-			if v, err := strconv.Atoi(m[i]); err == nil {
-				return v
-			}
-		}
-		return 0
-	}
-	if m[1] != "" {
-		return get(1), get(2), true
-	}
-	return get(3), get(4), true
+	return int(p.Open), int(p.Ident), true
 }
 
 func pctOf(line string) (int, bool) {
-	m := pctRe.FindStringSubmatch(line)
-	if len(m) == 0 {
+	p, ok := progParseOnce(line)
+	if !ok || !p.HasPct {
 		return 0, false
 	}
-	if m[1] != "" {
-		v, err := strconv.Atoi(m[1])
-		return v, err == nil
-	}
-	if len(m) > 2 && m[2] != "" {
-		v, err := strconv.Atoi(m[2])
-		return v, err == nil
-	}
-	return 100, true // 「扫描完成」＝100%
+	return p.Percent, true
 }
 
 func etaOf(line string) int {
-	m := etaRe.FindStringSubmatch(line)
-	if len(m) != 2 {
+	p, ok := progParseOnce(line)
+	if !ok || !p.HasEta {
 		return 0
 	}
-	return parseDurationSec(m[1])
+	return p.EtaSec
 }
 
 // linkSelfCheck 节点侧链路自检：本机到目标的路径上，有没有设备/软件替我们"代答"。

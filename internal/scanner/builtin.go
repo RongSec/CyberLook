@@ -228,16 +228,7 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	if err != nil {
 		return nil, err
 	}
-	// 启发式：把高信息量端口提到派发序列前面（不减少探针、不漏报，只改先后）。
-	// 引擎派发是"端口外层"轮转，端口列表顺序就是发包顺序，所以这里排序等于
-	// 让 80/443/22/445 这些端口在几分钟内先出结果。NoSmart 时保持原始顺序。
-	smartPorts := 0
-	if !opts.NoSmart {
-		smartPorts = highValuePortCount(ports)
-		if smartPorts > 0 {
-			ports = prioritizePorts(ports)
-		}
-	}
+
 
 	conc := opts.Thread
 	if conc <= 0 || conc > 8192 {
@@ -301,13 +292,14 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	// 这行描述的是"本次调用的扫描参数"，队列模式下每个 IP 单元都会进来一次，
 	// 984 个单元就是 984 行一模一样的内容，把终端刷得看不见真东西。
 	// 参数在同一进程里基本恒定，只在第一次打印。
+	// 参数行与单独跑二进制（cmd/cyberlook-scan）共用 portscan.FormatParamsLine：
+	// 同一个任务在两个入口的日志必须长得一样，否则对照排查要多做一次翻译。
 	engineParamOnce.Do(func() {
-		heur := "关（按端口号顺序派发）"
-		if !opts.NoSmart && smartPorts > 0 {
-			heur = fmt.Sprintf("开（%d 个高价值端口优先派发：Web/远程管理/数据库入口）", smartPorts)
-		}
-		logf(logFn, fmt.Sprintf("[自研引擎] 扫描参数：并发 %d，超时 %dms，识别=%v（识别并发 %d，全量指纹 %v），启发式 %s；本次 %d 目标 × %d 端口 = %d 探针",
-			conc, timeoutMs, workers > 0, workers, fullFinger, heur, len(ips), len(ports), total))
+		logf(logFn, portscan.FormatParamsLine(portscan.ReportParams{
+			Concurrency: conc, TimeoutMs: timeoutMs,
+			Identify: workers > 0, IdentWorkers: workers, FullFinger: fullFinger,
+			Targets: len(ips), Ports: len(ports),
+		}))
 	})
 
 	// ===== 审计库（仅 agent 进程启用；旁路，建库失败只记日志不中断扫描）=====
@@ -402,12 +394,10 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	aggWG.Wait()
 
 	elapsed := time.Since(t0)
-	pps := 0.0
-	if s := elapsed.Seconds(); s > 0 {
-		pps = float64(st.Probes) / s
-	}
-	logProgressLine(logFn, fmt.Sprintf("[自研引擎] 扫描完成 %d/%d 探针，耗时 %s，平均 %.0f 探针/秒，开放端口 %d 个，识别服务 %d 个",
-		st.Probes, total, elapsed.Round(time.Second), pps, st.Open, identified.Load()))
+	logProgressLine(logFn, portscan.FormatDoneLine(portscan.ReportDone{
+		Probes: st.Probes, Total: total, Elapsed: elapsed,
+		Open: int64(st.Open), Ident: identified.Load(),
+	}))
 
 	allMu.Lock()
 	out := append([]ScanResult(nil), all...)
@@ -528,28 +518,9 @@ func mapService(sv svcid.Service) ScanResult {
 //	「(done/total)」→ portRe；「N%」→ pctRe；「[已用:剩余]」→ etaRe
 //	内容含 探针 done/total、当前 pps、开放数、已识别数。
 func emitProgress(fn LogFunc, done, total, open, ident int64, elapsed time.Duration) {
-	pct := 0
-	if total > 0 {
-		pct = int(done * 100 / total)
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	pps := float64(done) / max1(elapsed.Seconds())
-	used := elapsed.Round(time.Second)
-	eta := "-"
-	if pps > 0 && total > done {
-		rem := int64(float64(total-done) / pps)
-		if rem > 3600*24 {
-			rem = 3600 * 24 // 早期样本少时 ETA 抖动巨大，封顶一天
-		}
-		eta = (time.Duration(rem) * time.Second).Round(time.Second).String()
-	}
-	if eta == "" || eta == "-" {
-		eta = "计算中"
-	}
-	logProgressLine(fn, fmt.Sprintf("[自研引擎] 扫描中 %d%%（%d/%d 探针，已用 %s，剩余 %s）｜%.0f 探针/秒｜开放端口 %d 个，已识别 %d 个",
-		pct, done, total, used, eta, pps, open, ident))
+	logProgressLine(fn, portscan.FormatProgressLine(portscan.ReportProgress{
+		Done: done, Total: total, Open: open, Ident: ident, Elapsed: elapsed,
+	}))
 }
 
 func max1(v float64) float64 {
