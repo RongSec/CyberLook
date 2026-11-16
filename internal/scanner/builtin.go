@@ -107,8 +107,30 @@ func perHostPPS() int {
 	return 300
 }
 
-// engineParamOnce 只让"扫描参数"那一行打一次（队列模式每单元都会调进来）。
-var engineParamOnce sync.Once
+// engineParamOnce 让"扫描参数"那一行**每个任务**打一次（队列模式每单元都会调进来）。
+//
+// 为什么按任务而不是按进程：进程级 once 的话，节点重启后只有第一个任务能看到参数行，
+// 之后的任务在终端里完全没有"这次用什么并发/超时/识别"的记录，排查时要翻启动日志。
+// 键取 ProjectID 里的会话号（agent-q-<session>-<ip>）；单机直接跑（无 ProjectID）用 "default"。
+var (
+	engineParamMu   sync.Mutex
+	engineParamSeen = map[string]bool{}
+)
+
+// paramLineOwner 从 ProjectID 里取"任务"标识（队列：agent-q-<session>-<ip> → q<session>）。
+func paramLineOwner(projectID string) string {
+	if projectID == "" {
+		return "default"
+	}
+	const prefix = "agent-q-"
+	if strings.HasPrefix(projectID, prefix) {
+		rest := projectID[len(prefix):]
+		if i := strings.IndexByte(rest, '-'); i > 0 {
+			return "q" + rest[:i]
+		}
+	}
+	return projectID
+}
 
 // ruleLoadMu 串行化规则载入。
 // 作用：K 路单元同时首次进来时，避免 N 个 goroutine 各自解析同一份 11MB JSON
@@ -294,13 +316,20 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	// 参数在同一进程里基本恒定，只在第一次打印。
 	// 参数行与单独跑二进制（cmd/cyberlook-scan）共用 portscan.FormatParamsLine：
 	// 同一个任务在两个入口的日志必须长得一样，否则对照排查要多做一次翻译。
-	engineParamOnce.Do(func() {
+	owner := paramLineOwner(opts.ProjectID)
+	engineParamMu.Lock()
+	firstForTask := !engineParamSeen[owner]
+	if firstForTask {
+		engineParamSeen[owner] = true
+	}
+	engineParamMu.Unlock()
+	if firstForTask {
 		logf(logFn, portscan.FormatParamsLine(portscan.ReportParams{
 			Concurrency: conc, TimeoutMs: timeoutMs,
 			Identify: workers > 0, IdentWorkers: workers, FullFinger: fullFinger,
 			Targets: len(ips), Ports: len(ports),
 		}))
-	})
+	}
 
 	// ===== 审计库（仅 agent 进程启用；旁路，建库失败只记日志不中断扫描）=====
 	audit := newAuditWriter(opts.ProjectID, logFn)
