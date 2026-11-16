@@ -69,29 +69,6 @@
       </p>
     </n-card>
 
-    <!-- 节点扫描参数：并发交由智能调速，只剩「默认超时」 -->
-    <n-modal v-model:show="showCfg" preset="card" :title="`节点扫描参数 · ${cfgForm.name}`" style="width: 500px">
-      <n-form label-placement="left" label-width="120">
-        <n-form-item label="默认超时 (ms)">
-          <n-input-number v-model:value="cfgForm.timeout" :min="100" :max="60000" :step="500" style="width: 180px" />
-        </n-form-item>
-      </n-form>
-      <p class="muted" style="margin-top: 4px">
-        并发不再按节点配置：智能调速按本机 fd/CPU/内存自动给在途上限（关闭方式：环境变量
-        <code>SCAN_INFLIGHT_AUTO=off</code>）。
-      </p>
-      <p class="muted">
-        超时是单个探针 dial 的等待时长，只在「任务未填超时」时作为默认值。
-        跨网段、专线延迟高时要放宽，否则开着的端口会被判成关闭。
-      </p>
-      <template #footer>
-        <n-space justify="end">
-          <n-button @click="showCfg = false">取消</n-button>
-          <n-button type="primary" @click="saveCfg">保存</n-button>
-        </n-space>
-      </template>
-    </n-modal>
-
     <!-- 节点的 config.db 数据库管理 -->
     <n-modal v-model:show="showDbModal" preset="card" :title="`数据库管理 · ${dbNode?.name || ''}`" style="width: 520px">
       <p class="muted" style="margin: 0 0 12px">
@@ -216,9 +193,8 @@ const columns = [
     render: row => h(NTag, { type: row.status === 'online' ? 'success' : 'default', size: 'small' },
       { default: () => row.status === 'online' ? '在线' : '离线' })
   },
-  // 并发不再由节点配置决定：智能调速按本机 fd/CPU/内存自动算在途上限
+  // 并发由智能调速决定、超时由任务决定，节点上不再有扫描参数可配
   { title: '并发', key: 'concurrency', width: 90, render: () => '自动调速' },
-  { title: '默认超时(ms)', key: 'timeout', width: 120, render: r => r.timeout || 3000 },
   {
     title: '控制文件版本', key: 'agentVersion', width: 150,
     render: row => {
@@ -236,7 +212,6 @@ const columns = [
       const isLatest = !!row.agentVersion && row.agentVersion === latestVersion.value
       const offline = row.status !== 'online'
       return h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [
-        h(NButton, { size: 'small', text: true, type: 'primary', onClick: () => openCfg(row) }, { default: () => '配置' }),
         h(NButton, { size: 'small', text: true, onClick: () => health(row) }, { default: () => '健康检查' }),
         h(NButton, { size: 'small', text: true, type: 'info', onClick: () => openDb(row) }, { default: () => '数据库管理' }),
         h(NButton, {
@@ -313,25 +288,6 @@ async function del(id) {
   }, 15000)
 }
 
-// ===== 节点配置 / 健康检查 =====
-const showCfg = ref(false)
-const cfgForm = ref({ id: 0, name: '', concurrency: 1000, timeout: 3000 })
-
-function openCfg(row) {
-  cfgForm.value = { id: row.id, name: row.name, concurrency: row.concurrency || 1000, timeout: row.timeout || 3000 }
-  showCfg.value = true
-}
-async function saveCfg() {
-  try {
-    await api.put(`/nodes/${cfgForm.value.id}/config`, {
-      timeout: cfgForm.value.timeout,
-      concurrency: cfgForm.value.concurrency
-    })
-    message.success('已保存')
-    showCfg.value = false
-    load()
-  } catch (e) { message.error(e.response?.data?.error || '保存失败') }
-}
 
 async function health(row) {
   try {

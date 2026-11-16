@@ -48,7 +48,9 @@ type ScanOptions struct {
 	Thread    int    // 并发数
 	Timeout   int    // 超时（agent 传毫秒；<100 按秒换算）
 	NoPing    bool   // 兼容字段：自研 connect 扫描天然不做 ICMP 预探测
-	NoSmart   bool   // 兼容字段：自研按给定端口全扫
+	// NoSmart 已废弃（v0.0.36）：启发式扫描整个移除，字段保留只为兼容旧请求体，
+	// 传什么都不影响行为。不要在这里加任何逻辑。
+	NoSmart bool
 	Finger    string // "tiny"=不做主动探针；"all"/空=全量
 	ExtraArgs string // 已废弃（tscan 命令行参数），保留兼容存储
 
