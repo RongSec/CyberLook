@@ -9,38 +9,7 @@
           </n-tag>
           <span class="muted" style="font-size:12px">节点版本与此不一致时，点该行「更新控制文件」</span>
         </div>
-      
-    <!-- 节点的 config.db 数据库管理 -->
-    <n-modal v-model:show="showDbModal" preset="card" :title="`数据库管理 · ${dbNode?.name || ''}`" style="width: 520px">
-      <p class="muted" style="margin: 0 0 12px">
-        以下是该节点 config.db 里累积的扫描项目（每个分片一个）。可勾选删除，释放磁盘空间。
-      </p>
-      <n-spin :show="dbLoading">
-        <n-checkbox-group v-model:value="checkedProjects">
-          <div style="max-height: 320px; overflow-y: auto">
-            <div v-for="p in dbProjects" :key="p" style="padding: 4px 0">
-              <n-checkbox :value="p" :label="p" />
-            </div>
-            <n-empty v-if="dbProjects.length === 0" description="暂无数据（等待节点下次心跳上报）" />
-          </div>
-        </n-checkbox-group>
-      </n-spin>
-      <template #footer>
-        <n-space justify="space-between">
-          <n-space>
-            <n-button size="small" @click="checkedProjects = [...dbProjects]">全选</n-button>
-            <n-button size="small" @click="checkedProjects = []">清空</n-button>
-          </n-space>
-          <n-space>
-            <n-button @click="showDbModal = false">关闭</n-button>
-            <n-button type="error" :disabled="checkedProjects.length === 0" :loading="dbDeleting" @click="deleteProjects">
-              删除选中{{ checkedProjects.length ? `(${checkedProjects.length})` : '' }}
-            </n-button>
-          </n-space>
-        </n-space>
       </template>
-    </n-modal>
-</template>
       <n-data-table :columns="columns" :data="nodes" :loading="loading" size="small" />
     </n-card>
 
@@ -100,61 +69,33 @@
       </p>
     </n-card>
 
-    <!-- 节点扫描参数 -->
-    <n-modal v-model:show="showCfg" preset="card" :title="`节点扫描参数 · ${cfgForm.name}`" style="width: 460px">
-      <n-form label-placement="left" label-width="110">
-        <n-form-item label="并发 -t">
-          <n-input-number v-model:value="cfgForm.concurrency" :min="1" :max="20000" style="width: 180px" />
-        </n-form-item>
-        <n-form-item label="超时 -time (ms)">
+    <!-- 节点扫描参数：并发交由智能调速，只剩「默认超时」 -->
+    <n-modal v-model:show="showCfg" preset="card" :title="`节点扫描参数 · ${cfgForm.name}`" style="width: 500px">
+      <n-form label-placement="left" label-width="120">
+        <n-form-item label="默认超时 (ms)">
           <n-input-number v-model:value="cfgForm.timeout" :min="100" :max="60000" :step="500" style="width: 180px" />
         </n-form-item>
       </n-form>
-      <p class="muted">并发越高，服务端分配给它 IP 越多（按并发加权，尽量让所有节点同时完成）。</p>
+      <p class="muted" style="margin-top: 4px">
+        并发不再按节点配置：智能调速按本机 fd/CPU/内存自动给在途上限（关闭方式：环境变量
+        <code>SCAN_INFLIGHT_AUTO=off</code>）。
+      </p>
+      <p class="muted">
+        超时是单个探针 dial 的等待时长，只在「任务未填超时」时作为默认值。
+        跨网段、专线延迟高时要放宽，否则开着的端口会被判成关闭。
+      </p>
       <template #footer>
         <n-space justify="end">
           <n-button @click="showCfg = false">取消</n-button>
           <n-button type="primary" @click="saveCfg">保存</n-button>
         </n-space>
-      
-    <!-- 节点的 config.db 数据库管理 -->
-    <n-modal v-model:show="showDbModal" preset="card" :title="`数据库管理 · ${dbNode?.name || ''}`" style="width: 520px">
-      <p class="muted" style="margin: 0 0 12px">
-        以下是该节点 config.db 里累积的扫描项目（每个分片一个）。可勾选删除，释放磁盘空间。
-      </p>
-      <n-spin :show="dbLoading">
-        <n-checkbox-group v-model:value="checkedProjects">
-          <div style="max-height: 320px; overflow-y: auto">
-            <div v-for="p in dbProjects" :key="p" style="padding: 4px 0">
-              <n-checkbox :value="p" :label="p" />
-            </div>
-            <n-empty v-if="dbProjects.length === 0" description="暂无数据（等待节点下次心跳上报）" />
-          </div>
-        </n-checkbox-group>
-      </n-spin>
-      <template #footer>
-        <n-space justify="space-between">
-          <n-space>
-            <n-button size="small" @click="checkedProjects = [...dbProjects]">全选</n-button>
-            <n-button size="small" @click="checkedProjects = []">清空</n-button>
-          </n-space>
-          <n-space>
-            <n-button @click="showDbModal = false">关闭</n-button>
-            <n-button type="error" :disabled="checkedProjects.length === 0" :loading="dbDeleting" @click="deleteProjects">
-              删除选中{{ checkedProjects.length ? `(${checkedProjects.length})` : '' }}
-            </n-button>
-          </n-space>
-        </n-space>
       </template>
     </n-modal>
-</template>
-    </n-modal>
-  </div>
 
     <!-- 节点的 config.db 数据库管理 -->
     <n-modal v-model:show="showDbModal" preset="card" :title="`数据库管理 · ${dbNode?.name || ''}`" style="width: 520px">
       <p class="muted" style="margin: 0 0 12px">
-        以下是该节点 config.db 里累积的扫描项目（每个分片一个）。可勾选删除，释放磁盘空间。
+        以下是该节点 config.db 里累积的扫描会话（每个扫描单元一个）。可勾选删除，释放磁盘空间。
       </p>
       <n-spin :show="dbLoading">
         <n-checkbox-group v-model:value="checkedProjects">
@@ -162,10 +103,14 @@
             <div v-for="p in dbProjects" :key="p" style="padding: 4px 0">
               <n-checkbox :value="p" :label="p" />
             </div>
-            <n-empty v-if="dbProjects.length === 0" description="暂无数据（等待节点下次心跳上报）" />
+            <n-empty v-if="dbProjects.length === 0" description="暂无记录" />
           </div>
         </n-checkbox-group>
       </n-spin>
+      <p v-if="!dbLoading && dbProjects.length === 0" class="muted" style="margin: 10px 0 0">
+        审计库只记录「扫到开放端口」的命中，没命中的主机不入库。若该节点扫过的网段里
+        一台都没开放端口，这里就是空的——这种情况看「任务日志」的存活主机清单更直接。
+      </p>
       <template #footer>
         <n-space justify="space-between">
           <n-space>
@@ -181,6 +126,7 @@
         </n-space>
       </template>
     </n-modal>
+  </div>
 </template>
 
 <script setup>
@@ -270,8 +216,9 @@ const columns = [
     render: row => h(NTag, { type: row.status === 'online' ? 'success' : 'default', size: 'small' },
       { default: () => row.status === 'online' ? '在线' : '离线' })
   },
-  { title: '并发', key: 'concurrency', width: 80, render: r => r.concurrency || 1000 },
-  { title: '超时(ms)', key: 'timeout', width: 100, render: r => r.timeout || 3000 },
+  // 并发不再由节点配置决定：智能调速按本机 fd/CPU/内存自动算在途上限
+  { title: '并发', key: 'concurrency', width: 90, render: () => '自动调速' },
+  { title: '默认超时(ms)', key: 'timeout', width: 120, render: r => r.timeout || 3000 },
   {
     title: '控制文件版本', key: 'agentVersion', width: 150,
     render: row => {

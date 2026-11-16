@@ -228,6 +228,16 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	if err != nil {
 		return nil, err
 	}
+	// 启发式：把高信息量端口提到派发序列前面（不减少探针、不漏报，只改先后）。
+	// 引擎派发是"端口外层"轮转，端口列表顺序就是发包顺序，所以这里排序等于
+	// 让 80/443/22/445 这些端口在几分钟内先出结果。NoSmart 时保持原始顺序。
+	smartPorts := 0
+	if !opts.NoSmart {
+		smartPorts = highValuePortCount(ports)
+		if smartPorts > 0 {
+			ports = prioritizePorts(ports)
+		}
+	}
 
 	conc := opts.Thread
 	if conc <= 0 || conc > 8192 {
@@ -292,8 +302,12 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	// 984 个单元就是 984 行一模一样的内容，把终端刷得看不见真东西。
 	// 参数在同一进程里基本恒定，只在第一次打印。
 	engineParamOnce.Do(func() {
-		logf(logFn, fmt.Sprintf("[自研引擎] 扫描参数：并发 %d，超时 %dms，识别=%v（识别并发 %d，全量指纹 %v）；本次 %d 目标 × %d 端口 = %d 探针",
-			conc, timeoutMs, workers > 0, workers, fullFinger, len(ips), len(ports), total))
+		heur := "关（按端口号顺序派发）"
+		if !opts.NoSmart && smartPorts > 0 {
+			heur = fmt.Sprintf("开（%d 个高价值端口优先派发：Web/远程管理/数据库入口）", smartPorts)
+		}
+		logf(logFn, fmt.Sprintf("[自研引擎] 扫描参数：并发 %d，超时 %dms，识别=%v（识别并发 %d，全量指纹 %v），启发式 %s；本次 %d 目标 × %d 端口 = %d 探针",
+			conc, timeoutMs, workers > 0, workers, fullFinger, heur, len(ips), len(ports), total))
 	})
 
 	// ===== 审计库（仅 agent 进程启用；旁路，建库失败只记日志不中断扫描）=====
