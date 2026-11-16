@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,13 @@ var auditEnabled atomic.Bool
 
 // auditPathOnce 落库路径只报一次（每个扫描单元都会建一次 writer）。
 var auditPathOnce sync.Once
+
+// auditErrOnce / auditDisabledOnce 失败与未启用也只报一次：
+// 队列模式下每个 IP 单元都会调进来，984 个单元就是 984 行同样的报错。
+var (
+	auditErrOnce      sync.Once
+	auditDisabledOnce sync.Once
+)
 
 // EnableAudit 开启审计落库。只在 cmd/agent 的 main 里调用一次。
 // 测试中用于验证开启态；开启后不可逆（进程级开关）。
@@ -105,8 +113,15 @@ type auditWriter struct {
 }
 
 // newAuditWriter 打开/创建审计库并确保表结构；未启用/失败返回 nil（只记日志）。
+//
+// 失败必须让人看得见：这个库是节点「数据库管理」的唯一数据源，静默返回 nil 的后果
+// 是界面上永远是"暂无数据"，而且没有任何一处提示为什么（实测踩过：库里连表都没建，
+// 日志里也一个字都没有）。
 func newAuditWriter(project string, logFn LogFunc) *auditWriter {
 	if !AuditEnabled() {
+		auditDisabledOnce.Do(func() {
+			logf(logFn, "[审计库] 未启用（本进程没有调用 EnableAudit，跳过落库）")
+		})
 		return nil // server/bench 进程不写审计库
 	}
 	if project == "" {
@@ -114,17 +129,23 @@ func newAuditWriter(project string, logFn LogFunc) *auditWriter {
 	}
 	dbPath := EngineDBPath()
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		logf(logFn, "[审计库] 目录创建失败（跳过落库）: "+err.Error())
+		auditErrOnce.Do(func() {
+			logf(logFn, "[审计库] 目录创建失败（跳过落库）: "+err.Error())
+		})
 		return nil
 	}
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
-		logf(logFn, "[审计库] 打开失败（跳过落库）: "+err.Error())
+		auditErrOnce.Do(func() {
+			logf(logFn, "[审计库] 打开失败（跳过落库）: "+err.Error())
+		})
 		return nil
 	}
 	db.SetMaxOpenConns(1) // sqlite 单写者，串行化避免 database is locked
 	if _, err := db.Exec(auditSchema); err != nil {
-		logf(logFn, "[审计库] 建表失败（跳过落库）: "+err.Error())
+		auditErrOnce.Do(func() {
+			logf(logFn, "[审计库] 建表失败（跳过落库），库路径 "+dbPath+"："+err.Error())
+		})
 		_ = db.Close()
 		return nil
 	}
@@ -333,6 +354,147 @@ func PruneAuditProjectsIn(dbPath, projectPrefix string, keepSessions map[uint]bo
 		CompactAuditDBIn(dbPath)
 	}
 	return removed
+}
+
+// AuditProjectStat 单个 Project 的体量与最后写入时间。
+type AuditProjectStat struct {
+	Project string
+	Rows    int64
+	LastAt  time.Time
+}
+
+// AuditProjectStatsIn 统计每个 Project 的行数与最后写入时间（ipscan ∪ urlscan）。
+func AuditProjectStatsIn(dbPath string) []AuditProjectStat {
+	if dbPath == "" {
+		dbPath = EngineDBPath()
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	agg := map[string]*AuditProjectStat{}
+	for _, tbl := range []string{"ipscan", "urlscan"} {
+		rows, err := db.Query("SELECT Project, COUNT(*), MAX(CreatedAt) FROM " + tbl + " GROUP BY Project")
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var (
+				p    sql.NullString
+				n    int64
+				last sql.NullString
+			)
+			if rows.Scan(&p, &n, &last) != nil || !p.Valid || p.String == "" {
+				continue
+			}
+			st, ok := agg[p.String]
+			if !ok {
+				st = &AuditProjectStat{Project: p.String}
+				agg[p.String] = st
+			}
+			st.Rows += n
+			if last.Valid {
+				// 落库统一写 "2006-01-02 15:04:05"，按本地时区解析
+				if t, err := time.ParseInLocation("2006-01-02 15:04:05", last.String, time.Local); err == nil && t.After(st.LastAt) {
+					st.LastAt = t
+				}
+			}
+		}
+		rows.Close()
+	}
+	out := make([]AuditProjectStat, 0, len(agg))
+	for _, st := range agg {
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastAt.Before(out[j].LastAt) })
+	return out
+}
+
+// PruneAuditByPolicy 按「保留期 + 容量上限」清理审计库，在途会话一律不碰。
+//
+// 为什么不再用「会话是否在途」当唯一依据：那等于任务一结束就把证据删掉 ——
+// 实测队列任务收敛后 20 秒，刚写进去的 6 条结果就被判为“陈旧”清空，
+// 节点「数据库管理」永远显示空。审计库的用途就是**事后排障**，必须留一段时间。
+//
+//   retain   保留期：最后写入早于 now-retain 的 Project 删除
+//   maxBytes 容量上限：删完过期项后仍超限，就按“最旧优先”继续删到阈值以下
+//
+// 手工 Project（不带 agent-q- 前缀，如 Default）不参与删除：那是人自己跑的。
+func PruneAuditByPolicy(dbPath string, inFlight map[uint]bool, retain time.Duration, maxBytes int64) (removed []string, kept int) {
+	if retain <= 0 {
+		retain = 7 * 24 * time.Hour
+	}
+	stats := AuditProjectStatsIn(dbPath)
+	if len(stats) == 0 {
+		return nil, 0
+	}
+	deadline := time.Now().Add(-retain)
+
+	// 在途会话：project 形如 agent-q-<session>-<ip>
+	isInFlight := func(p string) bool {
+		const prefix = "agent-q-"
+		if !strings.HasPrefix(p, prefix) {
+			return false
+		}
+		rest := p[len(prefix):]
+		dash := strings.IndexByte(rest, '-')
+		if dash <= 0 {
+			return false
+		}
+		sid, err := strconv.ParseUint(rest[:dash], 10, 32)
+		if err != nil {
+			return false
+		}
+		return inFlight[uint(sid)]
+	}
+
+	drop := func(p string) {
+		if err := ClearAuditProject(dbPath, p); err == nil {
+			removed = append(removed, p)
+		}
+	}
+
+	alive := make([]AuditProjectStat, 0, len(stats))
+	for _, st := range stats { // 已按 LastAt 升序
+		if isInFlight(st.Project) {
+			kept++
+			alive = append(alive, st)
+			continue
+		}
+		if !st.LastAt.IsZero() && st.LastAt.Before(deadline) {
+			drop(st.Project)
+			continue
+		}
+		alive = append(alive, st)
+	}
+
+	// 容量兜底：按最旧优先删，直到文件降到阈值以下
+	if maxBytes > 0 {
+		size := auditFileBytes(dbPath)
+		for i := 0; i < len(alive) && size > maxBytes; i++ {
+			if isInFlight(alive[i].Project) {
+				continue
+			}
+			drop(alive[i].Project)
+			size = auditFileBytes(dbPath) // 逐次量，删多少算多少（不估算）
+		}
+	}
+	if len(removed) > 0 {
+		CompactAuditDBIn(dbPath)
+	}
+	return removed, kept
+}
+
+// auditFileBytes 审计库占用（主库 + WAL + SHM）。
+func auditFileBytes(dbPath string) int64 {
+	var total int64
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if fi, err := os.Stat(dbPath + suffix); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
 }
 
 // CompactAuditDBIn 回收审计库空间：WAL checkpoint + VACUUM。

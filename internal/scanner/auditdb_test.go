@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // openTestAudit 在临时目录建一个已初始化表结构的审计库 writer。
@@ -180,5 +181,77 @@ func TestPruneAuditProjects(t *testing.T) {
 	}
 	if n := countRows(t, dbPath, "ipscan", "weird"); n != 1 {
 		t.Fatalf("形态不认识的 Project 不该被删，实际 %d", n)
+	}
+}
+
+// TestPruneAuditByPolicyKeepsFresh 刚写完的数据不得被清理 ——
+// 这条防的是真实事故：任务收敛 20 秒后审计行被判"陈旧"全删，节点「数据库管理」永远空。
+func TestPruneAuditByPolicyKeepsFresh(t *testing.T) {
+	w, dbPath := openTestAudit(t, "agent-q-750-10.0.0.1")
+	w.WriteBatch([]ScanResult{{IP: "10.0.0.1", Port: 22, Protocol: "SSH"}})
+	w.Close()
+
+	removed, _ := PruneAuditByPolicy(dbPath, nil, 7*24*time.Hour, 0)
+	if len(removed) != 0 {
+		t.Fatalf("新鲜数据被删了: %v", removed)
+	}
+	if n := countRows(t, dbPath, "ipscan", "agent-q-750-10.0.0.1"); n != 1 {
+		t.Fatalf("行数=%d 期望 1", n)
+	}
+}
+
+// TestPruneAuditByPolicyDropsExpired 超过保留期的要删
+// 直接 INSERT 带历史时间戳的行：走 writer 再 UPDATE 会踩 WAL 可见性，
+// 测的就不是策略本身了（这段要验的是"过期判定 + 删除"）。
+func TestPruneAuditByPolicyDropsExpired(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(auditSchema); err != nil {
+		t.Fatalf("建表失败: %v", err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+	if _, err := db.Exec("INSERT INTO ipscan (Project,Host,Port,Protocol,CreatedAt) VALUES (?,?,?,?,?)",
+		"agent-q-1-old", "10.0.0.9", "80", "HTTP", old); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	removed, _ := PruneAuditByPolicy(dbPath, nil, 7*24*time.Hour, 0)
+	if len(removed) != 1 || removed[0] != "agent-q-1-old" {
+		t.Fatalf("应删除过期 Project，得到 %v", removed)
+	}
+	if n := countRows(t, dbPath, "ipscan", "agent-q-1-old"); n != 0 {
+		t.Fatalf("过期行未删净: %d", n)
+	}
+}
+
+// TestPruneAuditByPolicyProtectsInFlight 在途会话即使超期也不删
+func TestPruneAuditByPolicyProtectsInFlight(t *testing.T) {
+	w, dbPath := openTestAudit(t, "agent-q-42-running")
+	w.WriteBatch([]ScanResult{{IP: "10.0.0.5", Port: 443, Protocol: "HTTPS"}})
+	w.Close()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+	if _, err := db.Exec("UPDATE ipscan SET CreatedAt = ?", old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	removed, kept := PruneAuditByPolicy(dbPath, map[uint]bool{42: true}, 7*24*time.Hour, 0)
+	if len(removed) != 0 {
+		t.Fatalf("在途会话被删了: %v", removed)
+	}
+	if kept != 1 {
+		t.Errorf("kept=%d 期望 1", kept)
 	}
 }

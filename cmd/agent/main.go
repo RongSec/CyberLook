@@ -560,12 +560,14 @@ func queueLoop() {
 // queueWake 唤醒队列消费循环（SSE 信号与本机事件共用）。
 var queueWake = make(chan struct{}, 1)
 
-// auditJanitor 定期清理审计库里"会话已结束"的单元 Project 行。
+// auditJanitor 定期清理审计库：按「保留期 + 容量上限」，在途会话不碰。
 //
 // 背景：队列模式下每个 IP 单元用自己的 Project（agent-q-<sessionID>-<ip>）落审计库，
-// 任务结束/删除后这些行没有任何人删（v0.0.27 之前 ClearAuditProject 全仓零调用），
-// config.db 会随扫描量无界增长直到撑爆节点磁盘。这里每 5 分钟对一次账：
-// 以服务端仍在途的队列会话为准，其余 "agent-q-" 前缀的 Project 整条清掉。
+// 不清理会随扫描量无界增长撑爆节点磁盘。
+//
+// 但**不能按"会话是否在途"当唯一依据**：队列任务一收敛，刚写进去的证据就被判陈旧删除，
+// 节点「数据库管理」永远是空的（实测任务结束 20 秒后 6 条结果被清空）。审计库是事后
+// 排障用的，必须留一段时间，只在超期或超容量时才回收。
 func auditJanitor() {
 	if !scanner.AuditEnabled() {
 		return
@@ -580,13 +582,37 @@ func auditJanitor() {
 	}
 }
 
-// pruneStaleAuditProjects 对账并清理一次；返回被清掉的 Project（便于日志/排查）。
+// auditRetain 审计数据保留期（默认 7 天，AUDIT_RETAIN_DAYS 可调）。
+func auditRetain() time.Duration {
+	days := 7
+	if v := strings.TrimSpace(os.Getenv("AUDIT_RETAIN_DAYS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			days = n
+		}
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+// auditMaxBytes 审计库容量上限（默认 512MB，AUDIT_MAX_MB 可调）。
+func auditMaxBytes() int64 {
+	mb := 512
+	if v := strings.TrimSpace(os.Getenv("AUDIT_MAX_MB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			mb = n
+		}
+	}
+	return int64(mb) << 20
+}
+
+// pruneStaleAuditProjects 按保留策略清理一次；返回被清掉的 Project（便于日志/排查）。
 func pruneStaleAuditProjects() []string {
 	keep := liveQueueSessions()
-	removed := scanner.PruneAuditProjects("agent-q-", keep)
+	removed, kept := scanner.PruneAuditByPolicy(scanner.EngineDBPath(), keep, auditRetain(), auditMaxBytes())
 	if len(removed) > 0 {
-		log.Printf("[审计库] 清理已结束会话的 Project %d 个（保留在途会话 %d 个）", len(removed), len(keep))
+		log.Printf("[审计库] 清理超期/超量的会话 %d 个（在途 %d 个保留，其余保留 %d 天）",
+			len(removed), len(keep), int(auditRetain().Hours()/24))
 	}
+	_ = kept
 	return removed
 }
 
@@ -795,12 +821,15 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	if thread <= 0 {
 		thread = 1000
 	}
-	timeout := conf.Timeout
+	// 超时优先级：任务填的 > 节点默认 > 1500ms。
+	// 之前是节点优先，节点配了 3000 就永远盖掉任务的 1s，实测 A/B 对照时
+	// “改任务超时没反应”就是这条倒挂造成的——任务级参数必须能覆盖节点默认。
+	timeout := task.Timeout * 1000
 	if timeout <= 0 {
-		timeout = task.Timeout * 1000
-		if timeout <= 0 {
-			timeout = 1500
-		}
+		timeout = conf.Timeout
+	}
+	if timeout <= 0 {
+		timeout = 1500
 	}
 	ports := task.Ports
 	switch task.PortMode {
@@ -977,8 +1006,12 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 			if isProgress {
 				return
 			}
-			// 逐单元恒定不变的样板行也不打（引擎参数、审计库路径、落库条数）。
-			if strings.Contains(line, "扫描参数：") || strings.Contains(line, "[审计库]") {
+			// 只过滤「落库路径」这一行（每单元都打，且只是路径）。
+			// 「扫描参数」不能过滤：它是进程级 once（engineParamOnce），只出现一次，
+			// 而且承载着"启发式开没开、优先哪些端口"这类现场信息。
+			// 之前用 strings.Contains(line, "[审计库]") 一把过滤，把建表失败也吞了，
+			// "数据库管理为什么是空的"因此无从查起。
+			if strings.Contains(line, "[审计库] 落库路径") {
 				return
 			}
 			// 带 [任务 #会话] 前缀：服务端 updateShardLog 按该标记切分会话日志
@@ -1440,13 +1473,13 @@ func runAgentTask(at AgentTask) {
 	if thread <= 0 {
 		thread = 1000
 	}
-	timeout := conf.Timeout
+	// 同上：任务超时 > 节点默认 > 1500ms（任务填的单位是秒）
+	timeout := task.Timeout * 1000
 	if timeout <= 0 {
-		// 兜底用任务的 timeout。任务的 timeout 是「秒」，引擎按毫秒处理
-		timeout = task.Timeout * 1000
-		if timeout <= 0 {
-			timeout = 1500
-		}
+		timeout = conf.Timeout
+	}
+	if timeout <= 0 {
+		timeout = 1500
 	}
 
 	targets := parseTargets(at.IPRanges)
