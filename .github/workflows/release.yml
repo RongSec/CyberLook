@@ -60,8 +60,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
+          # 不覆盖已有正文：正文由人工按 CHANGELOG 写（含"这一版修了什么"），
+          # CI 只负责把镜像地址追加进去。否则每次发版都会把说明改成这段模板。
+          append_body: true
+          generate_release_notes: false
           body: |
             镜像已发布：
             - `ghcr.io/${{ steps.img.outputs.name }}:${{ github.ref_name }}`
