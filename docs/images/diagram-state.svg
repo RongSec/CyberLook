@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 400" width="1000" height="400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/>
+    </marker>
+    <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="400" fill="#ffffff"/>
+  <text x="24" y="30" font-size="17" font-weight="700" fill="#0f172a">一个服务（ip:port）的状态演进</text>
+  <text x="24" y="50" font-size="12" fill="#64748b">每一轮扫描只做三件事之一：新建、刷新、记账。删除是唯一不可逆的动作，门槛设为「连续 3 次缺席」。</text>
+
+  <!-- 复核回环（顶部） -->
+  <path d="M733,84 L733,64 Q733,58 727,58 L315,58 Q309,58 309,64 L309,80" fill="none" stroke="#c2410c" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arw)"/>
+
+  <!-- Row 1 -->
+  <rect x="30" y="84" width="142" height="70" rx="35" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="101" y="114" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">未发现</text>
+  <text x="101" y="134" font-size="10.5" fill="#64748b" text-anchor="middle">不在 services 表</text>
+
+  <line x1="174" y1="119" x2="230" y2="119" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="202" y="110" font-size="9.5" fill="#475569" text-anchor="middle">扫描命中</text>
+
+  <rect x="234" y="84" width="150" height="70" rx="8" fill="#eef6ff" stroke="#bcd4f6"/>
+  <text x="309" y="110" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">待处置 pending</text>
+  <text x="309" y="130" font-size="10.5" fill="#64748b" text-anchor="middle">新出现的 Web 服务</text>
+  <text x="309" y="146" font-size="10" fill="#94a3b8" text-anchor="middle">人工填系统名 / 责任人</text>
+
+  <line x1="386" y1="119" x2="442" y2="119" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="414" y="110" font-size="9.5" fill="#475569" text-anchor="middle">确认处置</text>
+
+  <rect x="446" y="84" width="150" height="70" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="521" y="110" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">已确认 confirmed</text>
+  <text x="521" y="130" font-size="10.5" fill="#64748b" text-anchor="middle">基准页面指纹落库</text>
+  <text x="521" y="146" font-size="10" fill="#94a3b8" text-anchor="middle">confirmed_simhash</text>
+
+  <line x1="598" y1="119" x2="654" y2="119" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="626" y="110" font-size="9.5" fill="#475569" text-anchor="middle">页面变化</text>
+
+  <rect x="658" y="84" width="150" height="70" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="733" y="110" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">已变更 changed</text>
+  <text x="733" y="130" font-size="10.5" fill="#64748b" text-anchor="middle">旧值留在 prev_*</text>
+  <text x="733" y="146" font-size="10" fill="#94a3b8" text-anchor="middle">content_changed = true</text>
+
+  <!-- Row 2 -->
+  <rect x="658" y="240" width="150" height="70" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="733" y="266" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">本轮未命中</text>
+  <text x="733" y="286" font-size="10.5" fill="#64748b" text-anchor="middle">miss_count += 1</text>
+  <text x="733" y="302" font-size="10" fill="#94a3b8" text-anchor="middle">记录保留，last_seen 不动</text>
+
+  <line x1="733" y1="156" x2="733" y2="236" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="741" y="196" font-size="10" fill="#475569">本轮未扫到</text>
+
+  <rect x="234" y="240" width="150" height="70" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="309" y="266" font-size="12.5" font-weight="600" fill="#0f172a" text-anchor="middle">删除</text>
+  <text x="309" y="286" font-size="10.5" fill="#64748b" text-anchor="middle">连续 3 次缺席</text>
+  <text x="309" y="302" font-size="10" fill="#94a3b8" text-anchor="middle">唯一不可逆的动作</text>
+
+  <line x1="656" y1="275" x2="388" y2="275" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="470" y="268" font-size="10" fill="#475569">第 3 次仍未命中</text>
+
+  <!-- 命中重置 -->
+  <path d="M676,240 C630,206 570,176 534,158" fill="none" stroke="#0f766e" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arg)"/>
+  <text x="378" y="206" font-size="10.5" fill="#0f766e">下一轮又扫到：last_seen 刷新、miss_count 归零</text>
+
+  <!-- notes -->
+  <rect x="24" y="326" width="952" height="58" rx="8" fill="#f8fafc" stroke="#d5dce6"/>
+  <text x="40" y="346" font-size="11" fill="#475569">虚线（橙）：变更复核完成后回到待处置，人工确认时把当前页面指纹写成新的基准，content_changed 复位。</text>
+  <text x="40" y="366" font-size="11" fill="#475569">虚线（绿）：缺席不是终态 —— 只要后面任意一轮再次命中，计数归零、服务照旧，避免一次丢包造成「资产消失」。</text>
+</svg>

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 430" width="1000" height="430" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="430" fill="#ffffff"/>
+  <text x="24" y="32" font-size="17" font-weight="700" fill="#0f172a">数据模型：扫描是过程，资产是结果</text>
+  <text x="24" y="52" font-size="12" fill="#64748b">扫描任务可以被删、被重跑；资产记录不会。任务 id 只作为「哪一轮看到的」证据挂在 service 上。</text>
+
+  <!-- ip_segments / exclude_ranges -->
+  <rect x="24" y="76" width="196" height="92" rx="7" fill="#f8fafc" stroke="#d5dce6"/>
+  <text x="38" y="98" font-size="12" font-weight="600" fill="#0f172a">ip_segments / exclude_ranges</text>
+  <text x="38" y="118" font-size="10.5" fill="#475569">网段、机房、免扫描条目</text>
+  <text x="38" y="134" font-size="10.5" fill="#475569">target.Excluder 统一匹配：</text>
+  <text x="38" y="150" font-size="10.5" fill="#64748b">CIDR / 范围 / *.*.*.1</text>
+
+  <line x1="220" y1="122" x2="250" y2="122" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="222" y="114" font-size="10" fill="#94a3b8">Resolve</text>
+
+  <!-- scan_tasks -->
+  <rect x="252" y="66" width="212" height="112" rx="7" fill="#eef6ff" stroke="#bcd4f6"/>
+  <text x="266" y="88" font-size="12" font-weight="600" fill="#0f172a">scan_tasks（一次任务）</text>
+  <text x="266" y="108" font-size="10.5" fill="#475569">status / started_at / finished_at</text>
+  <text x="266" y="124" font-size="10.5" fill="#475569">total_ips / alive_count / probe_offset</text>
+  <text x="266" y="140" font-size="10.5" fill="#475569">timeout(ms) / thread / ports</text>
+  <text x="266" y="156" font-size="10.5" fill="#64748b">queue_mode / error</text>
+  <text x="266" y="172" font-size="10.5" fill="#64748b">模板、节点、定时都在这里</text>
+
+  <line x1="464" y1="122" x2="494" y2="122" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="466" y="114" font-size="10" fill="#94a3b8">1 : N</text>
+
+  <!-- task_units -->
+  <rect x="496" y="66" width="212" height="112" rx="7" fill="#eef6ff" stroke="#bcd4f6"/>
+  <text x="510" y="88" font-size="12" font-weight="600" fill="#0f172a">task_units（1 IP = 1 单元）</text>
+  <text x="510" y="108" font-size="10.5" fill="#475569">status: pending / leased / done / failed</text>
+  <text x="510" y="124" font-size="10.5" fill="#475569">lease_expire / attempts（≤3）</text>
+  <text x="510" y="140" font-size="10.5" fill="#475569">probes_done / probes_total / pps</text>
+  <text x="510" y="156" font-size="10.5" fill="#64748b">node_id / session_id（谁在跑）</text>
+  <text x="510" y="172" font-size="10.5" fill="#64748b">进度分母就是 Σprobes_total</text>
+
+  <line x1="708" y1="122" x2="738" y2="122" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="710" y="114" font-size="10" fill="#94a3b8">结果</text>
+
+  <!-- services -->
+  <rect x="740" y="56" width="236" height="132" rx="7" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="754" y="78" font-size="12" font-weight="600" fill="#0f172a">services（ip + port 唯一）</text>
+  <text x="754" y="98" font-size="10.5" fill="#475569">protocol / service / title / fingerprint</text>
+  <text x="754" y="114" font-size="10.5" fill="#475569">first_seen / last_seen / miss_count</text>
+  <text x="754" y="130" font-size="10.5" fill="#475569">status_code / content_length</text>
+  <text x="754" y="146" font-size="10.5" fill="#475569">page_simhash（页面内容指纹）</text>
+  <text x="754" y="162" font-size="10.5" fill="#b45309">prev_title / prev_fingerprint / prev_*</text>
+  <text x="754" y="178" font-size="10.5" fill="#64748b">task_id（首见） / last_task_id（最近）</text>
+
+  <!-- assets below services -->
+  <line x1="858" y1="188" x2="858" y2="222" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="866" y="210" font-size="10" fill="#94a3b8">N : 1</text>
+
+  <rect x="740" y="224" width="236" height="126" rx="7" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="754" y="246" font-size="12" font-weight="600" fill="#0f172a">assets（一台主机一条）</text>
+  <text x="754" y="266" font-size="10.5" fill="#475569">status: pending / confirmed</text>
+  <text x="754" y="282" font-size="10.5" fill="#475569">system_name / owner / department</text>
+  <text x="754" y="298" font-size="10.5" fill="#475569">source: scan / import</text>
+  <text x="754" y="314" font-size="10.5" fill="#475569">confirmed_simhash（确认时的基准）</text>
+  <text x="754" y="330" font-size="10.5" fill="#b45309">content_changed（与基准比对结果）</text>
+
+  <!-- 状态说明 -->
+  <rect x="24" y="224" width="672" height="126" rx="7" fill="#ffffff" stroke="#d5dce6" stroke-dasharray="4 3"/>
+  <text x="40" y="246" font-size="12" font-weight="600" fill="#334155">三条与「动态」直接相关的规则</text>
+  <text x="40" y="270" font-size="11" fill="#475569">① 命中即重置：任何一次扫到该端口，last_seen 刷新、miss_count 归零 —— 用「最近一次看见」而不是「曾经看见过」表达现状。</text>
+  <text x="40" y="292" font-size="11" fill="#475569">② 缺席不立即删：未命中只累加 miss_count，连续 3 次才删除 —— 一次丢包/一次超时不等于服务没了。</text>
+  <text x="40" y="314" font-size="11" fill="#475569">③ 新旧并存：变更时旧值进 prev_*，当前值照常前进；确认处置时把当前页面指纹写成 confirmed_simhash 作为新基准。</text>
+  <text x="40" y="338" font-size="10.5" fill="#94a3b8">换句话说：资产表不是「某次扫描的导出」，而是「多轮扫描叠加后的最小共识」。</text>
+
+  <text x="24" y="386" font-size="11" fill="#475569">其它表：compliance_rules / compliance_results（合规）、page_snapshots（页面快照）、scan_snapshots（每轮快照）、</text>
+  <text x="24" y="404" font-size="11" fill="#475569">faults（故障）、task_logs（任务日志）、nodes（节点心跳）、departments（组织结构）、notify_settings（通知）。</text>
+</svg>
