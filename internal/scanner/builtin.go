@@ -341,7 +341,8 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	var (
 		allMu      sync.Mutex
 		all        = make([]ScanResult, 0, 256)
-		identified atomic.Int64
+		identified atomic.Int64 // 真的拿到产品/标题的端口数（"识别"口径）
+		processed  atomic.Int64 // 进过识别池的端口数（"已处理"口径）
 	)
 	identCh := make(chan portscan.Result, 4096)
 	resCh := make(chan ScanResult, 1024)
@@ -385,7 +386,13 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 			logProgressLine(logFn, fmt.Sprintf("[自研引擎] 上报批次 %d 条（累计 %d）", len(batch), flushed))
 		}
 		for r := range resCh {
-			identified.Add(1)
+			processed.Add(1)
+			// "识别 N 个"必须是"真的拿到了产品指纹"，不能是"进过识别池"。
+			// 之前用同一个计数器，12 个端口指纹全空也会显示"识别 12 个"，
+			// 看日志的人会误以为识别成功了（实测 13076/13200 条指纹为空）。
+			if r.Mid != "" || r.Fingerprint != "" || r.Title != "" {
+				identified.Add(1)
+			}
 			buf = append(buf, r)
 			if len(buf) >= flushBatchSize {
 				flush()
@@ -405,7 +412,7 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	t0 := time.Now()
 	var lastProgNs atomic.Int64
 	lastProgNs.Store(t0.UnixNano())
-	st, serr := runStreamingScan(ctx, ctrl, ips, ports, conc, timeoutMs, workers, opts.InterceptedPorts, identCh, resCh,
+	st, serr := runStreamingScan(ctx, ctrl, ips, ports, conc, timeoutMs, workers, opts.InterceptedPorts, identCh, resCh, logFn,
 		func(done, tot, open int64) {
 			// 每秒 ≤1 次进度行
 			now := time.Now().UnixNano()
@@ -423,15 +430,17 @@ func RunBuiltinPortScan(targets, excludes []string, opts ScanOptions, logFn LogF
 	aggWG.Wait()
 
 	elapsed := time.Since(t0)
-	logProgressLine(logFn, portscan.FormatDoneLine(portscan.ReportDone{
-		Probes: st.Probes, Total: total, Elapsed: elapsed,
-		Open: int64(st.Open), Ident: identified.Load(),
-	}))
-
 	allMu.Lock()
 	out := append([]ScanResult(nil), all...)
 	all = nil // 立刻放开第二份：out 已独立，保留 all 等于结果集占两倍内存
 	allMu.Unlock()
+	// "开放 N 个"要用**实际产出的结果条数**，不能用引擎的原始计数：
+	// 全端口应答主机（如 198.18.48.30）引擎会报 65535，而平台只保留前 256 条，
+	// 两个数字对不上，看日志的人会以为结果丢了一半。
+	logProgressLine(logFn, portscan.FormatDoneLine(portscan.ReportDone{
+		Probes: st.Probes, Total: total, Elapsed: elapsed,
+		Open: int64(len(out)), Ident: identified.Load(),
+	}))
 	if st.LocalResErrs > 0 {
 		// 智能调速的信号源：EMFILE 出现说明在途数已越过本机 fd 能力。
 		AtomicAddLocalRes(st.LocalResErrs)
@@ -462,8 +471,33 @@ func max64(a, b int64) int64 {
 // ctrl 为运行期调控句柄（/control 的 pause/resume/limit 直接作用其上）。
 func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string, ports []int,
 	conc, timeoutMs, workers int, nodeIntercepted []int,
-	identCh chan<- portscan.Result, resCh chan<- ScanResult,
+	identCh chan<- portscan.Result, resCh chan<- ScanResult, logFn LogFunc,
 	onProgress func(done, total, open int64)) (portscan.Stats, error) {
+
+	// ===== 全端口应答主机收敛 =====
+	//
+	// 现象：某些中间设备（SYN 代理/负载均衡/全端口转发的防火墙/蜜罐）对**任意**端口
+	// 都回 SYN-ACK，扫描结果就是"这台机器开了 12905 个端口"。
+	// 实测 198.18.48.30：从 Kali 直连 12345/23456/34567/45678 全部 connect 成功，
+	// 而对照的真实主机同样端口全部关闭。这类结果会：
+	//   1) 污染资产表（单台主机贡献 12905 条服务记录，占整库 98%）
+	//   2) 让识别池（32 并发）把 CPU 打满，CPU 97% → 智能调速把在途数从 402 压到 350，
+	//      其他正常主机跟着变慢
+	//   3) 完全不可读：终端里"开放 12905 个"
+	// 处理方式：单 IP 开放端口超过阈值后停止采集，并把判定写进日志（保留前 N 个真实端口）。
+	maxOpen := maxOpenPerHost()
+	// 只对"大端口集"扫描启用收敛：端口集本身小于 1024 时，全开也就是一千条记录，
+	// 不会拖垮识别池；而 260 个自定义端口全开完全可能是真实的端口映射设备
+	// （单元测试就是这么构造的，触发上限会误杀正常结果）。
+	if len(ports) < 1024 {
+		maxOpen = 0
+	}
+	ipIdx := make(map[string]int, len(ips))
+	for i, ip := range ips {
+		ipIdx[ip] = i
+	}
+	openCnt := make([]int32, len(ips))
+	capped := make([]int32, len(ips))
 
 	_, st, err := portscan.Scan(ctx, ips, ports, portscan.Options{
 		Concurrency:   conc,
@@ -476,6 +510,16 @@ func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string
 		PerHostPPS:       perHostPPS(),
 		InterceptedPorts: pickIntercepted(nodeIntercepted, ports),
 		OnOpen: func(ip string, port int) {
+			if maxOpen > 0 {
+				if i, ok := ipIdx[ip]; ok {
+					if int(atomic.AddInt32(&openCnt[i], 1)) > maxOpen {
+						if atomic.CompareAndSwapInt32(&capped[i], 0, 1) {
+							logf(logFn, fmt.Sprintf("[自研引擎] %s 开放端口超过 %d 个，判定为全端口应答/中间设备：后续端口不再识别与入库（前 %d 个已保留）", ip, maxOpen, maxOpen))
+						}
+						return
+					}
+				}
+			}
 			if workers == 0 {
 				// 纯端口模式：不进识别池，直接产出裸 TCP 结果
 				select {
@@ -493,6 +537,19 @@ func runStreamingScan(ctx context.Context, ctrl *portscan.Controls, ips []string
 	})
 	return st, err
 }
+
+// maxOpenPerHost 单 IP 开放端口上限（env MAX_OPEN_PER_HOST，默认 256，<=0 关闭）。
+//
+// 256 的依据：真实主机（含装了 IIS + 一堆中间件的 Windows）开放端口量级在几十；
+// 超过 256 的只有两类——容器宿主机的随机高位端口段（ephemeral 端口被误判），
+// 以及全端口应答的中间设备。前者本来就该收敛，后者必须收敛。
+func maxOpenPerHost() int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MAX_OPEN_PER_HOST"))); err == nil {
+		return v
+	}
+	return 256
+}
+
 
 // safeIdentify 识别单端口。panic 兜底为裸 TCP 结果——识别层任何异常都不能拖垮流水线。
 func safeIdentify(ctx context.Context, op portscan.Result, opt svcid.IdentOptions) (sv svcid.Service) {
@@ -518,11 +575,12 @@ func mapService(sv svcid.Service) ScanResult {
 	// ContentLength← HTTP 响应体长度（变更检测）
 	// OS           ← SMB/RDP 握手拿到的系统信息
 	// Mid          ← 中间件/产品（tscan 的 Mid 语义）
+	product := cleanProduct(sv.Product)
 	title := sv.Title
 	if title == "" {
-		title = sv.Product
+		title = product
 	}
-	fp := sv.Fingerprint
+	fp := cleanProduct(sv.Fingerprint)
 	if fp == "" {
 		fp = strings.Join(sv.Evidence, ",")
 	}
@@ -538,9 +596,26 @@ func mapService(sv svcid.Service) ScanResult {
 		ContentLength: sv.BodyLen,
 		Response:      sv.Body,
 		OS:            sv.OS,
-		Mid:           sv.Product,
+		Mid:           product,
 	}
 }
+
+// cleanProduct 把 "UnKnown / ssl / tcp / N/A / -" 这类占位产品名清成空串。
+//
+// 规则库里确实存在产品名就是 UnKnown 的条目（实测 198.18.6.31:22 的 OpenSSH banner
+// 被某条规则匹配成 "UnKnown"，198.18.6.31:427 存了 "UnKnown"）。
+// 另外协议层兜底会把产品写回协议名（ssl/tcp），终端里就成了 "6443 ssl 400（ssl）"。
+// 这类值进资产表只会让人以为"识别成功了"，进终端只会让「服务：」那行变成噪音。
+func cleanProduct(s string) string {
+	t := strings.TrimSpace(s)
+	switch strings.ToLower(t) {
+	case "", "unknown", "unidentified", "n/a", "none", "-",
+		"tcp", "udp", "ssl", "tls", "http", "https":
+		return ""
+	}
+	return t
+}
+
 
 // emitProgress 进度行：兼容 agent 侧解析格式
 //

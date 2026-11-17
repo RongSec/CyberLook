@@ -37,7 +37,7 @@ type ScanTask struct {
 	Engine     string `gorm:"column:engine;default:builtin" json:"engine"` // 已废弃：v0.0.27 起引擎唯一（自研）。字段保留兼容存量任务数据，任意值都走自研引擎
 	Finger     string `gorm:"column:finger;default:tiny" json:"finger"`
 	Thread     int    `gorm:"column:thread;default:600" json:"thread"`
-	Timeout    int    `gorm:"column:timeout;default:3" json:"timeout"`
+	Timeout    int    `gorm:"column:timeout;default:1500" json:"timeout"` // 单探针超时（毫秒），只由任务决定
 	NoPing     bool   `gorm:"column:no_ping" json:"noPing"`
 	// AliveProbe 是否先做服务端存活探测（false = 直接把全部目标 IP 规划下发）
 	AliveProbe  bool   `gorm:"column:alive_probe" json:"aliveProbe"`
@@ -271,7 +271,7 @@ type ScanTemplate struct {
 	PortMode  string    `gorm:"column:port_mode;default:top100" json:"portMode"`
 	Ports     string    `gorm:"column:ports" json:"ports"`
 	Thread    int       `gorm:"column:thread;default:600" json:"thread"` // 并发 -t
-	Timeout   int       `gorm:"column:timeout;default:3" json:"timeout"` // 超时 -time
+	Timeout   int       `gorm:"column:timeout;default:1500" json:"timeout"` // 超时 -time（毫秒）
 	NoPing    bool      `gorm:"column:no_ping" json:"noPing"`            // -np 禁用存活探测
 	NoSmart   bool      `gorm:"column:no_smart" json:"noSmart"`          // -nosmart 禁用启发式
 	Finger    string    `gorm:"column:finger;default:tiny" json:"finger"`

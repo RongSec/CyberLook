@@ -92,8 +92,8 @@
             <n-radio value="custom">自定义端口</n-radio>
           </n-radio-group>
         </n-form-item>
-        <n-form-item label="超时 -time（秒）">
-          <n-input-number v-model:value="form.timeout" :min="1" :max="60" style="width: 120px" />
+        <n-form-item label="超时 -time（毫秒）">
+          <n-input-number v-model:value="form.timeout" :min="50" :max="30000" :step="100" style="width: 140px" />
           <span class="switch-tip">单探针等待时长，只由任务决定（节点不再有此配置）。跨网段/专线延迟高时调大，否则开着的端口会被判成关闭</span>
         </n-form-item>
         <n-form-item v-if="form.portMode === 'custom'" label="端口">
@@ -266,7 +266,7 @@
           <n-input v-model:value="tplForm.ports" placeholder="如 22,80,443,3306,6379" />
         </n-form-item>
         <n-form-item label="并发 -t"><n-input-number v-model:value="tplForm.thread" :min="1" :max="5000" style="width: 160px" /><span class="switch-tip">智能调速开启时以本机自动值为准，这里只是下限</span></n-form-item>
-        <n-form-item label="超时 -time（秒）"><n-input-number v-model:value="tplForm.timeout" :min="1" :max="60" style="width: 160px" /></n-form-item>
+        <n-form-item label="超时 -time（毫秒）"><n-input-number v-model:value="tplForm.timeout" :min="50" :max="30000" :step="100" style="width: 160px" /></n-form-item>
         <n-form-item label="指纹策略 -finger">
           <n-select v-model:value="tplForm.finger" :options="fingerOptions" style="width: 140px" />
         </n-form-item>
@@ -290,8 +290,9 @@
           {{ logQueue.phase === 'probing' ? '存活探测' : '扫描' }}
         </n-tag>
         <template v-if="logQueue.phase === 'probing'">
-          <span class="q-item">已探测 <b>{{ fmtNum(logTask?.probeOffset) }}</b> / {{ fmtNum(logTask?.totalIps) }}</span>
+          <span class="q-item">已探测 <b>{{ fmtNum(logTask?.probeOffset) }}</b> / {{ fmtNum(logTask?.totalIps) }}<template v-if="logQueue.percent >= 0">（{{ logQueue.percent }}%）</template></span>
           <span class="q-item q-done">存活 <b>{{ fmtNum(logTask?.aliveCount) }}</b></span>
+          <span v-if="logQueue.pps > 0" class="q-item">{{ fmtNum(Math.round(logQueue.pps)) }} 台/秒</span>
         </template>
         <template v-else>
           <span class="q-item q-done">已完成 <b>{{ fmtNum(logQueue.done) }}</b> / {{ fmtNum(logQueue.total) }}</span>
@@ -353,7 +354,7 @@ const creating = ref(false)
 const engineOptions = [
   { label: '内置引擎', value: 'builtin' },
 ]
-const form = ref({ name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
+const form = ref({ name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 1500, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] })
 const nodes = ref([])
 const nodeOptions = computed(() => [
   { label: '全部节点', value: 'all' },
@@ -365,7 +366,7 @@ const templateOptions = ref([])
 const templates = ref([])
 
 const showTpl = ref(false)
-const tplForm = ref({ id: 0, name: '', modules: ['port'], engine: 'builtin', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '' })
+const tplForm = ref({ id: 0, name: '', modules: ['port'], engine: 'builtin', portMode: 'top100', ports: '', thread: 600, timeout: 1500, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '' })
 
 const showLog = ref(false)
 const logLines = ref([])
@@ -644,7 +645,7 @@ function applyTemplate(id) {
   form.value.portMode = t.portMode || 'top100'
   form.value.ports = t.ports || ''
   form.value.thread = t.thread || 600
-  form.value.timeout = t.timeout || 3
+  form.value.timeout = t.timeout || 1500
   form.value.finger = t.finger || 'tiny'
   form.value.noPing = !!t.noPing
   form.value.extraArgs = t.extraArgs || ''
@@ -682,7 +683,7 @@ async function create(run) {
     showCreate.value = false
     cronInterval.value = ''
     cronHour.value = 2
-    form.value = { name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] }
+    form.value = { name: '', templateId: null, modules: ['port', 'url'], engine: 'builtin', batchSize: 100, segments: [], assets: [], manual: '', portMode: 'top100', ports: '', thread: 600, timeout: 1500, finger: 'tiny', noPing: false, noSmart: false, aliveProbe: true, extraArgs: '', cron: '', nodeIds: [] }
     load()
   } catch (e) { message.error(e.response?.data?.error || '创建失败') } finally { creating.value = false }
 }
@@ -732,7 +733,7 @@ function openTplModal(row) {
   if (row) {
     tplForm.value = { ...row, modules: row.modules ? row.modules.split(',') : ['port'] }
   } else {
-    tplForm.value = { id: 0, name: '', modules: ['port'], portMode: 'top100', ports: '', thread: 600, timeout: 3, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '' }
+    tplForm.value = { id: 0, name: '', modules: ['port'], portMode: 'top100', ports: '', thread: 600, timeout: 1500, finger: 'tiny', noPing: false, noSmart: false, extraArgs: '' }
   }
   showTpl.value = true
 }
@@ -853,7 +854,7 @@ const showConfig = ref(false)
 const configTask = ref(null)
 const canEdit = ref(false)
 const savingCfg = ref(false)
-const editForm = ref({ name: '', ipRanges: '', segments: [], assets: [], manual: '', modules: [], engine: 'builtin', portMode: 'top100', ports: '', batchSize: 100, thread: 600, timeout: 3, finger: 'tiny', nodeIds: [], cron: '' })
+const editForm = ref({ name: '', ipRanges: '', segments: [], assets: [], manual: '', modules: [], engine: 'builtin', portMode: 'top100', ports: '', batchSize: 100, thread: 600, timeout: 1500, finger: 'tiny', nodeIds: [], cron: '' })
 
 // 编辑时的节点选项（含「全部节点」）
 const editNodeOptions = computed(() => [
@@ -922,7 +923,7 @@ async function openConfig(row) {
     ports: row.ports || '',
     batchSize: row.batchSize || 100,
     thread: row.thread || 600,
-    timeout: row.timeout || 3,
+    timeout: row.timeout || 1500,
     finger: row.finger || 'tiny',
     nodeIds: ids,
     cron: row.cron || ''

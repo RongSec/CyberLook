@@ -456,6 +456,24 @@ func queueUnitConcurrency() int {
 // limit 打不上，pause 只冻结了正在 tick 的那个单元）。
 //
 // 生命周期：任务收敛时 scanner.UnregisterTaskCtrl(taskID) 释放，否则会随任务数泄漏。
+// timeoutMsOf 任务超时（毫秒）归一：<100 视为旧的"秒"值，0 兜底 1500ms。
+// 平台侧 migration 042 已把存量数据换算成毫秒，这里只是防止旧任务/旧客户端再传秒。
+func timeoutMsOf(v int) int {
+	if v <= 0 {
+		return 1500
+	}
+	if v < 100 {
+		v *= 1000
+	}
+	if v < 50 {
+		v = 50
+	}
+	if v > 30000 {
+		v = 30000
+	}
+	return v
+}
+
 func queueLimiter(taskID uint, conc, timeoutMs int) *portscan.Controls {
 	// 智能调速开启时以它为准（它已把 fd/CPU/内存三堵墙算进去）；
 	// 关闭或未就绪时回落到节点配置的固定并发。两者都要过 clampInflight 兜底。
@@ -823,11 +841,8 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 	}
 	// 超时**只由任务设定**：节点侧不再有超时配置（同一批节点跑同一个任务，
 	// 超时必须是任务属性，否则两台机器对同一目标给出不同结论）。
-	// 任务没填才兜底 1500ms。
-	timeout := task.Timeout * 1000
-	if timeout <= 0 {
-		timeout = 1500
-	}
+	// 任务里的单位就是毫秒；<100 的老数据按秒兜底换算，没填兜底 1500ms。
+	timeout := timeoutMsOf(task.Timeout)
 	ports := task.Ports
 	switch task.PortMode {
 	case "top100":
@@ -1081,6 +1096,12 @@ func runQueueUnit(taskID uint, c *claimResp, u claimUnitRef) (stopTask bool) {
 				atomic.AddInt64(&statWebFound, 1)
 				tail += "｜Web：" + w
 			}
+			// 非 Web 的服务识别结果单独一段：以前全都塞在「Web：」里，
+			// 于是 OpenSSH / rpcbind / Oracle TNS 都被当成 Web 服务显示，
+			// 看日志的人第一眼就会怀疑识别是不是坏了。
+			if sv := svcBrief(results); sv != "" {
+				tail += "｜服务：" + sv
+			}
 			if dl != "" {
 				// 与 CLI 完全同一个前缀与措辞，后面接本 IP 的命中明细
 				log.Printf("%s｜%s", dl, tail)
@@ -1124,10 +1145,14 @@ func openPortsBrief(results []scanner.ScanResult) string {
 // webBrief 把本单元识别到的 Web 服务压成一行（最多 4 个）：
 // `198.19.0.106:80 nginx/1.20（200 登录页）`
 // 终端里最该看清的两件事就是"哪台活着""上面跑什么"，其余都是过程噪音。
+//
+// 只收 HTTP/HTTPS：这条线叫「Web：」，就得真的只有 Web。
+// 早期把"有指纹就算"也算进来，OpenSSH、rpcbind、Oracle TNS 全挂到 Web 后面，
+// 一眼就让人以为识别结果串了。
 func webBrief(results []scanner.ScanResult) string {
 	var parts []string
 	for _, r := range results {
-		if !strings.EqualFold(r.Protocol, "HTTP") && !strings.EqualFold(r.Protocol, "HTTPS") && r.Fingerprint == "" && r.Title == "" {
+		if !isWebResult(r) {
 			continue
 		}
 		item := fmt.Sprintf("%s:%d", r.IP, r.Port)
@@ -1149,6 +1174,40 @@ func webBrief(results []scanner.ScanResult) string {
 		}
 	}
 	return strings.Join(parts, "；")
+}
+
+// svcBrief 把非 Web 的识别结果压成一行（最多 4 个）：
+// `198.18.48.234:445 Microsoft SMB；198.18.48.237:27017 MongoDB`
+// 只收"拿到了产品指纹"的端口，裸 TCP（只有端口开着、没识别出来）不占版面。
+func svcBrief(results []scanner.ScanResult) string {
+	var parts []string
+	for _, r := range results {
+		if isWebResult(r) {
+			continue
+		}
+		name := r.Mid
+		if name == "" {
+			name = r.Fingerprint
+		}
+		if name == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d %s", r.IP, r.Port, truncRunes(name, 24)))
+		if len(parts) >= 4 {
+			parts = append(parts, "…")
+			break
+		}
+	}
+	return strings.Join(parts, "；")
+}
+
+// isWebResult 判定一条结果是否是 Web 服务（协议或状态码任一命中）。
+func isWebResult(r scanner.ScanResult) bool {
+	if strings.EqualFold(r.Protocol, "HTTP") || strings.EqualFold(r.Protocol, "HTTPS") ||
+		strings.EqualFold(r.Service, "http") || strings.EqualFold(r.Service, "https") {
+		return true
+	}
+	return r.StatusCode != "" && (r.Fingerprint != "" || r.Title != "")
 }
 
 // truncRunes 按字符截断（中文标题不能按字节切）。
@@ -1489,11 +1548,8 @@ func runAgentTask(at AgentTask) {
 	if thread <= 0 {
 		thread = 1000
 	}
-	// 同上：超时只由任务设定（任务填的单位是秒），没填兜底 1500ms
-	timeout := task.Timeout * 1000
-	if timeout <= 0 {
-		timeout = 1500
-	}
+	// 同上：超时只由任务设定（单位毫秒），没填兜底 1500ms
+	timeout := timeoutMsOf(task.Timeout)
 
 	targets := parseTargets(at.IPRanges)
 	ports := task.Ports

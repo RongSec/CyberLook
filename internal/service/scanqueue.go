@@ -781,8 +781,18 @@ func finishQueueActivation(task *model.ScanTask, created, total, pc int) (localF
 		}
 	}
 	now := time.Now()
+	// total_ips 的语义是"目标展开后的 IP 总数"（存活探测进度条的分母），
+	// 不是"入队单元数"。开了存活探测时两者不同（实测 94239 个 IP 只活 2069 台），
+	// 这里若无条件写 total 就会把分母改成 2069，探测进度条直接失真。
+	// 所以只在库里的值更小（说明还没写过展开数）时才覆盖。
+	expanded := total
+	var cur struct{ TotalIPs int }
+	if err := config.DB.Model(&model.ScanTask{}).Select("total_ips").
+		Where("id = ?", task.ID).Scan(&cur).Error; err == nil && cur.TotalIPs > expanded {
+		expanded = cur.TotalIPs
+	}
 	updates := map[string]interface{}{
-		"status": "running", "queue_mode": true, "total_ips": total, "node_ids": task.NodeIDs,
+		"status": "running", "queue_mode": true, "total_ips": expanded, "node_ids": task.NodeIDs,
 	}
 	if task.StartedAt == nil {
 		updates["started_at"] = now
@@ -790,7 +800,8 @@ func finishQueueActivation(task *model.ScanTask, created, total, pc int) (localF
 	}
 	config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).Updates(updates)
 	task.Status = "running"
-	tasklog.AppendTS(task.ID, "[队列] 任务 #%d 展开 %d 个 IP × %d 端口 = %d 探针（新建单元 %d），进入单 IP 租约队列",
+	task.TotalIPs = expanded
+	tasklog.AppendTS(task.ID, "[队列] 任务 #%d 入队 %d 个 IP × %d 端口 = %d 探针（新建单元 %d），进入单 IP 租约队列",
 		task.ID, total, pc, int64(total)*int64(pc), created)
 	if !localFallback {
 		wakeQueueConsumers(task)
@@ -873,7 +884,7 @@ func ExecuteTaskQueue(taskID uint) error {
 	baseOpts := scanner.ScanOptions{
 		ProjectID: taskProjectID(task),
 		Modules:   task.Modules, Finger: task.Finger,
-		Ports: ports, Thread: task.Thread, Timeout: task.Timeout * 1000,
+		Ports: ports, Thread: task.Thread, Timeout: TimeoutMsOf(&task),
 		NoPing: task.NoPing, NoSmart: task.NoSmart, ExtraArgs: task.ExtraArgs,
 	}
 

@@ -26,8 +26,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RongSec/CyberLook-Scan/portscan"
-
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
 )
@@ -62,6 +60,14 @@ type etaState struct {
 	samples  int       // 有效采样次数
 	started  time.Time // 首次采样（近似任务开扫时间）
 	startDon int64     // 首次采样时的 probes_done
+
+	// 存活探测阶段的独立采样（与扫描阶段互不污染：探测以 IP/秒 计）
+	pLastOff  int    // 上次采样时的 probe_offset
+	pEwma     float64 // 短期速率（IP/秒）
+	pSamples  int     // 有效采样次数
+	pEta      float64 // 平滑后的 ETA（秒）
+	pLastMove time.Time // 最后一次进度真正变化的时刻
+	pSeen     bool    // 是否已建立基线
 }
 
 var (
@@ -77,6 +83,18 @@ const etaSampleInterval = 10 * time.Second
 // 只用于"一个样本都没有"的头几秒，随后立刻被实测速率取代。
 const assumedProbeDelay = 0.8
 
+// aliveBurstRate 存活探测阶段的"ICMP 爆发"判据（IP/秒）。
+//
+// 探测是两个阶段串起来的：ICMP 一批 1000 台、发完就收，94k 个 IP 两秒内就能把
+// probe_offset 推到一半；随后 TCP 阶段逐台 connect，速率掉到 200 IP/秒 量级。
+// 拿爆发期的速率算 ETA 会给出"剩余 2 秒"这种差两个数量级的假数字（实测就是这个问题），
+// 所以突发的窗口一律不计入样本，只认 TCP 阶段的稳态速率。
+const aliveBurstRate = 500.0
+
+// aliveEtaStall 进度多久没变化就认为"暂时估不出来"（秒）。
+// 探测收尾的抽样复核阶段会短时间冻结偏移量，这时候继续报一个不断缩小的 ETA 就是骗人。
+const aliveEtaStall = 45
+
 // SampleQueueETA 每 reaper tick 调一次：采样完成增量、平滑速率。
 func SampleQueueETA() {
 	var tasks []model.ScanTask
@@ -90,8 +108,15 @@ func SampleQueueETA() {
 		etaMu.Lock()
 		st := etaStates[t.ID]
 		if st == nil {
-			st = &etaState{lastDone: s.ProbesDone, lastAt: now, started: now, startDon: s.ProbesDone}
+			st = &etaState{lastDone: s.ProbesDone, lastAt: now, started: now, startDon: s.ProbesDone,
+				pLastMove: now, pSeen: true, pLastOff: t.ProbeOffset}
 			etaStates[t.ID] = st
+			etaMu.Unlock()
+			continue
+		}
+		// 存活探测阶段（还没有单元）：按 IP 进度单独采样
+		if s.Total == 0 && t.TotalIPs > 0 {
+			sampleAliveETA(st, t.ProbeOffset, now)
 			etaMu.Unlock()
 			continue
 		}
@@ -125,7 +150,39 @@ func SampleQueueETA() {
 	etaMu.Unlock()
 }
 
-// Progress 返回任务当前的进度快照（阶段、百分比、速率、ETA、置信度）。
+// sampleAliveETA 存活探测阶段的速率采样（调用方持 etaMu）。
+//
+// 只采"稳态"窗口：探测脚本的进度是 ICMP 与 TCP 两段归一化后的值，
+// ICMP 段是毫秒级批量回包（瞬时几千 IP/秒），TCP 段是逐台 connect（200 IP/秒 量级）。
+// 两段混在一起做平均必然算错，所以爆发窗口直接丢弃，只用 TCP 段的样本。
+func sampleAliveETA(st *etaState, off int, now time.Time) {
+	if !st.pSeen {
+		st.pSeen, st.pLastOff, st.pLastMove = true, off, now
+		return
+	}
+	dt := now.Sub(st.pLastMove).Seconds()
+	if dt < 1 {
+		return
+	}
+	delta := off - st.pLastOff
+	if delta > 0 {
+		inst := float64(delta) / dt
+		if inst > 0 && inst <= aliveBurstRate {
+			const alpha = 0.4
+			if st.pEwma == 0 {
+				st.pEwma = inst
+			} else {
+				st.pEwma = alpha*inst + (1-alpha)*st.pEwma
+			}
+			st.pSamples++
+		}
+		// 爆发窗口也要推进基线：否则同一个爆发会在下一 tick 被再算一遍
+		st.pLastOff = off
+		st.pLastMove = now
+	}
+}
+
+
 func Progress(taskID uint) ProgressSnapshot {
 	s := QueueStatsOf(taskID)
 	snap := ProgressSnapshot{
@@ -148,22 +205,50 @@ func Progress(taskID uint) ProgressSnapshot {
 			if snap.Percent > 99 {
 				snap.Percent = 99 // 探测完还要建队，别提前 100%
 			}
-			// 探测阶段也估时间：已探 IP 速率 × 剩余 IP 数 × 每 IP 的探测成本。
-			// 这里的"速率"是 IP/秒；探测耗时 ≈ IP 数 × 端口数 × 超时 ÷ 并发，
-			// 用实测速率反推最准，写死公式会随目标网络丢包情况偏离。
-			if t.StartedAt != nil {
-				elapsed := time.Since(*t.StartedAt).Seconds()
-				if elapsed > 2 && t.ProbeOffset > 0 {
-					ipPerSec := float64(t.ProbeOffset) / elapsed
-					if ipPerSec > 0 {
-						rem := float64(t.TotalIPs - t.ProbeOffset)
-						snap.ETASeconds = int64(rem / ipPerSec)
-						snap.PPS = ipPerSec * float64(len(portscan.DefaultAlivePorts)) // 折算成探针/秒仅供展示
-						if t.ProbeOffset >= t.TotalIPs/20 {                      // 至少探了 5% 才敢报 high
-							snap.Confidence = ConfHigh
-						}
-					}
+			snap.UnitsDone = int64(t.ProbeOffset)
+			snap.UnitsTotal = int64(t.TotalIPs)
+			// ETA 只用 TCP 阶段的稳态速率（见 sampleAliveETA）。
+			// 早期实现用 probe_offset/elapsed，ICMP 批量回包那两秒会把速率放大几百倍，
+			// 于是刚开探就显示"剩余 2 秒"，随后真实耗时却是 7 分 36 秒。
+			etaMu.Lock()
+			st := etaStates[taskID]
+			var rate, eta float64
+			samples, stalled := 0, false
+			if st != nil {
+				rate, samples = st.pEwma, st.pSamples
+				if !st.pLastMove.IsZero() && time.Since(st.pLastMove).Seconds() > aliveEtaStall {
+					stalled = true
 				}
+			}
+			etaMu.Unlock()
+			if rate > 0 && samples >= 2 {
+				snap.PPS = rate // 探测阶段的速率单位是 IP/秒，前端按此展示
+				rem := float64(t.TotalIPs - t.ProbeOffset)
+				eta = rem / rate
+				// ETA 自身也做平滑：单窗口抖动不该让剩余时间上下横跳
+				etaMu.Lock()
+				if st != nil {
+					if st.pEta > 0 {
+						st.pEta = 0.5*eta + 0.5*st.pEta
+					} else {
+						st.pEta = eta
+					}
+					eta = st.pEta
+				}
+				etaMu.Unlock()
+				if stalled {
+					// 进度冻结（抽样复核/网络卡顿）：不报不断缩小的假数字
+					eta, samples = 0, 0
+				}
+			}
+			if eta > 0 {
+				if eta < 1 {
+					eta = 1
+				}
+				snap.ETASeconds = int64(eta)
+			}
+			if samples >= 2 {
+				snap.Confidence = ConfHigh
 			}
 		}
 		return snap
