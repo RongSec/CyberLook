@@ -180,9 +180,12 @@ func ListTasks(c *gin.Context) {
 				conf = "high"
 			}
 			qs := service.QueueStatsOf(t.ID)
+			// 探测阶段没有单元，队列概览里 pending/done 全是 0，前端要显示
+			// 「已探测 x/y（z%）｜n 台/秒」就只能靠这几个字段，所以一并带出去。
 			q := gin.H{"pending": qs.Pending, "leased": qs.Leased, "done": qs.Done,
 				"failed": qs.FailedUnit, "probesDone": qs.ProbesDone, "probesTotal": qs.ProbesTotal,
-				"total": qs.Total, "phase": qs.Phase}
+				"total": qs.Total, "phase": qs.Phase,
+				"percent": percent, "etaSeconds": eta, "pps": pps, "confidence": conf}
 			// 卡死兜底：单元全终态但没人触发收敛（比如会话行没建过）
 			if t.Status == "running" && qs.Pending == 0 && qs.Leased == 0 && qs.Done+qs.FailedUnit > 0 {
 				service.CheckQueueDone(t.ID)
@@ -303,7 +306,7 @@ func UpdateTask(c *gin.Context) {
 		"name": req.Name, "ip_ranges": req.IPRanges, "modules": req.Modules,
 		"engine":    req.Engine,
 		"port_mode": req.PortMode, "ports": req.Ports, "thread": req.Thread,
-		"timeout": req.Timeout, "finger": req.Finger, "no_ping": req.NoPing,
+		"timeout": service.NormalizeTimeoutMs(req.Timeout), "finger": req.Finger, "no_ping": req.NoPing,
 		"no_smart": req.NoSmart, "extra_args": req.ExtraArgs, "cron": req.Cron,
 		"node_ids": req.NodeIDs,
 	}).Error; err != nil {

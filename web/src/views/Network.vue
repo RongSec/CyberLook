@@ -19,9 +19,9 @@
     </n-card>
 
     <n-card title="免扫描清单（避开范围）">
-      <p class="tip">这些 IP 范围会在扫描时由平台自动排除（如电子设备受不了端口扫描），请务必填写原因。</p>
+      <p class="tip">这些 IP 范围会在扫描时由平台自动排除（如电子设备受不了端口扫描），请务必填写原因。支持三种写法：<b>10.24.5.10-20</b>（范围）、<b>10.24.5.0/24</b>（网段）、<b>*.*.*.1</b>（每个网段的网关/交换机，已内置一条）。</p>
       <div class="toolbar">
-        <n-input v-model:value="excForm.ipRange" placeholder="IP 范围，如 10.24.5.10-20" style="width: 240px" />
+        <n-input v-model:value="excForm.ipRange" placeholder="如 10.24.5.10-20、10.24.5.0/24、*.*.*.1" style="width: 260px" />
         <n-input v-model:value="excForm.reason" placeholder="原因（必填）" style="width: 240px" />
         <n-button type="warning" @click="addExclude">加入免扫描</n-button>
         <n-button @click="openImport('exc')">批量导入</n-button>

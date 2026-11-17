@@ -23,6 +23,8 @@ func GetTemplate(id uint) (*model.ScanTemplate, error) {
 
 // UpsertTemplate 新增/更新模板
 func UpsertTemplate(t *model.ScanTemplate) error {
+	// 超时统一按毫秒存（与任务字段同一口径，迁移 042 已换算存量数据）
+	t.Timeout = NormalizeTimeoutMs(t.Timeout)
 	if t.ID == 0 {
 		return config.DB.Create(t).Error
 	}

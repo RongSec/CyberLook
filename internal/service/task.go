@@ -23,6 +23,41 @@ import (
 	"gorm.io/gorm"
 )
 
+// 超时（毫秒）：默认 1500ms，允许 50ms ~ 30s。
+// 上限 30s 是"单探针"的量级概念——再大就不是调优而是把任务拖死；
+// 下限 50ms 只对同机房 LAN 有意义，跨网段基本一定假阴性，但那是用户的判断。
+const (
+	defaultTimeoutMs = 1500
+	minTimeoutMs     = 50
+	maxTimeoutMs     = 30000
+)
+
+// TimeoutMsOf 取任务的单探针超时（毫秒），并做历史兼容与上下限收敛。
+// <100 视为"秒"是给 042 迁移之前的存量数据留的后路，不要在两个地方各写一份。
+func TimeoutMsOf(task *model.ScanTask) int {
+	if task == nil {
+		return defaultTimeoutMs
+	}
+	return NormalizeTimeoutMs(task.Timeout)
+}
+
+// NormalizeTimeoutMs 把外部传进来的超时归一成毫秒（含上下限收敛）。
+func NormalizeTimeoutMs(v int) int {
+	if v <= 0 {
+		return defaultTimeoutMs
+	}
+	if v < 100 { // 老口径：秒
+		v *= 1000
+	}
+	if v < minTimeoutMs {
+		v = minTimeoutMs
+	}
+	if v > maxTimeoutMs {
+		v = maxTimeoutMs
+	}
+	return v
+}
+
 // TaskInput 创建任务输入
 type TaskInput struct {
 	Name       string
@@ -63,9 +98,10 @@ func CreateTask(in TaskInput) (*model.ScanTask, error) {
 	if task.Thread == 0 {
 		task.Thread = 600
 	}
-	if task.Timeout == 0 {
-		task.Timeout = 3
-	}
+	// 超时统一按毫秒存（历史数据在迁移 042 里已换算）。
+	// <100 仍按秒理解：老任务/老客户端传 3 这种值进来时自动换算，
+	// 判据与 internal/scanner/builtin.go 的兼容逻辑保持一致，不会重复放大。
+	task.Timeout = NormalizeTimeoutMs(task.Timeout)
 	// 队列模式创建即固化（重启/翻 USE_IP_QUEUE 不影响已建任务）
 	task.QueueMode = UseIPQueue()
 	if err := config.DB.Create(&task).Error; err != nil {
@@ -333,7 +369,7 @@ func ExecuteTask(taskID uint) error {
 	opts := scanner.ScanOptions{
 		ProjectID: taskProjectID(task),
 		Modules:   task.Modules, Finger: task.Finger,
-		Ports: ports, Thread: task.Thread, Timeout: task.Timeout * 1000, // 秒→毫秒（与 agent 侧一致）
+		Ports: ports, Thread: task.Thread, Timeout: task.Timeout, // 毫秒（只由任务决定超时）
 		NoPing: task.NoPing, NoSmart: task.NoSmart,
 		ExtraArgs: task.ExtraArgs,
 	}

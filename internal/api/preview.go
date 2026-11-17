@@ -20,13 +20,9 @@ func PreviewTargets(c *gin.Context) {
 		return
 	}
 
-	// 免扫描集合
-	excludeSet := map[string]bool{}
-	for _, e := range req.Excludes {
-		for _, ip := range target.Expand(e) {
-			excludeSet[ip] = true
-		}
-	}
+	// 免扫描匹配器：与扫描时用的是同一套（含 *.*.*.1 这类通配），
+	// 否则会出现"预览说有效、实际扫描被排除"的不一致。
+	ex := target.NewExcluder(req.Excludes)
 
 	type segView struct {
 		Input       string   `json:"input"`
@@ -66,7 +62,7 @@ func PreviewTargets(c *gin.Context) {
 			}
 			seen[ip] = true
 			total++
-			if excludeSet[ip] {
+			if ex.Contains(ip) {
 				excludedCount++
 				sv.ExcludedIPs = append(sv.ExcludedIPs, ip)
 			} else {
