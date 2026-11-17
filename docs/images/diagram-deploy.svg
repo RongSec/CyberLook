@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 470" width="1000" height="470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="470" fill="#ffffff"/>
+  <text x="24" y="32" font-size="17" font-weight="700" fill="#0f172a">执行面：调度在中心，判定在节点，证据在本地</text>
+  <text x="24" y="52" font-size="12" fill="#64748b">中心不碰数据包，节点不存资产台账。单机 CLI 与平台队列跑的是同一份引擎代码，所以同一目标的结论必须一致。</text>
+
+  <!-- center box -->
+  <rect x="24" y="76" width="300" height="330" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="40" y="100" font-size="13" font-weight="700" fill="#0f172a">中心（asset-server）</text>
+  <rect x="40" y="112" width="268" height="52" rx="6" fill="#eef6ff" stroke="#bcd4f6"/>
+  <text x="52" y="132" font-size="11" fill="#0f172a">目标展开 / 免扫描 / 单元化排队</text>
+  <text x="52" y="150" font-size="10.5" fill="#475569">租约发放、过期回收、调速与暂停</text>
+
+  <rect x="40" y="172" width="268" height="52" rx="6" fill="#eef6ff" stroke="#bcd4f6"/>
+  <text x="52" y="192" font-size="11" fill="#0f172a">进度与 ETA（按探针真值）</text>
+  <text x="52" y="210" font-size="10.5" fill="#475569">Σprobes_done / Σprobes_total，三路速率融合</text>
+
+  <rect x="40" y="232" width="268" height="60" rx="6" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="52" y="252" font-size="11" fill="#0f172a">入库与变更判定</text>
+  <text x="52" y="270" font-size="10.5" fill="#475569">assets / services upsert、SimHash、合规标记</text>
+  <text x="52" y="286" font-size="10.5" fill="#64748b">prev_* 与 content_changed 在这里产生</text>
+
+  <rect x="40" y="300" width="268" height="44" rx="6" fill="#f8fafc" stroke="#d5dce6"/>
+  <text x="52" y="320" font-size="11" fill="#0f172a">PostgreSQL（台账） / Redis（队列）</text>
+  <text x="52" y="336" font-size="10.5" fill="#475569">任务、单元、资产、服务、日志、快照</text>
+
+  <text x="40" y="372" font-size="10.5" fill="#94a3b8">中心永不接触目标网络，</text>
+  <text x="40" y="390" font-size="10.5" fill="#94a3b8">因此可以放在管理网/办公网。</text>
+
+  <!-- arrows to nodes -->
+  <line x1="326" y1="150" x2="392" y2="150" stroke="#2563eb" stroke-width="1.6" marker-end="url(#arb)"/>
+  <text x="328" y="142" font-size="9.5" fill="#1d4ed8">领取单元</text>
+  <line x1="392" y1="196" x2="326" y2="196" stroke="#2563eb" stroke-width="1.6" marker-end="url(#arb)"/>
+  <text x="328" y="216" font-size="9.5" fill="#1d4ed8">心跳/结果</text>
+
+  <!-- node 1 -->
+  <rect x="396" y="76" width="280" height="150" rx="10" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="412" y="98" font-size="13" font-weight="700" fill="#0f172a">扫描节点（scope-agent）</text>
+  <text x="412" y="118" font-size="10.5" fill="#475569">单二进制，Linux/Windows 均可，可多开</text>
+  <rect x="412" y="128" width="248" height="40" rx="6" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="424" y="146" font-size="11" fill="#0f172a">引擎：存活 → 端口 → 识别</text>
+  <text x="424" y="162" font-size="10.5" fill="#475569">进程内直调，不起外部进程</text>
+  <rect x="412" y="176" width="248" height="38" rx="6" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="424" y="194" font-size="11" fill="#0f172a">审计库：本地 SQLite（WAL）</text>
+  <text x="424" y="209" font-size="10.5" fill="#475569">每单元一个 Project，7 天 / 512MB</text>
+
+  <!-- node 2 (dashed, another node) -->
+  <rect x="396" y="240" width="280" height="76" rx="10" fill="#ffffff" stroke="#93c5fd" stroke-dasharray="5 4"/>
+  <text x="412" y="262" font-size="12" font-weight="700" fill="#0f172a">节点 B / C …</text>
+  <text x="412" y="280" font-size="10.5" fill="#475569">同一任务可由多节点并行消费；</text>
+  <text x="412" y="296" font-size="10.5" fill="#475569">单元级租约保证不重复扫同一台。</text>
+
+  <!-- cli -->
+  <rect x="700" y="76" width="276" height="150" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="5 4"/>
+  <text x="716" y="98" font-size="13" font-weight="700" fill="#0f172a">单机 CLI（cyberlook-scan）</text>
+  <text x="716" y="118" font-size="10.5" fill="#475569">同一个 portscan + svcid 包，Bash 里直接跑</text>
+  <rect x="716" y="128" width="244" height="40" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="728" y="146" font-size="10.5" fill="#475569">参数 / 进度 / 完成 三行文案与平台同源</text>
+  <text x="728" y="162" font-size="10.5" fill="#475569">（portscan/report.go 统一生成）</text>
+  <rect x="716" y="176" width="244" height="38" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="728" y="194" font-size="10.5" fill="#475569">用于：临时核查、对比平台结论、</text>
+  <text x="728" y="209" font-size="10.5" fill="#475569">定位"是目标问题还是平台问题"</text>
+
+  <line x1="676" y1="120" x2="700" y2="120" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+  <text x="672" y="110" font-size="9.5" fill="#64748b">同一份代码</text>
+
+  <!-- bottom: data flow of one unit -->
+  <rect x="24" y="404" width="952" height="48" rx="8" fill="#f8fafc" stroke="#d5dce6"/>
+  <text x="40" y="424" font-size="11" fill="#334155" font-weight="600">一个单元的生命周期：</text>
+  <text x="196" y="424" font-size="11" fill="#475569">claim → 扫描（探针级进度回报）→ 结果流式上报（每 ≤200 条 / ≤300ms）→ finish（done/failed）→ 租约释放 → 中心落库与判定</text>
+  <text x="40" y="442" font-size="10.5" fill="#94a3b8">节点掉线：租约 60s 到期后单元自动回到 pending，重试 3 次仍失败才标记 failed，不会静默丢 IP。</text>
+</svg>
