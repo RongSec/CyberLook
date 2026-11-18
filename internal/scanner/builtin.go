@@ -575,12 +575,14 @@ func mapService(sv svcid.Service) ScanResult {
 	// ContentLength← HTTP 响应体长度（变更检测）
 	// OS           ← SMB/RDP 握手拿到的系统信息
 	// Mid          ← 中间件/产品（tscan 的 Mid 语义）
-	product := cleanProduct(sv.Product)
+	// 不在识别层做"名字像不像产品"的清洗：那是模型的判断，不是正则能穷举的。
+	// 引擎原样上报，可疑的交给 AI（见 service/aiident.go）。
+	product := strings.TrimSpace(sv.Product)
 	title := sv.Title
 	if title == "" {
 		title = product
 	}
-	fp := cleanProduct(sv.Fingerprint)
+	fp := strings.TrimSpace(sv.Fingerprint)
 	if fp == "" {
 		fp = strings.Join(sv.Evidence, ",")
 	}
@@ -597,24 +599,11 @@ func mapService(sv svcid.Service) ScanResult {
 		Response:      sv.Body,
 		OS:            sv.OS,
 		Mid:           product,
+		Source:        sv.Source,
+		NeedAI:        sv.NeedAI,
 	}
 }
 
-// cleanProduct 把 "UnKnown / ssl / tcp / N/A / -" 这类占位产品名清成空串。
-//
-// 规则库里确实存在产品名就是 UnKnown 的条目（实测 198.18.6.31:22 的 OpenSSH banner
-// 被某条规则匹配成 "UnKnown"，198.18.6.31:427 存了 "UnKnown"）。
-// 另外协议层兜底会把产品写回协议名（ssl/tcp），终端里就成了 "6443 ssl 400（ssl）"。
-// 这类值进资产表只会让人以为"识别成功了"，进终端只会让「服务：」那行变成噪音。
-func cleanProduct(s string) string {
-	t := strings.TrimSpace(s)
-	switch strings.ToLower(t) {
-	case "", "unknown", "unidentified", "n/a", "none", "-",
-		"tcp", "udp", "ssl", "tls", "http", "https":
-		return ""
-	}
-	return t
-}
 
 
 // emitProgress 进度行：兼容 agent 侧解析格式

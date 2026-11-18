@@ -21,8 +21,12 @@ import (
 func GetSystemSettings(c *gin.Context) {
 	var s model.SystemSettings
 	if err := config.DB.First(&s, 1).Error; err != nil {
-		c.JSON(http.StatusOK, model.SystemSettings{})
+		c.JSON(http.StatusOK, model.SystemSettings{GithubRepo: service.DefaultRepo})
 		return
+	}
+	// 没配置过就回显默认仓库，前端不需要再猜
+	if s.GithubRepo == "" {
+		s.GithubRepo = service.DefaultRepo
 	}
 	c.JSON(http.StatusOK, s)
 }

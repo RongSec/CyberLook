@@ -81,8 +81,11 @@ type LLMConversation struct {
 	ProfileName  string    `gorm:"column:profile_name;size:100" json:"profileName"`
 	MessageCount int       `gorm:"column:message_count;default:0" json:"messageCount"`
 	TotalTokens  int       `gorm:"column:total_tokens;default:0" json:"totalTokens"`
+	// Kind 会话类型：chat / svc_ident / svc_review / render / task
+	// 左侧按 (任务, 类型) 分两级展示，同类会话各自一棵子树
+	Kind string `gorm:"column:kind;size:32;default:chat;index" json:"kind"`
 	// TaskID > 0 表示这是扫描任务自动产生的 AI 对话（同一个任务的识别记录都归在这一个会话里）
-	TaskID    uint      `gorm:"column:task_id;default:0" json:"taskId"`
+	TaskID    uint      `gorm:"column:task_id;default:0;index" json:"taskId"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

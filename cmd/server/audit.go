@@ -104,17 +104,16 @@ func runAuditIdentify(args []string) {
 				it.CostMs = time.Since(st).Milliseconds()
 				results[idx] = it
 			}()
-			title, fp, stages, _ := service.IdentifyService(svc)
-			for _, s := range stages {
+			r := service.IdentifyService(svc)
+			for _, s := range r.Stages {
 				mark := "✗"
 				if s.OK {
 					mark = "✓"
 				}
 				it.StageHits = append(it.StageHits, s.Stage+mark)
 			}
-			it.FinalTitle = title
-			it.Changed = service.TitleClear(title) && title != svc.Title
-			_ = fp
+			it.FinalTitle = r.Title
+			it.Changed = r.Confident && r.Title != svc.Title
 		}(i, jobs[i])
 	}
 	wg.Wait()

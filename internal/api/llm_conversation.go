@@ -22,26 +22,84 @@ func ListConversations(c *gin.Context) {
 		limit = 50
 	}
 	keyword := strings.TrimSpace(c.Query("keyword"))
+	kind := strings.TrimSpace(c.Query("kind"))
+	taskID, _ := strconv.Atoi(c.DefaultQuery("taskId", "0"))
 
 	q := config.DB.Model(&model.LLMConversation{})
 	if keyword != "" {
-		q = q.Where("title ILIKE ?", "%"+keyword+"%")
+		// 标题与消息正文都搜：用户往往记得"那句话"，不记得会话标题
+		q = q.Where("title ILIKE ? OR id IN (SELECT conversation_id FROM llm_messages WHERE content ILIKE ?)",
+			"%"+keyword+"%", "%"+keyword+"%")
+	}
+	if kind != "" {
+		q = q.Where("kind = ?", kind)
+	}
+	if taskID > 0 {
+		q = q.Where("task_id = ?", taskID)
 	}
 	var list []model.LLMConversation
 	q.Order("updated_at DESC").Limit(limit).Find(&list)
-	c.JSON(http.StatusOK, gin.H{"count": len(list), "items": list})
+
+	// 按 (任务, 类型) 分组，供左侧树直接渲染；任务名一次查出来，避免前端再发 N 个请求
+	type node struct {
+		TaskID   uint                      `json:"taskId"`
+		TaskName string                    `json:"taskName"`
+		Kind     string                    `json:"kind"`
+		Items    []model.LLMConversation   `json:"items"`
+	}
+	taskNames := map[uint]string{}
+	var ids []uint
+	for _, it := range list {
+		if it.TaskID > 0 {
+			ids = append(ids, it.TaskID)
+		}
+	}
+	if len(ids) > 0 {
+		type row struct {
+			ID   uint
+			Name string
+		}
+		var rows []row
+		config.DB.Table("scan_tasks").Select("id, name").Where("id IN ?", ids).Scan(&rows)
+		for _, r := range rows {
+			taskNames[r.ID] = r.Name
+		}
+	}
+	index := map[string]int{}
+	var groups []node
+	for _, it := range list {
+		k := it.Kind
+		if k == "" {
+			k = "chat"
+		}
+		key := strconv.Itoa(int(it.TaskID)) + "|" + k
+		if i, ok := index[key]; ok {
+			groups[i].Items = append(groups[i].Items, it)
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, node{TaskID: it.TaskID, TaskName: taskNames[it.TaskID], Kind: k, Items: []model.LLMConversation{it}})
+	}
+	c.JSON(http.StatusOK, gin.H{"count": len(list), "items": list, "groups": groups})
 }
 
 // CreateConversation 新建会话
 func CreateConversation(c *gin.Context) {
 	var req struct {
-		Title string `json:"title"`
+		Title  string `json:"title"`
+		Kind   string `json:"kind"`
+		TaskID uint   `json:"taskId"`
 	}
 	_ = c.ShouldBindJSON(&req)
 	conv := model.LLMConversation{Title: req.Title}
 	if conv.Title == "" {
 		conv.Title = "新会话"
 	}
+	conv.Kind = strings.TrimSpace(req.Kind)
+	if conv.Kind == "" {
+		conv.Kind = "chat"
+	}
+	conv.TaskID = req.TaskID
 	if err := config.DB.Create(&conv).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

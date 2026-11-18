@@ -71,7 +71,7 @@
       <n-grid :cols="2" :x-gap="16" item-responsive>
         <n-grid-item span="2 m:1">
           <n-form-item label="GitHub 仓库" label-placement="top">
-            <n-input v-model:value="updateForm.githubRepo" placeholder="owner/repo，如 tide/sec-platform" />
+            <n-input v-model:value="updateForm.githubRepo" placeholder="owner/repo，默认 RongSec/CyberLook" />
           </n-form-item>
         </n-grid-item>
         <n-grid-item span="2 m:1">
@@ -147,7 +147,7 @@ async function savePwd() {
 }
 
 // ===== 系统升级 =====
-const updateForm = ref({ githubRepo: '', githubToken: '', proxy: '', port: 18888, allowedIps: '' })
+const updateForm = ref({ githubRepo: 'RongSec/CyberLook', githubToken: '', proxy: '', port: 18888, allowedIps: '' })
 const updateInfo = ref({ version: '', current: '', notes: '', publishedAt: '', hasUpdate: false, downloadUrl: '' })
 const curVersion = ref('0.0.1')
 const curBuild = ref('')

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -70,64 +69,31 @@ var (
 	aiCount   = map[uint]int{}
 )
 
-// 默认页/泛词标题：等于没标题
-var genericTitleRe = regexp.MustCompile(`(?i)^(` +
-	`index of /?|welcome to .*|welcome|apache.*|nginx.*|iis.*|microsoft-iis|test page|` +
-	`untitled|untitled document|home|homepage|login|log in|sign in|登录|登陆|首页|主页|欢迎|` +
-	`目录|新建文件夹|document|default page|it works!|站点创建成功|恭喜.*|403 forbidden|404 not found|` +
-	`error|forbidden|unauthorized|` +
-	`https?://.*` +
-	`)$`)
-
-// 组件名/库名特征：全小写 ASCII 单词、带版本号
-var (
-	pureLowerRe = regexp.MustCompile(`^[a-z][a-z0-9\-\._ ]*$`)
-	hasCJKRe    = regexp.MustCompile(`[\x{4e00}-\x{9fff}]`)
-	pascalRe    = regexp.MustCompile(`^[A-Z][A-Za-z0-9][A-Za-z0-9\-\._ ]*$`)
-)
-
-// TitleClear 判断标题是否"清晰明了地体现了业务系统"
+// TitleClear 只做"输入是否为空"这种结构性判断，**不做内容判定**。
+//
+// 曾经这里是一大坨正则：默认页清单（index of / welcome / login / 登录 …）、
+// 字符形态（纯小写=组件名、首字母大写=产品名）、长度门槛、含"未知"就否决。
+// 这套东西的问题是必然的：
+//   - 白名单外的真系统被当成"不清晰"（`Login` 是壳，但 `SAP Enterprise Portal` 也可能只有一页）；
+//   - 灰度永远调不完，新默认页一出现就得补规则；
+//   - 更糟的是它同时被当成"识别成功"的闸门，把模型给出的合法名字截断掉。
+//
+// 现在"这个名字对不对"只由模型判断（见 askAI / IdentifyService），
+// 这里只拦空值和单字符——那不是判断，是脏数据。
 func TitleClear(title string) bool {
 	t := strings.TrimSpace(title)
-	if t == "" {
-		return false
-	}
-	if regexp.MustCompile(`^[\d\.\:\-/ ]+$`).MatchString(t) {
-		return false
-	}
 	if len([]rune(t)) < 2 {
 		return false
 	}
-	if genericTitleRe.MatchString(t) {
-		return false
+	// 纯标点/纯数字：不是名字
+	hasWord := false
+	for _, r := range t {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r > 0x2E80 {
+			hasWord = true
+			break
+		}
 	}
-	switch strings.ToLower(t) {
-	case "未知", "未知系统", "无法识别", "不清楚", "无", "none", "null", "n/a", "na",
-		"unknown", "unknown system", "unidentified", "not identified",
-		"未知业务系统", "未知系统（无法识别）", "业务系统":
-		return false
-	}
-	// 含「未知/无法识别」的一律不算清晰（模型常输出「未知业务系统（Spring Boot 默认错误页）」
-	// 这种带括号解释的，精确匹配拦不住，实测 130 条审计里有 10 条被当成"识别成功"）
-	if strings.Contains(t, "未知") || strings.Contains(t, "无法识别") || strings.Contains(t, "未识别") {
-		return false
-	}
-	if strings.ContainsAny(t, "/|\\") {
-		return false
-	}
-	if strings.Contains(t, "://") {
-		return false
-	}
-	if pureLowerRe.MatchString(t) {
-		return false
-	}
-	if hasCJKRe.MatchString(t) {
-		return true
-	}
-	if pascalRe.MatchString(t) && len(t) >= 4 {
-		return true
-	}
-	return len([]rune(t)) >= 8
+	return hasWord
 }
 
 // EnqueueAIIdentify 把一次待识别的服务塞进队列（异步，不阻塞扫描）
@@ -166,45 +132,32 @@ func startAIWorkers() {
 	}
 }
 
-// IdentifyService 跑完整识别链路，返回 title / fingerprint / 各阶段轨迹 / 抓到的请求响应包
-func IdentifyService(svc model.Service) (string, string, []IdentStage, []scanner.Hop) {
+// IdentResult 一次识别链路的结论
+type IdentResult struct {
+	Title      string
+	Product    string
+	Confident  bool   // 模型给出名字且置信度达标（>=60）
+	Sufficient bool   // 模型认为"现有证据已经足够判断，只是给不出确切名字"
+	Reason     string // 模型给的依据（20 字以内）
+	Stages     []IdentStage
+	Hops       []scanner.Hop
+}
+
+// IdentifyService 跑完整识别链路：请求响应包 → AI →（AI 说不够）→ 浏览器渲染 → AI。
+//
+// 这里不设"标题正则判清晰就跳过"的前置闸门——那会把"标题恰好像样、其实是默认页"
+// 的情况漏掉，也会把合法产品名当垃圾。是否足够判断，由模型自己说（Sufficient）。
+func IdentifyService(svc model.Service) IdentResult {
+	res := IdentResult{Title: strings.TrimSpace(svc.Title), Product: strings.TrimSpace(svc.Fingerprint)}
 	stages := []IdentStage{}
-	title := strings.TrimSpace(svc.Title)
-	fp := strings.TrimSpace(svc.Fingerprint)
 	baseURL := buildURL(svc)
 	var hops []scanner.Hop
 
-	// 第 0 级：tscan 的结果是否清晰
-	stage0OK := TitleClear(title)
-	stages = append(stages, IdentStage{
-		Stage: "规则判定（tscan 标题/指纹）", Input: "标题=" + orNone(title) + "；指纹=" + orNone(fp),
-		Output: map[bool]string{true: "清晰，无需进一步识别", false: "不清晰，进入请求响应包分析"}[stage0OK],
-		OK:     stage0OK,
-	})
-	if stage0OK {
-		return title, fp, stages, hops
-	}
 	if baseURL == "" {
-		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: "-", Output: "非 http(s) 协议，跳过"})
-		return title, fp, stages, hops
+		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: "-", Output: "非 http(s) 协议，不适用 Web 识别"})
+		res.Stages = stages
+		return res
 	}
-
-	// 第 0.5 级：本地产品指纹库（零成本、零发包）
-	// 实测：不清晰样本里 ESXi / Spring Boot / Kubelet / Tomcat / Lotus / SAP MC 这类
-	// 特征极明显，用规则就能定，没必要为它们抓包 + 花两次 LLM。
-	if name := scanner.MatchProduct(strings.Join([]string{title, fp, svc.Banner, svc.Service, svc.Protocol}, " ")); name != "" {
-		stages = append(stages, IdentStage{
-			Stage:  "本地产品库",
-			Input:  "标题=" + orNone(title) + "；指纹=" + orNone(fp) + "；Banner=" + orNone(truncateStr(svc.Banner, 100)),
-			Output: "命中：" + name, OK: true,
-		})
-		return name, fp, stages, hops
-	}
-	stages = append(stages, IdentStage{
-		Stage:  "本地产品库",
-		Input:  "标题=" + orNone(title) + "；指纹=" + orNone(fp),
-		Output: "未命中，进入请求响应包分析", OK: false,
-	})
 
 	// 第 1 级：抓完整请求响应包 → AI
 	scheme := "http"
@@ -226,54 +179,66 @@ func IdentifyService(svc model.Service) (string, string, []IdentStage, []scanner
 			Output: hops[0].ResponseLine + " / " + orNone(shortHeader(hops[0].ResponseHeaders)),
 			OK:     true,
 		})
-		// 抓到的包里可能就有产品特征（Server 头 / 页面关键字），再给本地库一次机会，命中就不必问模型
-		if name := scanner.MatchProduct(digest + " " + hops[0].ResponseHeaders); name != "" {
-			stages = append(stages, IdentStage{Stage: "本地产品库（响应包）", Input: "响应头 + 页面摘要", Output: "命中：" + name, OK: true})
-			return name, fp, stages, hops
-		}
-		aiTitle, aiFP, enough, raw := askAI("请求响应包", digest, false)
+		verdict := askAI("请求响应包", digest, false)
 		stages = append(stages, IdentStage{
 			Stage: "AI·请求响应包", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
-			Output: orNone(raw), OK: TitleClear(aiTitle),
+			Output: orNone(verdict.Raw), OK: verdict.dotConfident(),
 		})
-		if TitleClear(aiTitle) {
-			if fp == "" && aiFP != "" {
-				fp = aiFP
-			}
-			return aiTitle, fp, stages, hops
+		if verdict.dotConfident() {
+			res.apply(verdict)
+			res.Stages, res.Hops = stages, hops
+			return res
 		}
-		// 模型明确表示「这些信息已经够了、只是给不出名字」→ 再渲染也没用，直接收手
-		if enough {
-			return title, fp, stages, hops
+		// 模型明确说"信息已经够、只是给不出确切名字"→ 再渲染也没用
+		if verdict.Sufficient {
+			res.Sufficient, res.Reason = true, verdict.Reason
+			res.Stages, res.Hops = stages, hops
+			return res
 		}
 	}
 
 	// 第 2 级：浏览器真渲染
 	if !scanner.ChromeAvailable() {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "容器内无 chromium，跳过"})
-		return title, fp, stages, hops
+		res.Stages, res.Hops = stages, hops
+		return res
 	}
 	pageTitle, pageDesc, pageText, rerr := scanner.RenderPage(baseURL, 8*time.Second)
 	if rerr != nil {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "渲染失败：" + rerr.Error()})
-		return title, fp, stages, hops
+		res.Stages, res.Hops = stages, hops
+		return res
 	}
 	rendered := fmt.Sprintf("页面标题: %s\nmeta描述: %s\n正文摘要: %s", orNone(pageTitle), orNone(pageDesc), orNone(pageText))
-	stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: rendered, OK: TitleClear(pageTitle)})
-	if TitleClear(pageTitle) {
-		return strings.TrimSpace(pageTitle), fp, stages, hops
-	}
+	stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: rendered, OK: strings.TrimSpace(pageTitle) != ""})
 
-	// 第 3 级：AI 用渲染结果再判
-	aiTitle2, aiFP2, _, raw2 := askAI("渲染结果", rendered, true)
-	stages = append(stages, IdentStage{Stage: "AI·渲染结果", Input: rendered, Output: orNone(raw2), OK: TitleClear(aiTitle2)})
-	if TitleClear(aiTitle2) {
-		if fp == "" && aiFP2 != "" {
-			fp = aiFP2
-		}
-		return aiTitle2, fp, stages, hops
+	// 第 3 级：AI 用渲染结果再判（渲染标题本身不当结论，仍由模型判断）
+	verdict2 := askAI("渲染结果", rendered, true)
+	stages = append(stages, IdentStage{Stage: "AI·渲染结果", Input: rendered, Output: orNone(verdict2.Raw), OK: verdict2.dotConfident()})
+	if verdict2.dotConfident() {
+		res.apply(verdict2)
+	} else if strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) {
+		// 模型没给出高置信名字，但渲染后的标题本身是明确文字：作为低置信候选带上
+		res.Title = strings.TrimSpace(pageTitle)
+		res.Reason = "渲染标题（未经模型确认）"
 	}
-	return title, fp, stages, hops
+	res.Stages, res.Hops = stages, hops
+	return res
+}
+
+// apply 采纳模型结论
+func (r *IdentResult) apply(v aiVerdict) {
+	if strings.TrimSpace(v.Title) != "" {
+		r.Title = strings.TrimSpace(v.Title)
+	} else if strings.TrimSpace(v.Product) != "" {
+		r.Title = strings.TrimSpace(v.Product)
+	}
+	if strings.TrimSpace(v.Product) != "" {
+		r.Product = strings.TrimSpace(v.Product)
+	}
+	r.Confident = v.Confidence >= 60
+	r.Sufficient = v.Sufficient
+	r.Reason = v.Reason
 }
 
 // shortHeader 取响应头里的 Location / Server 行，用于阶段摘要
@@ -287,50 +252,72 @@ func shortHeader(h string) string {
 	return ""
 }
 
+// aiVerdict 模型对一次识别证据的判断
+type aiVerdict struct {
+	Title      string `json:"title"`
+	Product    string `json:"product"`
+	Category   string `json:"category"`
+	Confidence int    `json:"confidence"`
+	Sufficient bool   `json:"sufficient"`
+	Reason     string `json:"reason"`
+	Raw        string `json:"-"`
+}
+
+// dotConfident 名字可用：有名字且置信度达标
+func (v aiVerdict) dotConfident() bool {
+	return v.Confidence >= 60 && (strings.TrimSpace(v.Title) != "" || strings.TrimSpace(v.Product) != "")
+}
+
+const aiIdentSystem = `你是内网资产识别专家。用户给你一个 HTTP 端口的请求/响应证据，你要判断上面跑的是什么业务系统。
+
+只输出一个 JSON 对象，不要解释、不要 markdown 代码块：
+{"title":"业务系统名称","product":"产品/组件名（含厂商更好）","category":"分类，如 OA/财务/审计/中间件","confidence":0,"sufficient":true,"reason":"20 字以内依据"}
+
+判定要求：
+1. 只依据证据判断。证据里没有的不要编，宁可不给名字。
+2. title 写人看得懂的系统名（例如"明御数据库审计与风险控制系统"），不要写 nginx/Apache 这种服务器名。
+3. confidence 0-100：
+   - 90+：页面标题/接口/版权里直接写出产品名
+   - 60-89：有明确特征（特有路径、错误页样式、证书、界面元素）
+   - 30-59：只能判断类别
+   - <30：基本靠猜
+4. sufficient=true 表示"现有证据已经足够，但你只能给到类别或给不出名字"——
+   这种情况不要再要求渲染，渲染也拿不到更多信息。
+5. sufficient=false 表示"证据不足，需要看渲染后的完整页面"。
+   典型：标题为空或只有 Login/Welcome、正文几乎没有文字、页面是空壳 SPA。
+6. 如果现有证据里明明有产品名（哪怕长得怪，例如 "SAP Message Server,release 722 (SP8)"），
+   confidence 要给高——不要因为名字不符合常见格式就否定它。`
+
 // askAI 让模型判断这是什么系统
-func askAI(source, info string, rendered bool) (title, product string, sufficient bool, raw string) {
-	hint := "信息可能不足，判断不出来就把字段留空"
+func askAI(source, info string, rendered bool) aiVerdict {
+	hint := "以下是从该端口抓到的真实请求/响应包（含重定向）"
 	if rendered {
-		hint = "这些是浏览器真实渲染后的页面信息，请据此判断业务系统名称"
+		hint = "以下是浏览器真正渲染后的页面信息"
 	}
-	prompt := fmt.Sprintf(`根据下面的信息判断这是什么业务系统，只输出 JSON，不要解释：
-{"title":"业务系统名称","product":"产品/组件名","category":"分类（如 OA/财务/监控/中间件）","sufficient":true}
-sufficient 表示「这些信息是否已经足以确定业务系统」；信息残缺、只有默认页/错误页时填 false。
-%s
-来源：%s
-%s`, hint, source, info)
+	prompt := fmt.Sprintf("%s。\n来源：%s\n\n%s", hint, source, info)
 
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
-			{Role: "system", Content: "你是资产指纹识别助手，只能输出 JSON。"},
+			{Role: "system", Content: aiIdentSystem},
 			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.1,
-		MaxTokens:   300,
+		MaxTokens:   400,
 	}
 	res, err := llm.ChatWithFailover(req, 0)
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil {
 			log.Printf("[ai-ident] 调用失败: %v", err)
 		}
-		return "", "", true, ""
+		return aiVerdict{Sufficient: true, Raw: "模型调用失败"}
 	}
 	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
-	var out struct {
-		Title      string `json:"title"`
-		Product    string `json:"product"`
-		Category   string `json:"category"`
-		Sufficient bool   `json:"sufficient"`
+	var v aiVerdict
+	if err := json.Unmarshal([]byte(extractJSON(answer)), &v); err != nil {
+		return aiVerdict{Sufficient: true, Raw: answer}
 	}
-	_ = json.Unmarshal([]byte(extractJSON(answer)), &out)
-	t := strings.TrimSpace(out.Title)
-	if t == "" {
-		t = strings.TrimSpace(out.Product)
-	}
-	if !TitleClear(t) {
-		t = ""
-	}
-	return t, strings.TrimSpace(out.Product), out.Sufficient, answer
+	v.Raw = answer
+	return v
 }
 
 func runAIIdentify(job aiIdentifyJob) {
@@ -339,36 +326,33 @@ func runAIIdentify(job aiIdentifyJob) {
 		return
 	}
 	if !strings.HasPrefix(strings.ToLower(svc.Protocol), "http") {
-		return
-	}
-	if TitleClear(svc.Title) {
+		// AI 识别链路目前只覆盖 HTTP(S)；非 HTTP 的交给引擎侧规则
+		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Update("ai_checked_at", time.Now())
 		return
 	}
 
-	title, fp, stages, hops := IdentifyService(svc)
+	r := IdentifyService(svc)
+	updates := map[string]interface{}{"ai_checked_at": time.Now(), "ai_need": false}
 	changed := false
-	updates := map[string]interface{}{}
-	if TitleClear(title) && title != svc.Title {
-		updates["title"] = truncateStr(title, 300)
+	if r.Confident && TitleClear(r.Title) && r.Title != svc.Title {
+		updates["title"] = truncateStr(r.Title, 300)
 		updates["title_source"] = "ai"
 		if strings.TrimSpace(svc.Title) != "" {
 			updates["prev_title"] = svc.Title // 供「新变更」标签
 		}
 		changed = true
 	}
-	if fp != "" && svc.Fingerprint == "" {
-		updates["fingerprint"] = truncateStr(fp, 300)
+	if r.Confident && strings.TrimSpace(r.Product) != "" && r.Product != svc.Fingerprint {
+		updates["fingerprint"] = truncateStr(r.Product, 300)
 		changed = true
 	}
-	if changed {
-		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates)
-	}
-	recordIdentConversation(job.TaskID, svc, title, stages, changed, hops)
+	config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates)
+	recordIdentConversation(job.TaskID, svc, r, changed)
 }
 
 // recordIdentConversation 把识别链路写进该扫描任务的会话；
 // 完整请求响应包放进 meta（前端折叠成按钮 + 四栏弹窗），不铺满对话。
-func recordIdentConversation(taskID uint, svc model.Service, finalTitle string, stages []IdentStage, changed bool, hops []scanner.Hop) {
+func recordIdentConversation(taskID uint, svc model.Service, r IdentResult, changed bool) {
 	conv := taskConversation(taskID)
 	if conv == nil {
 		return
@@ -376,6 +360,8 @@ func recordIdentConversation(taskID uint, svc model.Service, finalTitle string, 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("目标：%s:%d（%s）\n初始标题：%s\n\n识别链路：\n",
 		svc.IP, svc.Port, svc.Protocol, orNone(svc.Title)))
+	stages := r.Stages
+	hops := r.Hops
 	for i, st := range stages {
 		sb.WriteString(fmt.Sprintf("%d) %s：%s\n   输入：%s\n", i+1, st.Stage,
 			map[bool]string{true: "✅ 命中", false: "✗ 未命中"}[st.OK], oneLine(st.Input)))
@@ -383,8 +369,11 @@ func recordIdentConversation(taskID uint, svc model.Service, finalTitle string, 
 			sb.WriteString(fmt.Sprintf("   输出：%s\n", oneLine(st.Output)))
 		}
 	}
-	sb.WriteString(fmt.Sprintf("\n结论：%s（%s）", orNone(finalTitle),
-		map[bool]string{true: "已写回服务", false: "识别失败，保持原值"}[changed]))
+	sb.WriteString(fmt.Sprintf("\n结论：%s（置信=%v · %s · %s）",
+		orNone(r.Title),
+		r.Confident,
+		map[bool]string{true: "已写回服务", false: "未达写回门槛，保持原值"}[changed],
+		orNone(r.Reason)))
 
 	meta := ""
 	if len(hops) > 0 {
@@ -398,7 +387,7 @@ func recordIdentConversation(taskID uint, svc model.Service, finalTitle string, 
 		}
 	}
 	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "user", Content: sb.String(), Meta: meta})
-	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "assistant", Content: orNone(finalTitle)})
+	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "assistant", Content: orNone(r.Title)})
 	config.DB.Model(&model.LLMConversation{}).Where("id = ?", conv.ID).
 		Updates(map[string]interface{}{
 			"message_count": gorm.Expr("message_count + 2"),
@@ -407,8 +396,8 @@ func recordIdentConversation(taskID uint, svc model.Service, finalTitle string, 
 }
 
 // RecordIdentConversation 供手动识别复用：把识别链路写进任务会话
-func RecordIdentConversation(taskID uint, svc model.Service, title string, stages []IdentStage, changed bool, hops []scanner.Hop) {
-	recordIdentConversation(taskID, svc, title, stages, changed, hops)
+func RecordIdentConversation(taskID uint, svc model.Service, r IdentResult, changed bool) {
+	recordIdentConversation(taskID, svc, r, changed)
 }
 
 // taskConversation 取（或创建）某个扫描任务对应的会话
@@ -425,7 +414,7 @@ func taskConversation(taskID uint) *model.LLMConversation {
 	if err := config.DB.First(&task, taskID).Error; err == nil && task.Name != "" {
 		name = fmt.Sprintf("扫描任务 #%d · %s", taskID, task.Name)
 	}
-	conv = model.LLMConversation{Title: name, TaskID: taskID}
+	conv = model.LLMConversation{Title: name, TaskID: taskID, Kind: "svc_ident"}
 	if err := config.DB.Create(&conv).Error; err != nil {
 		return nil
 	}

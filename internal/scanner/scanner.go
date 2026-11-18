@@ -34,6 +34,10 @@ type ScanResult struct {
 	Response      string `json:"-"`             // 响应体（仅用于算页面指纹，不入库）
 	OS            string `json:"os"`
 	Mid           string `json:"mid"`
+	// Source 识别来源（probe / web-rule / spa-rule / tls-cert / http-title / port-hint …）
+	Source string `json:"source,omitempty"`
+	// NeedAI 引擎认为这条需要 AI 复核（按证据来源标记，不是按内容正则）
+	NeedAI bool `json:"needAi,omitempty"`
 }
 
 // ScanOptions 扫描参数（由模板/任务拼接）

@@ -551,6 +551,7 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 			Service: p.Service, Banner: p.Banner, Title: p.Title, Fingerprint: fpStr,
 			StatusCode: p.StatusCode, ContentLength: p.ContentLength, PageSimhash: fp,
 			PrevTitle: svc.PrevTitle, PrevFingerprint: svc.PrevFingerprint, TitleSource: titleSrc,
+			AiNeed: p.NeedAI,
 			FirstSeen: &now, LastSeen: &now,
 			TaskID: taskID, LastTaskID: taskID, // 首次发现归本任务
 		})
@@ -569,6 +570,7 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 			"content_length": p.ContentLength, "page_simhash": fp,
 			"last_seen": now, "asset_id": asset.ID, "miss_count": 0,
 			"last_task_id": taskID, // 只更新「最近扫到」，不动首次归属
+			"ai_need": p.NeedAI,
 		})
 	}
 
@@ -587,7 +589,10 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	// AI 识别：web 服务扫到但「标题不清晰」（空 / nginx 默认页 / 欢迎页 / 纯 IP）时，
 	// 异步走「规则→AI→浏览器渲染→AI」分级识别，结果写回 title/fingerprint（title_source=ai），
 	// 同一任务的识别链路都归到一个会话里，方便在 AI 助手页回溯卡在哪一级。
-	if strings.HasPrefix(strings.ToLower(p.Protocol), "http") && !TitleClear(p.Title) {
+	// 送不送 AI，由引擎按证据来源给的标记决定（产品名缺失 / 只来自协议名、证书、HTTP 头、标题）。
+	// 这里不再用"标题正则判清晰度"做闸门——那既会漏（标题像样但其实是默认页），
+	// 也会误伤（合法产品名被当成垃圾）。
+	if p.NeedAI {
 		EnqueueAIIdentify(taskID, ip, p.Port)
 	}
 }
