@@ -10,18 +10,29 @@ RUN npm run build
 FROM golang:1.26-alpine AS go-builder
 # 版本号由构建参数注入（CI 传 tag，本地构建传 APP_VERSION）
 ARG VERSION=dev
+# 分发的 agent 架构。默认全量（发布用）；
+# 本地快速迭代传 --build-arg AGENT_ARCHES=amd64 —— 交叉编译 sqlite(modernc)
+# 单架构就要几分钟，5 个架构在 4 核机器上会跑到 20~40 分钟。
+ARG AGENT_ARCHES="amd64 arm64 386 mipsle windows"
 ENV GOPROXY=https://goproxy.cn,direct
 ENV CGO_ENABLED=0
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/asset-server ./cmd/server && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-amd64 ./cmd/agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-arm64 ./cmd/agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-386 ./cmd/agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-mipsle ./cmd/agent && \
-    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-windows.exe ./cmd/agent
+# 精确 COPY：不再 COPY . .
+# 之前 web/ 改一行也会让 Go 层缓存整层失效，前端小改动要重跑全架构交叉编译。
+COPY cmd ./cmd
+COPY internal ./internal
+COPY migrations ./migrations
+RUN set -eux; \
+    go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/asset-server ./cmd/server; \
+    for a in ${AGENT_ARCHES}; do \
+      case "$a" in \
+        windows) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-windows.exe ./cmd/agent ;; \
+        mipsle)  GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-mipsle ./cmd/agent ;; \
+        *)       GOOS=linux GOARCH=$a go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-$a ./cmd/agent ;; \
+      esac; \
+    done
 
 # ---------- 运行时 ----------
 FROM debian:bookworm-slim
@@ -46,14 +57,12 @@ COPY migrations /app/migrations
 # FingerprintHub 全量指纹规则（MIT）：web 3450 + service 11938
 COPY data/fingerprint /app/data/fingerprint
 # 分发的 agent 二进制（内置自研扫描引擎，纯 Go 单文件；供一键加入脚本/节点自升级下载）
-COPY --from=go-builder /out/scope-agent-linux-amd64 /app/agent/scope-agent-linux-amd64
-COPY --from=go-builder /out/scope-agent-linux-arm64 /app/agent/scope-agent-linux-arm64
-COPY --from=go-builder /out/scope-agent-linux-386 /app/agent/scope-agent-linux-386
-COPY --from=go-builder /out/scope-agent-linux-mipsle /app/agent/scope-agent-linux-mipsle
-COPY --from=go-builder /out/scope-agent-windows.exe /app/agent/scope-agent-windows.exe
-# v0.0.27：不再分发 TscanClient（扫描引擎已内置于 scope-agent，单文件）。
-# third_party/ 整目录移除：引擎二进制/POC 库/License 全部不再需要。
-RUN chmod +x /app/agent/scope-agent-linux-* 2>/dev/null; true
+# 用通配复制：本地构建可能只编了部分架构，缺哪个就少哪个，不影响启动
+COPY --from=go-builder /out/ /tmp/build-out
+RUN mkdir -p /app/agent \
+ && cp /tmp/build-out/scope-agent-* /app/agent/ 2>/dev/null || true; \
+    chmod +x /app/agent/scope-agent-linux-* 2>/dev/null || true; \
+    rm -rf /tmp/build-out
 
 EXPOSE 8080
 CMD ["/app/asset-server"]

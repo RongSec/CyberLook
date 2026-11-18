@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/tls"
@@ -24,6 +25,11 @@ type Hop struct {
 	Body            string `json:"body"`
 	BodyNote        string `json:"bodyNote,omitempty"`
 }
+
+// ReadBodyMax 单跳响应体最多抓多少字节。
+// 历史值 3000 字符：SPA 首页动辄几百 KB，产品名/版权常在后半段，
+// 3000 字截断后 AI 只能看到 <head>，识别自然虚。32KB 能覆盖绝大多数登录页/首页。
+const ReadBodyMax = 32 * 1024
 
 // HTTPTrace 主动请求目标，抓取完整请求/响应包，最多 maxHops 跳（默认 4：
 // 覆盖 1 请求 1 响应、302 一跳、以及极少见的二次跳转）。
@@ -69,7 +75,7 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 			}
 			break
 		}
-		body, note := readBodySnippet(resp, 3000)
+		body, note := readBodySnippet(resp, ReadBodyMax)
 		hop := Hop{
 			Index:           i + 1,
 			RequestLine:     fmt.Sprintf("%s %s %s", req.Method, req.URL.RequestURI(), "HTTP/1.1"),
@@ -122,7 +128,12 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 	return hops, nil
 }
 
-// readBodySnippet 读正文摘要；二进制只给说明，不塞乱码给模型
+// readBodySnippet 读响应体（文本类），保留完整报文供 AI 判读。
+//
+// 三个历史坑，都会让"证据不全 → 识别不准"：
+//  1. 只读 3000 字符 → SPA/大首页的产品名在后半段，看不到；
+//  2. GBK 页面 utf8.Valid=false 被当二进制整段丢掉 → 中文标题全没了；
+//  3. gzip 未解 → 全是乱码。
 func readBodySnippet(resp *http.Response, limit int) (string, string) {
 	var r io.Reader = resp.Body
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Encoding")), "gzip") {
@@ -131,21 +142,38 @@ func readBodySnippet(resp *http.Response, limit int) (string, string) {
 			r = gz
 		}
 	}
-	raw, _ := io.ReadAll(io.LimitReader(r, int64(limit*3)))
-	if len(raw) == 0 {
+	// 多读 1 字节用于判断"是否还有更多"
+	raw, _ := io.ReadAll(io.LimitReader(r, int64(limit)+1))
+	total := len(raw)
+	truncated := false
+	if total > limit {
+		raw = raw[:limit]
+		truncated = true
+	}
+	if total == 0 {
 		return "", "空响应体"
 	}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	texty := strings.Contains(ct, "text") || strings.Contains(ct, "json") ||
 		strings.Contains(ct, "xml") || strings.Contains(ct, "javascript") || ct == ""
-	if !texty || !utf8.Valid(raw) || strings.ContainsRune(string(raw), 0) {
-		return "", fmt.Sprintf("二进制内容 %d 字节（%s）", len(raw), ct)
+	if !texty {
+		return "", fmt.Sprintf("非文本内容（%s，%d 字节）", ct, total)
+	}
+
+	raw = ensureUTF8(raw) // GBK/GB2312 → UTF-8
+	if !utf8.Valid(raw) || bytesContainsNUL(raw) {
+		return "", fmt.Sprintf("二进制内容 %d 字节（%s）", total, ct)
 	}
 	s := string(raw)
-	if len([]rune(s)) > limit {
-		s = string([]rune(s)[:limit]) + "…（已截断）"
+	note := ""
+	if truncated {
+		note = fmt.Sprintf("（响应体已截断：仅保留前 %d 字节，实际更大）", limit)
 	}
-	return s, ""
+	return s, note
+}
+
+func bytesContainsNUL(b []byte) bool {
+	return len(b) > 0 && bytes.IndexByte(b, 0) >= 0
 }
 
 // dumpReqHeaders 请求头（敏感值打码）
@@ -192,20 +220,62 @@ func maskHeader(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// TraceDigest 把多跳压成给模型的紧凑文本（控制 token）
+// TraceDigest 给模型看的完整报文。
+//
+// 历史版本把请求头截到 600、响应头 800、响应体 1500 字，结果是模型只看到
+// 一小截 HTML head —— 既看不到版权行，也看不到登录框里的产品名，
+// "识别不准"很大一部分是这里喂的证据不全导致的。
+//
+// 现在：请求行 / 请求头 / 响应行 / 响应头 全量；响应体按 bodyLimit 给
+// （默认 16KB，超出明确标注截断位置）。识别一次多花一点 token，换取判得准。
 func TraceDigest(hops []Hop) string {
+	return traceText(hops, 16*1024)
+}
+
+// TraceRaw 完整报文（落盘/会话里给人看），不截断 body（抓取阶段已限 32KB）
+func TraceRaw(hops []Hop) string {
+	return traceText(hops, 0)
+}
+
+func traceText(hops []Hop, bodyLimit int) string {
 	var b strings.Builder
 	for _, h := range hops {
-		fmt.Fprintf(&b, "—— 第 %d 跳 ——\n请求: %s\n", h.Index, h.RequestLine)
-		fmt.Fprintf(&b, "请求头:\n%s", clip(h.RequestHeaders, 600))
-		fmt.Fprintf(&b, "响应: %s\n响应头:\n%s", h.ResponseLine, clip(h.ResponseHeaders, 800))
-		if h.Body != "" {
-			fmt.Fprintf(&b, "响应体:\n%s\n", clip(h.Body, 1500))
-		} else if h.BodyNote != "" {
-			fmt.Fprintf(&b, "响应体: %s\n", h.BodyNote)
+		fmt.Fprintf(&b, "===== 第 %d 跳 =====\n", h.Index)
+		fmt.Fprintf(&b, ">>> 请求\n%s\n", h.RequestLine)
+		fmt.Fprintf(&b, "%s", h.RequestHeaders)
+		fmt.Fprintf(&b, "\n<<< 响应\n%s\n", h.ResponseLine)
+		fmt.Fprintf(&b, "%s", h.ResponseHeaders)
+		b.WriteString("\n--- 响应体 ---\n")
+		switch {
+		case h.Body != "":
+			if bodyLimit > 0 && len(h.Body) > bodyLimit {
+				b.WriteString(cutBytes(h.Body, bodyLimit))
+				fmt.Fprintf(&b, "\n…（响应体共 %d 字节，以上为前 %d 字节）\n", len(h.Body), bodyLimit)
+			} else {
+				b.WriteString(h.Body)
+				b.WriteString("\n")
+			}
+			if h.BodyNote != "" {
+				fmt.Fprintf(&b, "%s\n", h.BodyNote)
+			}
+		case h.BodyNote != "":
+			fmt.Fprintf(&b, "%s\n", h.BodyNote)
+		default:
+			b.WriteString("（空响应体）\n")
 		}
 	}
 	return b.String()
+}
+
+// cutBytes 按字节切但保证不切坏 UTF-8
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && n < len(s) && (s[n]&0xC0) == 0x80 {
+		n--
+	}
+	return s[:n]
 }
 
 func clip(s string, n int) string {
@@ -215,3 +285,5 @@ func clip(s string, n int) string {
 	}
 	return string(r[:n]) + "…"
 }
+
+// 供 AI/会话使用：headers 全量，body 见 TraceDigest

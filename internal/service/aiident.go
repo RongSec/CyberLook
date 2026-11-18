@@ -373,8 +373,12 @@ func recordIdentConversation(taskID uint, svc model.Service, r IdentResult, chan
 		map[bool]string{true: "已写回服务", false: "未达写回门槛，保持原值"}[changed],
 		orNone(r.Reason)))
 
+	// 完整请求/响应直接落在消息正文里：这是识别结论的依据，
+	// 只给阶段摘要等于让人（和后续复核）无法自己判断。前端折叠展示，不占屏。
 	meta := ""
 	if len(hops) > 0 {
+		sb.WriteString("\n\n========== 原始请求 / 响应（完整）==========\n")
+		sb.WriteString(scanner.TraceRaw(hops))
 		if b, e := json.Marshal(map[string]interface{}{
 			"kind":     "http_trace",
 			"target":   fmt.Sprintf("%s:%d", svc.IP, svc.Port),
@@ -429,6 +433,12 @@ func recordRenderReview(taskID uint, svc model.Service, r IdentResult, changed b
 	body := fmt.Sprintf("目标：%s:%d（%s）\n渲染结果：%s\nAI 判定：%s\n依据：%s\n结论：%s（置信=%v）",
 		svc.IP, svc.Port, svc.Protocol, orNone(title), orNone(verdict), orNone(reason),
 		orNone(r.Title), r.Confident)
+	if len(r.Stages) > 0 {
+		body += "\n\n========== 渲染链路明细 ==========\n"
+		for _, st := range r.Stages {
+			body += fmt.Sprintf("\n[%s]\n输入：%s\n输出：%s\n", st.Stage, st.Input, st.Output)
+		}
+	}
 	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "user", Content: body})
 	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "assistant", Content: orNone(r.Title)})
 	config.DB.Model(&model.LLMConversation{}).Where("id = ?", conv.ID).
