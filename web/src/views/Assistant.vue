@@ -8,10 +8,10 @@
         <n-input
           v-if="!sidebarCollapsed"
           v-model:value="searchKw"
+          class="conv-search"
           size="small"
           clearable
-          placeholder="搜索对话标题或内容…"
-          style="margin-top: 8px"
+          placeholder="搜索对话…"
         />
       </div>
 
@@ -502,20 +502,51 @@ onMounted(() => {
 .sidebar.collapsed { width: 56px; }
 .sidebar-head { padding: 10px; }
 .conv-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+/* 侧栏本身是浅色卡片（.sidebar 背景 #fafbfc），但全局文字色是深色主题的白，
+   所以这里必须**显式给深色字**——用 color:inherit 会变成白字白底，整棵树看不见。 */
 .tree-task { margin-bottom: 6px; }
-.tree-task-head { display: flex; align-items: center; gap: 5px; padding: 6px 6px; border-radius: 6px; cursor: pointer; user-select: none; }
+.tree-task-head {
+  display: flex; align-items: center; gap: 5px; padding: 6px 6px;
+  border-radius: 6px; cursor: pointer; user-select: none;
+}
 .tree-task-head:hover { background: #eef2f7; }
-.tree-task-name { flex: 1; font-size: 12.5px; font-weight: 600; color: #334155; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-task-name {
+  flex: 1; font-size: 12.5px; font-weight: 600; color: #334155;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .caret { font-size: 10px; color: #94a3b8; width: 9px; display: inline-block; }
 .caret.small { width: 8px; }
-.tree-count { font-size: 11px; color: #94a3b8; background: #eef2f7; border-radius: 8px; padding: 0 6px; line-height: 16px; }
+.tree-count {
+  font-size: 11px; color: #64748b; background: #eef2f7;
+  border-radius: 8px; padding: 0 6px; line-height: 16px; flex: none;
+}
 .tree-kinds { margin-left: 12px; border-left: 1px dashed #dbe3ec; padding-left: 6px; }
 .tree-kind { margin-bottom: 2px; }
-.tree-kind-head { display: flex; align-items: center; gap: 5px; padding: 4px 5px; border-radius: 5px; cursor: pointer; user-select: none; }
+.tree-kind-head {
+  display: flex; align-items: center; gap: 5px; padding: 4px 5px;
+  border-radius: 5px; cursor: pointer; user-select: none;
+}
 .tree-kind-head:hover { background: #f3f6fa; }
 .kind-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.tree-kind-name { flex: 1; font-size: 12px; color: #475569; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-kind-name {
+  flex: 1; font-size: 12px; color: #475569;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tree-convs { margin-left: 14px; }
+/* 搜索框：naive-ui 的输入框在深色主题下默认是深底白字，和浅色侧栏撞色后几乎看不见。
+   用它的 CSS 变量显式改回浅色底 + 深色字。 */
+.conv-search { margin-top: 8px; }
+.conv-search :deep(.n-input) {
+  --n-color: #ffffff;
+  --n-color-focus: #ffffff;
+  --n-text-color: #334155;
+  --n-placeholder-color: #94a3b8;
+  --n-border: 1px solid #d9e0e8;
+  --n-border-hover: 1px solid #b9c6d4;
+  --n-border-focus: 1px solid #94a3b8;
+  --n-height: 30px;
+  --n-border-radius: 6px;
+}
 .conv-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; position: relative; }
 .conv-item:hover { background: #eef2f7; }
 .conv-item:hover .conv-actions { display: flex; }
