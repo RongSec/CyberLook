@@ -61,6 +61,10 @@ func main() {
 		service.StartFaultsCleanup()     // 每日清理过期故障记录（默认 30 天）
 		service.CleanupOldFaults()       // 启动时先清一次
 		service.CleanupOrphanPipelines() // 清理崩溃残留的孤儿断点
+		// 上一版每次渲染都新建 chromium profile，被 kill 时会留在 /tmp；启动时扫一遍
+		if n, sz := scanner.CleanStaleChromeProfiles(); n > 0 {
+			log.Printf("[browser] 清理 %d 个遗留 chromium 临时目录（%.1f MB）", n, float64(sz)/1048576)
+		}
 		// 只在「有运行中任务被中断」时才记录故障，正常启动/部署重启不是故障
 		var runningCnt int64
 		config.DB.Model(&model.ScanTask{}).Where("status = ?", "running").Count(&runningCnt)
