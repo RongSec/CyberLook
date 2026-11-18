@@ -53,12 +53,16 @@ const ServerBinaryPath = "/app/asset-server"
 // BackupDir 备份目录
 const BackupDir = "/app/backup"
 
+// DefaultRepo 默认升级仓库。系统设置里没填时用它，避免"检查更新"直接报未配置。
+// 换成别的发行版时只改这里。
+const DefaultRepo = "RongSec/CyberLook"
+
 // CheckUpdate 检查 GitHub 最新 Release
 func CheckUpdate() (*UpdateInfo, error) {
 	var s model.SystemSettings
 	config.DB.First(&s, 1)
 	if s.GithubRepo == "" {
-		return nil, fmt.Errorf("未配置 GitHub 仓库（形如 owner/repo）")
+		s.GithubRepo = DefaultRepo
 	}
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", s.GithubRepo)
 	req, err := http.NewRequest("GET", apiURL, nil)

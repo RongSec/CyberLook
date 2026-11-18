@@ -261,27 +261,29 @@ func AIIdentifyService(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务不存在"})
 		return
 	}
-	title, fp, stages, hops := service.IdentifyService(svc)
-	// 手动触发的识别也要写回（之前只返回结果不落库，用户看到"AI 分析了但没写回"）
-	if service.TitleClear(title) && title != svc.Title {
-		upd := map[string]interface{}{"title": title, "title_source": "ai"}
+	r := service.IdentifyService(svc)
+	// 写回门槛就是模型自己的置信度（>=60），不再用标题正则判"清不清晰"
+	if r.Confident && r.Title != svc.Title {
+		upd := map[string]interface{}{"title": r.Title, "title_source": "ai", "ai_checked_at": time.Now(), "ai_need": false}
 		if svc.Title != "" {
 			upd["prev_title"] = svc.Title // 供前端显示「新变更」
 		}
-		if fp != "" && svc.Fingerprint == "" {
-			upd["fingerprint"] = fp
+		if r.Product != "" && svc.Fingerprint == "" {
+			upd["fingerprint"] = r.Product
 		}
 		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(upd)
-		svc.Title = title
+		svc.Title = r.Title
 	}
 	// 手动识别也归档到会话，AI 助手页才能看到这次分析的完整链路
-	service.RecordIdentConversation(svc.LastTaskID, svc, title, stages, service.TitleClear(title), hops)
+	service.RecordIdentConversation(svc.LastTaskID, svc, r, r.Confident)
 	c.JSON(http.StatusOK, gin.H{
 		"before":      svc.Title,
-		"after":       title,
-		"fingerprint": fp,
-		"clear":       service.TitleClear(title),
-		"stages":      stages,
-		"hops":        len(hops),
+		"after":       r.Title,
+		"fingerprint": r.Product,
+		"confident":   r.Confident,
+		"sufficient":  r.Sufficient,
+		"reason":      r.Reason,
+		"stages":      r.Stages,
+		"hops":        len(r.Hops),
 	})
 }

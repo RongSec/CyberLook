@@ -105,6 +105,10 @@ type Service struct {
 	LastSeen       *time.Time `gorm:"column:last_seen" json:"lastSeen"`
 	TaskID         uint       `gorm:"column:task_id;default:0;index" json:"taskId"`          // 首次发现它的任务
 	LastTaskID     uint       `gorm:"column:last_task_id;default:0;index" json:"lastTaskId"` // 最近一次扫到它的任务
+	// AiNeed 引擎标记"这条需要 AI 复核"（按证据来源，不按内容正则）
+	AiNeed bool `gorm:"column:ai_need;default:false;index" json:"aiNeed"`
+	// AiCheckedAt AI 判定时间；为空表示还没判过
+	AiCheckedAt *time.Time `gorm:"column:ai_checked_at" json:"aiCheckedAt"`
 }
 
 func (Service) TableName() string { return "services" }

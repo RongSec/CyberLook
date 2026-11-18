@@ -5,28 +5,54 @@
       <div class="sidebar-head">
         <n-button v-if="!sidebarCollapsed" type="primary" block @click="newConversation">+ 新对话</n-button>
         <n-button v-else type="primary" circle size="small" @click="newConversation">+</n-button>
+        <n-input
+          v-if="!sidebarCollapsed"
+          v-model:value="searchKw"
+          size="small"
+          clearable
+          placeholder="搜索对话标题或内容…"
+          style="margin-top: 8px"
+        />
       </div>
 
       <div v-if="!sidebarCollapsed" class="conv-list">
-        <n-empty v-if="conversations.length === 0" description="暂无历史会话" size="small" style="margin-top:40px" />
-        <div
-          v-for="c in conversations"
-          :key="c.id"
-          :class="['conv-item', { active: c.id === currentConvId }]"
-          @click="loadConversation(c.id)"
-        >
-          <div class="conv-title">
-            <n-tag v-if="c.taskId" size="tiny" type="info" round :bordered="false" style="margin-right:4px">任务</n-tag>
-            {{ c.title || '未命名' }}
+        <n-empty v-if="tree.length === 0" :description="searchKw ? '没有匹配的会话' : '暂无历史会话'" size="small" style="margin-top:40px" />
+
+        <!-- 两级树：任务（或"独立对话"） → 会话类型 → 会话 -->
+        <div v-for="t in tree" :key="t.key" class="tree-task">
+          <div class="tree-task-head" @click="toggleTask(t.key)">
+            <span class="caret">{{ t.open ? '▾' : '▸' }}</span>
+            <span class="tree-task-name" :title="t.label">{{ t.label }}</span>
+            <span class="tree-count">{{ t.count }}</span>
           </div>
-          <div class="conv-meta">
-            <span>{{ c.messageCount }} 条</span>
-            <span v-if="c.totalTokens">{{ formatTokens(c.totalTokens) }}</span>
-            <span>{{ formatTime(c.updatedAt) }}</span>
-          </div>
-          <div class="conv-actions" @click.stop>
-            <n-button size="tiny" quaternary @click="renameConv(c)">改名</n-button>
-            <n-button size="tiny" quaternary type="error" @click="removeConv(c)">删除</n-button>
+          <div v-if="t.open" class="tree-kinds">
+            <div v-for="k in t.kinds" :key="k.key" class="tree-kind">
+              <div class="tree-kind-head" @click="toggleKind(t.key + '/' + k.kind)">
+                <span class="caret small">{{ isKindOpen(t.key + '/' + k.kind) ? '▾' : '▸' }}</span>
+                <span class="kind-dot" :style="{ background: k.color }"></span>
+                <span class="tree-kind-name">{{ k.label }}</span>
+                <span class="tree-count">{{ k.items.length }}</span>
+              </div>
+              <div v-if="isKindOpen(t.key + '/' + k.kind)" class="tree-convs">
+                <div
+                  v-for="c in k.items"
+                  :key="c.id"
+                  :class="['conv-item', { active: c.id === currentConvId }]"
+                  @click="loadConversation(c.id)"
+                >
+                  <div class="conv-title">{{ c.title || '未命名' }}</div>
+                  <div class="conv-meta">
+                    <span>{{ c.messageCount }} 条</span>
+                    <span v-if="c.totalTokens">{{ formatTokens(c.totalTokens) }}</span>
+                    <span>{{ formatTime(c.updatedAt) }}</span>
+                  </div>
+                  <div class="conv-actions" @click.stop>
+                    <n-button size="tiny" quaternary @click="renameConv(c)">改名</n-button>
+                    <n-button size="tiny" quaternary type="error" @click="removeConv(c)">删除</n-button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -266,10 +292,78 @@ async function loadStatus() {
   try { status.value = await api.get('/llm/status') } catch { /* ignore */ }
 }
 
+// ===== 左侧树：任务 → 会话类型 → 会话 =====
+// 会话类型由后端 kind 决定（chat / svc_ident / svc_review / render / task）
+const KIND_META = {
+  chat:       { label: '对话',           color: '#3b82f6' },
+  svc_ident:  { label: '服务识别',       color: '#10b981' },
+  svc_review: { label: '服务准确性判别', color: '#f59e0b' },
+  render:     { label: '渲染复核',       color: '#8b5cf6' },
+  task:       { label: '任务会话',       color: '#64748b' },
+}
+const convGroups = ref([])
+const searchKw = ref('')
+const openTasks = ref({})   // taskKey -> bool
+const openKinds = ref({})   // taskKey/kind -> bool
+
+const tree = computed(() => {
+  const byTask = new Map()
+  for (const c of conversations.value) {
+    const tid = c.taskId || 0
+    if (!byTask.has(tid)) {
+      byTask.set(tid, { key: 't' + tid, taskId: tid, label: tid ? ('任务 #' + tid) : '独立对话', kinds: new Map() })
+    }
+    const kind = c.kind || 'chat'
+    const node = byTask.get(tid)
+    if (!node.kinds.has(kind)) node.kinds.set(kind, [])
+    node.kinds.get(kind).push(c)
+  }
+  // 任务名由后端 groups 带回来（taskName），补到标签上
+  const nameOf = {}
+  for (const g of convGroups.value) {
+    if (g.taskId && g.taskName) nameOf[g.taskId] = g.taskName
+  }
+  const order = ['chat', 'svc_ident', 'svc_review', 'render', 'task']
+  const out = []
+  for (const node of byTask.values()) {
+    const kinds = []
+    for (const k of order.concat([...node.kinds.keys()].filter(x => !order.includes(x)))) {
+      if (!node.kinds.has(k)) continue
+      const meta = KIND_META[k] || { label: k, color: '#94a3b8' }
+      kinds.push({ key: (node.key) + k, kind: k, label: meta.label, color: meta.color, items: node.kinds.get(k) })
+    }
+    if (node.taskId && nameOf[node.taskId]) node.label = `任务 #${node.taskId} · ${nameOf[node.taskId]}`
+    out.push({ ...node, kinds, count: kinds.reduce((n, k) => n + k.items.length, 0), open: openTasks.value[node.key] !== false })
+  }
+  // 有任务的排前面，其次按会话数
+  return out.sort((a, b) => (b.taskId ? 1 : 0) - (a.taskId ? 1 : 0) || b.count - a.count)
+})
+
+function toggleTask(key) { openTasks.value = { ...openTasks.value, [key]: openTasks.value[key] === false } }
+function isKindOpen(key) { return openKinds.value[key] !== false }
+function toggleKind(key) { openKinds.value = { ...openKinds.value, [key]: openKinds.value[key] === false } }
+
+let searchTimer = null
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => loadConversations(), 300)
+}
+watch(searchKw, onSearchInput)
+
 async function loadConversations() {
   try {
-    const r = await api.get('/llm/conversations?limit=50')
+    const kw = searchKw.value.trim()
+    const q = '/llm/conversations?limit=200' + (kw ? '&keyword=' + encodeURIComponent(kw) : '')
+    const r = await api.get(q)
     conversations.value = r.items || []
+    convGroups.value = r.groups || []
+    // 搜索时自动展开，避免"搜到了但看不见"
+    if (kw) {
+      const all = {}
+      for (const c of conversations.value) all['t' + (c.taskId || 0)] = true
+      openTasks.value = { ...openTasks.value, ...all }
+      openKinds.value = {}
+    }
   } catch { /* ignore */ }
 }
 
@@ -407,7 +501,21 @@ onMounted(() => {
 }
 .sidebar.collapsed { width: 56px; }
 .sidebar-head { padding: 10px; }
-.conv-list { flex: 1; overflow-y: auto; padding: 0 8px; }
+.conv-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+.tree-task { margin-bottom: 6px; }
+.tree-task-head { display: flex; align-items: center; gap: 5px; padding: 6px 6px; border-radius: 6px; cursor: pointer; user-select: none; }
+.tree-task-head:hover { background: #eef2f7; }
+.tree-task-name { flex: 1; font-size: 12.5px; font-weight: 600; color: #334155; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.caret { font-size: 10px; color: #94a3b8; width: 9px; display: inline-block; }
+.caret.small { width: 8px; }
+.tree-count { font-size: 11px; color: #94a3b8; background: #eef2f7; border-radius: 8px; padding: 0 6px; line-height: 16px; }
+.tree-kinds { margin-left: 12px; border-left: 1px dashed #dbe3ec; padding-left: 6px; }
+.tree-kind { margin-bottom: 2px; }
+.tree-kind-head { display: flex; align-items: center; gap: 5px; padding: 4px 5px; border-radius: 5px; cursor: pointer; user-select: none; }
+.tree-kind-head:hover { background: #f3f6fa; }
+.kind-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.tree-kind-name { flex: 1; font-size: 12px; color: #475569; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-convs { margin-left: 14px; }
 .conv-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; position: relative; }
 .conv-item:hover { background: #eef2f7; }
 .conv-item:hover .conv-actions { display: flex; }
