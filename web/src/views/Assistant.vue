@@ -17,47 +17,43 @@
       </div>
 
       <div v-if="!sidebarCollapsed" class="conv-list">
-        <n-empty v-if="tree.length === 0" :description="searchKw ? '没有匹配的会话' : '暂无历史会话'" size="small" style="margin-top:40px" />
+        <n-empty v-if="searchKw ? searchResults.length === 0 : tree.length === 0"
+                 :description="searchKw ? '没有匹配的记录' : '暂无历史记录'"
+                 size="small" style="margin-top:40px" />
 
-        <!-- 两级树：任务（或"独立对话"） → 会话类型 → 会话；默认全部折叠 -->
-        <div v-for="t in tree" :key="t.key" class="tree-task">
-          <div class="tree-task-head" @click="toggleTask(t.key)">
-            <span class="caret">{{ t.open ? '▾' : '▸' }}</span>
-            <span class="tree-task-name" :title="t.label">{{ t.label }}</span>
-            <span class="tree-count">{{ t.count }}</span>
+        <!-- 搜索：扁平结果，每条就是一个「一问一答」，点开直接跳到命中位置 -->
+        <template v-if="searchKw">
+          <div v-for="c in searchResults" :key="c.id" class="conv-item" @click="openRecord(c)">
+            <div class="conv-title">{{ c.title || '未命名' }}</div>
+            <div class="conv-meta">
+              <span class="kind-chip" :style="{ color: kindColor(c.kind) }">{{ c.label }}</span>
+              <span v-if="c.taskId">任务 #{{ c.taskId }}</span>
+              <span>{{ formatTime(c.updatedAt) }}</span>
+              <span v-if="c.hitSnippet" class="conv-hit-tag">命中</span>
+            </div>
+            <div v-if="c.hitSnippet" class="conv-hit">{{ c.hitSnippet }}</div>
           </div>
-          <div v-if="t.open" class="tree-kinds">
-            <div v-for="k in t.kinds" :key="k.kind" class="tree-kind">
-              <div class="tree-kind-head" @click="toggleKind(t.key + '/' + k.kind)">
-                <span class="caret small">{{ isKindOpen(t.key + '/' + k.kind) ? '▾' : '▸' }}</span>
-                <span class="kind-dot" :style="{ background: k.color }"></span>
+        </template>
+
+        <!-- 树：任务 → 类型。类型是叶子，不再挂会话子项 -->
+        <template v-else>
+          <div v-for="t in tree" :key="t.key" class="tree-task">
+            <div class="tree-task-head" @click="toggleTask(t.key)">
+              <span class="caret">{{ t.open ? '▾' : '▸' }}</span>
+              <span class="tree-task-name" :title="t.label">{{ t.label }}</span>
+              <span class="tree-count">{{ t.count }}</span>
+            </div>
+            <div v-if="t.open" class="tree-kinds">
+              <div v-for="k in t.kinds" :key="k.kind"
+                   :class="['tree-kind-head', { active: isCurrentGroup(t.taskId, k.kind) }]"
+                   @click="openGroup(t.taskId, k.kind, t.taskName)">
+                <span class="kind-dot" :style="{ background: kindColor(k.kind) }"></span>
                 <span class="tree-kind-name">{{ k.label }}</span>
-                <span class="tree-count">{{ k.items.length }}</span>
-              </div>
-              <div v-if="isKindOpen(t.key + '/' + k.kind)" class="tree-convs">
-                <div
-                  v-for="c in k.items"
-                  :key="c.id"
-                  :class="['conv-item', { active: c.id === currentConvId }]"
-                  @click="openConv(c)"
-                >
-                  <div class="conv-title">{{ c.title || '未命名' }}</div>
-                  <div v-if="searchKw && c.hitSnippet" class="conv-hit">{{ c.hitSnippet }}</div>
-                  <div class="conv-meta">
-                    <span>{{ c.messageCount }} 条</span>
-                    <span v-if="c.totalTokens">{{ formatTokens(c.totalTokens) }}</span>
-                    <span>{{ formatTime(c.updatedAt) }}</span>
-                    <span v-if="searchKw && c.hitSnippet" class="conv-hit-tag">命中</span>
-                  </div>
-                  <div class="conv-actions" @click.stop>
-                    <n-button size="tiny" quaternary @click="renameConv(c)">改名</n-button>
-                    <n-button size="tiny" quaternary type="error" @click="removeConv(c)">删除</n-button>
-                  </div>
-                </div>
+                <span class="tree-count">{{ k.count }}</span>
               </div>
             </div>
           </div>
-        </div>
+        </template>
       </div>
 
       <div v-if="!sidebarCollapsed" class="sidebar-foot">
@@ -90,6 +86,19 @@
       <n-alert v-if="!status.enabled" type="warning" :bordered="false" style="margin-bottom: 12px">
         LLM 未配置。<n-button text type="primary" @click="$router.push('/llm-settings')">去配置 →</n-button>
       </n-alert>
+
+      <!-- 分类内翻页：一条记录 = 一次问答/识别，不堆在一个会话里 -->
+      <div v-if="view.kind" class="rec-nav">
+        <span class="rec-nav-label">
+          {{ view.label }}
+          <span v-if="view.total"> · 第 {{ view.offset + view.idx + 1 }}/{{ view.total }} 条</span>
+        </span>
+        <span class="rec-nav-title" :title="view.items[view.idx]?.title">{{ view.items[view.idx]?.title || '' }}</span>
+        <span class="rec-nav-btns">
+          <n-button size="tiny" quaternary :disabled="!canOlder" @click="stepRecord(1)">‹ 更早</n-button>
+          <n-button size="tiny" quaternary :disabled="!canNewer" @click="stepRecord(-1)">更新 ›</n-button>
+        </span>
+      </div>
 
       <div ref="scrollRef" class="messages">
         <div v-if="messages.length === 0" class="empty">
@@ -216,7 +225,6 @@ function openTrace(o) {
 
 const loading = ref(false)
 const messages = ref([])
-const conversations = ref([])
 const currentConvId = ref(0)
 const scrollRef = ref(null)
 const showUsage = ref(false)
@@ -234,8 +242,10 @@ const samples = [
 ]
 
 const currentTitle = computed(() => {
-  const c = conversations.value.find(x => x.id === currentConvId.value)
-  return c ? c.title : 'AI 助手'
+  const v = view.value
+  if (v.items[v.idx] && v.items[v.idx].title) return v.items[v.idx].title
+  if (v.label) return v.label
+  return 'AI 助手'
 })
 
 function formatTokens(n) {
@@ -273,8 +283,8 @@ async function loadStatus() {
   try { status.value = await api.get('/llm/status') } catch { /* ignore */ }
 }
 
-// ===== 左侧树：任务 → 会话类型 → 会话 =====
-// 会话类型由后端 kind 决定（chat / svc_ident / svc_review / render / task）
+// ===== 左侧树：任务 → 类型（类型是叶子）=====
+// 一次问答/一次识别 = 一条记录 = 一条会话；类型节点点进去看该类型下的记录，一条条翻。
 const KIND_META = {
   chat:       { label: '对话',           color: '#3b82f6' },
   svc_ident:  { label: '服务识别',       color: '#10b981' },
@@ -282,95 +292,145 @@ const KIND_META = {
   render:     { label: '渲染复核',       color: '#8b5cf6' },
   task:       { label: '任务会话',       color: '#64748b' },
 }
-const convGroups = ref([])
+function kindColor(k) { return (KIND_META[k] || {}).color || '#94a3b8' }
+function kindLabel(k) { return (KIND_META[k] || {}).label || k }
+
+const groups = ref([])          // 后端聚合：{taskId, taskName, kind, label, count}
+const searchResults = ref([])   // 搜索模式下的扁平结果
 const searchKw = ref('')
-const openTasks = ref({})   // taskKey -> bool，只有显式 true 才展开
-const openKinds = ref({})   // taskKey/kind -> bool
-const hitActive = ref(0)    // 当前高亮的命中消息 id
+const openTasks = ref({})       // taskKey -> bool，只有显式 true 才展开
+const hitActive = ref(0)
+
+// 当前正在浏览的分类与页内位置
+const view = ref({ kind: '', label: '', taskId: 0, taskName: '', total: 0, offset: 0, idx: 0, items: [] })
 
 const tree = computed(() => {
   const byTask = new Map()
-  for (const c of conversations.value) {
-    const tid = c.taskId || 0
+  for (const g of groups.value) {
+    const tid = g.taskId || 0
     if (!byTask.has(tid)) {
-      byTask.set(tid, { key: 't' + tid, taskId: tid, label: tid ? ('任务 #' + tid) : '独立对话', kinds: new Map() })
+      byTask.set(tid, {
+        key: 't' + tid, taskId: tid, taskName: g.taskName || '',
+        label: tid ? ('任务 #' + tid + (g.taskName ? ' · ' + g.taskName : '')) : '独立对话',
+        kinds: [], count: 0,
+      })
     }
-    const kind = c.kind || 'chat'
     const node = byTask.get(tid)
-    if (!node.kinds.has(kind)) node.kinds.set(kind, [])
-    node.kinds.get(kind).push(c)
-  }
-  // 任务名由后端 groups 带回来（taskName），补到标签上
-  const nameOf = {}
-  for (const g of convGroups.value) {
-    if (g.taskId && g.taskName) nameOf[g.taskId] = g.taskName
+    node.kinds.push({ kind: g.kind, label: g.label || kindLabel(g.kind), count: g.count })
+    node.count += g.count
   }
   const order = ['chat', 'svc_ident', 'svc_review', 'render', 'task']
   const out = []
   for (const node of byTask.values()) {
-    const kinds = []
-    for (const k of order.concat([...node.kinds.keys()].filter(x => !order.includes(x)))) {
-      if (!node.kinds.has(k)) continue
-      const meta = KIND_META[k] || { label: k, color: '#94a3b8' }
-      kinds.push({ kind: k, label: meta.label, color: meta.color, items: node.kinds.get(k) })
-    }
-    if (node.taskId && nameOf[node.taskId]) node.label = `任务 #${node.taskId} · ${nameOf[node.taskId]}`
-    // 默认折叠：不写死展开，用户点一次才开
-    out.push({ ...node, kinds, count: kinds.reduce((n, k) => n + k.items.length, 0), open: openTasks.value[node.key] === true })
+    node.kinds.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
+    node.open = openTasks.value[node.key] === true
+    out.push(node)
   }
-  // 有任务的排前面，其次按会话数
   return out.sort((a, b) => (b.taskId ? 1 : 0) - (a.taskId ? 1 : 0) || b.count - a.count)
 })
 
 function toggleTask(key) { openTasks.value = { ...openTasks.value, [key]: openTasks.value[key] !== true } }
-function isKindOpen(key) { return openKinds.value[key] === true }
-function toggleKind(key) { openKinds.value = { ...openKinds.value, [key]: openKinds.value[key] !== true } }
-
-// 展开某条会话所在的路径（否则选中项藏在折叠里，看不出来）
-function revealConv(c) {
-  if (!c) return
-  const tk = 't' + (c.taskId || 0)
-  openTasks.value = { ...openTasks.value, [tk]: true }
-  openKinds.value = { ...openKinds.value, [tk + '/' + (c.kind || 'chat')]: true }
+function isCurrentGroup(taskId, kind) {
+  return view.value.kind === kind && view.value.taskId === (taskId || 0)
 }
 
 let searchTimer = null
 function onSearchInput() {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => loadConversations(), 300)
+  searchTimer = setTimeout(() => loadIndex(), 300)
 }
 watch(searchKw, onSearchInput)
 
-async function loadConversations() {
+async function loadIndex() {
   try {
     const kw = searchKw.value.trim()
-    const q = '/llm/conversations?limit=200' + (kw ? '&keyword=' + encodeURIComponent(kw) : '')
-    const r = await api.get(q)
-    conversations.value = r.items || []
-    convGroups.value = r.groups || []
     if (kw) {
-      // 搜索时必须展开，否则"搜到了但看不见"；命中项自己带 hitId，点开直接跳
-      const tks = {}, kks = {}
-      for (const c of conversations.value) {
-        const tk = 't' + (c.taskId || 0)
-        tks[tk] = true
-        kks[tk + '/' + (c.kind || 'chat')] = true
-      }
-      openTasks.value = tks
-      openKinds.value = kks
-    } else {
-      // 清空搜索后回到默认折叠，只保留当前会话所在路径
-      openTasks.value = {}
-      openKinds.value = {}
-      const cur = conversations.value.find(x => x.id === currentConvId.value)
-      if (cur) revealConv(cur)
+      const r = await api.get('/llm/conversations?limit=200&keyword=' + encodeURIComponent(kw))
+      searchResults.value = r.items || []
+      return
+    }
+    searchResults.value = []
+    const r = await api.get('/llm/conversations')
+    groups.value = r.groups || []
+    // 保持当前分类所在任务展开
+    if (view.value.kind) {
+      openTasks.value = { ...openTasks.value, ['t' + (view.value.taskId || 0)]: true }
     }
   } catch { /* ignore */ }
 }
 
-function openConv(c) {
-  revealConv(c)
-  currentConvId.value = c.id
+// 打开某任务某类型的记录（最新一条）
+async function openGroup(taskId, kind, taskName = '') {
+  if (loading.value) return
+  openTasks.value = { ...openTasks.value, ['t' + (taskId || 0)]: true }
+  view.value = {
+    kind, label: kindLabel(kind), taskId: taskId || 0, taskName,
+    total: 0, offset: 0, idx: 0, items: [],
+  }
+  await loadGroupPage(0)
+}
+
+async function loadGroupPage(offset) {
+  const v = view.value
+  try {
+    const r = await api.get(`/llm/conversation-group?taskId=${v.taskId}&kind=${encodeURIComponent(v.kind)}&offset=${offset}&limit=20`)
+    v.total = r.total || 0
+    v.offset = offset
+    v.items = r.items || []
+    v.idx = 0
+    if (v.items.length) {
+      await loadConversation(v.items[0].id)
+    } else {
+      currentConvId.value = 0
+      messages.value = []
+    }
+  } catch {
+    message.error('加载记录失败')
+  }
+}
+
+// dir = 1 更早，-1 更新
+const canOlder = computed(() => {
+  const v = view.value
+  if (!v.kind) return false
+  return v.idx + 1 < v.items.length || v.offset + v.items.length < v.total
+})
+const canNewer = computed(() => {
+  const v = view.value
+  if (!v.kind) return false
+  return v.idx > 0 || v.offset > 0
+})
+
+async function stepRecord(dir) {
+  const v = view.value
+  if (!v.kind) return
+  const next = v.idx + dir
+  if (next >= 0 && next < v.items.length) {
+    v.idx = next
+    await loadConversation(v.items[next].id)
+    return
+  }
+  // 翻页：更早 → offset 往后；更新 → offset 往前
+  const newOffset = dir > 0 ? v.offset + v.items.length : Math.max(0, v.offset - 20)
+  const keepIdx = dir > 0 ? 0 : 19
+  const r = await api.get(`/llm/conversation-group?taskId=${v.taskId}&kind=${encodeURIComponent(v.kind)}&offset=${newOffset}&limit=20`)
+  v.total = r.total || 0
+  v.items = r.items || []
+  v.offset = newOffset
+  v.idx = dir > 0 ? 0 : Math.max(0, v.items.length - 1)
+  if (v.items.length) {
+    await loadConversation(v.items[Math.min(keepIdx, v.items.length - 1)].id)
+    v.idx = Math.min(keepIdx, v.items.length - 1)
+  }
+}
+
+function openRecord(c) {
+  // 搜索结果：直接打开该条，并跳到命中的那条消息
+  view.value = {
+    kind: c.kind || 'chat', label: c.label || kindLabel(c.kind),
+    taskId: c.taskId || 0, taskName: c.taskName || '',
+    total: 0, offset: 0, idx: 0, items: [{ id: c.id, title: c.title }],
+  }
   loadConversation(c.id, c.hitId || 0)
 }
 
@@ -393,11 +453,8 @@ async function loadConversation(id, hitId = 0) {
     } else {
       await scrollBottom()
     }
-    // 顺带把所在路径展开（从消息里点进来时也要能看见选中项）
-    const c = conversations.value.find(x => x.id === id)
-    if (c) revealConv(c)
   } catch (e) {
-    message.error('加载会话失败')
+    message.error('加载记录失败')
   }
 }
 
@@ -414,42 +471,34 @@ function newConversation() {
   messages.value = []
   input.value = ''
   hitActive.value = 0
+  view.value = { kind: '', label: '', taskId: 0, taskName: '', total: 0, offset: 0, idx: 0, items: [] }
 }
 
 async function removeConv(c) {
   dialog.warning({
-    title: '删除会话',
+    title: '删除记录',
     content: `确定删除「${c.title}」？此操作不可恢复。`,
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
       await api.delete(`/llm/conversations/${c.id}`)
       if (currentConvId.value === c.id) newConversation()
-      await loadConversations()
+      await loadIndex()
       message.success('已删除')
     },
   })
 }
 
-function renameConv(c) {
-  const newTitle = prompt('重命名会话', c.title)
-  if (newTitle === null || !newTitle.trim()) return
-  api.put(`/llm/conversations/${c.id}`, { title: newTitle.trim() }).then(() => {
-    loadConversations()
-    message.success('已重命名')
-  })
-}
-
 async function clearAll() {
   dialog.warning({
-    title: '清空全部会话',
-    content: '所有历史会话和消息都会被删除，不可恢复。',
+    title: '清空全部记录',
+    content: '所有历史记录和消息都会被删除，不可恢复。',
     positiveText: '清空',
     negativeText: '取消',
     onPositiveClick: async () => {
       await api.post('/llm/conversations/clear-all')
       newConversation()
-      await loadConversations()
+      await loadIndex()
       message.success('已清空')
     },
   })
@@ -477,8 +526,8 @@ async function send(text) {
   await scrollBottom()
 
   try {
+    // 一次提问 = 一条会话，不续用上一条、不带历史
     const r = await api.post('/llm/chat-v2', {
-      conversationId: currentConvId.value,
       message: q,
       maxRounds: 5,
     }, { timeout: 180000 })
@@ -489,9 +538,9 @@ async function send(text) {
       content: r.reply || '(无回复)',
       toolCalls: r.toolCalls || [],
     })
-    await loadConversations()
-    const cur = conversations.value.find(x => x.id === r.conversationId)
-    if (cur) revealConv(cur)
+    // 刷新索引；这次问答作为「独立对话 / 对话」的最新一条
+    view.value = { kind: 'chat', label: kindLabel('chat'), taskId: 0, taskName: '', total: 0, offset: 0, idx: 0, items: [{ id: r.conversationId, title: q.slice(0, 30) }] }
+    await loadIndex()
     loadStatus()
   } catch (e) {
     const msg = e.response?.data?.error || e.message || '请求失败'
@@ -506,7 +555,7 @@ watch(showUsage, (v) => { if (v) loadUsage() })
 
 onMounted(() => {
   loadStatus()
-  loadConversations()
+  loadIndex()
 })
 </script>
 
@@ -551,16 +600,31 @@ onMounted(() => {
 .tree-kinds { margin-left: 12px; border-left: 1px dashed #dbe3ec; padding-left: 6px; }
 .tree-kind { margin-bottom: 2px; }
 .tree-kind-head {
-  display: flex; align-items: center; gap: 5px; padding: 4px 5px;
+  display: flex; align-items: center; gap: 5px; padding: 5px 5px;
   border-radius: 5px; cursor: pointer; user-select: none;
 }
 .tree-kind-head:hover { background: #f3f6fa; }
+/* 选中态：类型本身就是"入口"，点中它等于打开这个分类 */
+.tree-kind-head.active { background: #e3edfb; }
+.tree-kind-head.active .tree-kind-name { color: #1d4ed8; font-weight: 600; }
 .kind-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .tree-kind-name {
   flex: 1; font-size: 12px; color: #475569;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tree-convs { margin-left: 14px; }
+.kind-chip { font-size: 11px; }
+/* 分类内翻页条 */
+.rec-nav {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 6px 4px; margin-bottom: 4px;
+  border-bottom: 1px solid #eef0f3;
+}
+.rec-nav-label { font-size: 12px; color: #475569; font-weight: 600; flex: none; }
+.rec-nav-title {
+  flex: 1; min-width: 0; font-size: 12px; color: #94a3b8;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rec-nav-btns { display: flex; gap: 2px; flex: none; }
 /* 搜索框：naive-ui 的输入框在深色主题下默认是深底白字，和浅色侧栏撞色后几乎看不见。
    用它的 CSS 变量显式改回浅色底 + 深色字。 */
 .conv-search {

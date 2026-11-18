@@ -13,9 +13,33 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ============ 会话管理 ============
+// ============ 会话索引 ============
+//
+// 口径（v0.0.47 起）：**一次问答 = 一条会话，一次识别 = 一条会话**。
+// 不再把整个任务的识别记录塞进同一条会话——那种大会话既没法看（几千条），
+// 也没必要（识别记录本来就不进 LLM 上下文）。
+//
+// 因此左侧树只到「任务 → 类型」两层，类型是叶子；点类型进去看该类型下的记录，
+// 一条一条翻（最新在前）。历史遗留的大会话在迁移 046 里按「两两一问一答」拆开。
 
-// ListConversations 列出历史会话
+// KindLabel 会话类型的中文名
+func KindLabel(k string) string {
+	switch k {
+	case "chat":
+		return "对话"
+	case "svc_ident":
+		return "服务识别"
+	case "svc_review":
+		return "服务准确性判别"
+	case "render":
+		return "渲染复核"
+	case "task":
+		return "任务会话"
+	}
+	return k
+}
+
+// ListConversations 无 keyword 返回聚合；有 keyword 返回扁平命中列表
 func ListConversations(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	if limit <= 0 || limit > 200 {
@@ -25,12 +49,77 @@ func ListConversations(c *gin.Context) {
 	kind := strings.TrimSpace(c.Query("kind"))
 	taskID, _ := strconv.Atoi(c.DefaultQuery("taskId", "0"))
 
-	q := config.DB.Model(&model.LLMConversation{})
 	if keyword != "" {
-		// 标题与消息正文都搜：用户往往记得"那句话"，不记得会话标题
-		q = q.Where("title ILIKE ? OR id IN (SELECT conversation_id FROM llm_messages WHERE content ILIKE ?)",
-			"%"+keyword+"%", "%"+keyword+"%")
+		listConversationsByKeyword(c, keyword, kind, taskID, limit)
+		return
 	}
+
+	type grow struct {
+		TaskID uint      `json:"taskId"`
+		Kind   string    `json:"kind"`
+		Count  int       `json:"count"`
+		LastID uint      `json:"lastId"`
+		LastAt time.Time `json:"lastAt"`
+	}
+	q := config.DB.Model(&model.LLMConversation{}).
+		Select("task_id, kind, count(*) AS count, max(id) AS last_id, max(updated_at) AS last_at")
+	if kind != "" {
+		q = q.Where("kind = ?", kind)
+	}
+	if taskID > 0 {
+		q = q.Where("task_id = ?", taskID)
+	}
+	var rows []grow
+	q.Group("task_id, kind").Order("max(updated_at) DESC").Scan(&rows)
+
+	// 任务名一次查回来
+	taskNames := map[uint]string{}
+	var ids []uint
+	for _, r := range rows {
+		if r.TaskID > 0 {
+			ids = append(ids, r.TaskID)
+		}
+	}
+	if len(ids) > 0 {
+		type trow struct {
+			ID   uint
+			Name string
+		}
+		var trs []trow
+		config.DB.Table("scan_tasks").Select("id, name").Where("id IN ?", ids).Scan(&trs)
+		for _, t := range trs {
+			taskNames[t.ID] = t.Name
+		}
+	}
+
+	out := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		if r.Kind == "" {
+			r.Kind = "chat"
+		}
+		out = append(out, gin.H{
+			"taskId":   r.TaskID,
+			"taskName": taskNames[r.TaskID],
+			"kind":     r.Kind,
+			"label":    KindLabel(r.Kind),
+			"count":    r.Count,
+			"lastId":   r.LastID,
+			"lastAt":   r.LastAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": out})
+}
+
+// convHit 搜索命中的那条消息
+type convHit struct {
+	ID      uint
+	Snippet string
+}
+
+func listConversationsByKeyword(c *gin.Context, keyword, kind string, taskID int, limit int) {
+	q := config.DB.Model(&model.LLMConversation{})
+	q = q.Where("title ILIKE ? OR id IN (SELECT conversation_id FROM llm_messages WHERE content ILIKE ?)",
+		"%"+keyword+"%", "%"+keyword+"%")
 	if kind != "" {
 		q = q.Where("kind = ?", kind)
 	}
@@ -40,10 +129,9 @@ func ListConversations(c *gin.Context) {
 	var list []model.LLMConversation
 	q.Order("updated_at DESC").Limit(limit).Find(&list)
 
-	// 搜索时把"命中的那条消息"一起带回去：
-	// 前端点开结果后直接滚到该条并高亮，而不是让用户自己从头翻。
+	// 命中消息：点开直接跳到那一条
 	hits := map[uint]convHit{}
-	if keyword != "" && len(list) > 0 {
+	if len(list) > 0 {
 		ids := make([]uint, 0, len(list))
 		for _, it := range list {
 			ids = append(ids, it.ID)
@@ -53,13 +141,11 @@ func ListConversations(c *gin.Context) {
 			ID             uint
 			Content        string
 		}
-		var rows []hrow
-		config.DB.Raw(
-			`SELECT conversation_id, id, content FROM llm_messages
-			 WHERE conversation_id IN ? AND content ILIKE ?
-			 ORDER BY conversation_id, id`,
-			ids, "%"+keyword+"%").Scan(&rows)
-		for _, r := range rows {
+		var hrs []hrow
+		config.DB.Raw(`SELECT conversation_id, id, content FROM llm_messages
+			WHERE conversation_id IN ? AND content ILIKE ? ORDER BY conversation_id, id`,
+			ids, "%"+keyword+"%").Scan(&hrs)
+		for _, r := range hrs {
 			if _, ok := hits[r.ConversationID]; ok {
 				continue
 			}
@@ -67,68 +153,108 @@ func ListConversations(c *gin.Context) {
 		}
 	}
 
-	// 按 (任务, 类型) 分组，供左侧树直接渲染；任务名一次查出来，避免前端再发 N 个请求
-	type node struct {
-		TaskID   uint    `json:"taskId"`
-		TaskName string  `json:"taskName"`
-		Kind     string  `json:"kind"`
-		Items    []convDTO `json:"items"`
-	}
 	taskNames := map[uint]string{}
-	var ids []uint
+	var tids []uint
 	for _, it := range list {
 		if it.TaskID > 0 {
-			ids = append(ids, it.TaskID)
+			tids = append(tids, it.TaskID)
 		}
 	}
-	if len(ids) > 0 {
-		type row struct {
+	if len(tids) > 0 {
+		type trow struct {
 			ID   uint
 			Name string
 		}
-		var rows []row
-		config.DB.Table("scan_tasks").Select("id, name").Where("id IN ?", ids).Scan(&rows)
-		for _, r := range rows {
-			taskNames[r.ID] = r.Name
+		var trs []trow
+		config.DB.Table("scan_tasks").Select("id, name").Where("id IN ?", tids).Scan(&trs)
+		for _, t := range trs {
+			taskNames[t.ID] = t.Name
 		}
 	}
-	index := map[string]int{}
-	var groups []node
-	out := make([]convDTO, 0, len(list))
+
+	items := make([]gin.H, 0, len(list))
 	for _, it := range list {
 		k := it.Kind
 		if k == "" {
 			k = "chat"
 		}
-		dto := convDTO{LLMConversation: it}
+		row := gin.H{
+			"id": it.ID, "title": it.Title, "kind": k, "label": KindLabel(k),
+			"taskId": it.TaskID, "taskName": taskNames[it.TaskID],
+			"messageCount": it.MessageCount, "updatedAt": it.UpdatedAt,
+		}
 		if h, ok := hits[it.ID]; ok {
-			dto.HitID = h.ID
-			dto.HitSnippet = h.Snippet
+			row["hitId"] = h.ID
+			row["hitSnippet"] = h.Snippet
 		}
-		out = append(out, dto)
-
-		key := strconv.Itoa(int(it.TaskID)) + "|" + k
-		if i, ok := index[key]; ok {
-			groups[i].Items = append(groups[i].Items, dto)
-			continue
-		}
-		index[key] = len(groups)
-		groups = append(groups, node{TaskID: it.TaskID, TaskName: taskNames[it.TaskID], Kind: k, Items: []convDTO{dto}})
+		items = append(items, row)
 	}
-	c.JSON(http.StatusOK, gin.H{"count": len(list), "items": out, "groups": groups})
+	c.JSON(http.StatusOK, gin.H{"mode": "search", "count": len(items), "items": items})
 }
 
-// convHit 搜索命中的那条消息
-type convHit struct {
-	ID      uint
-	Snippet string
+// ListConversationGroup 某任务某类型下的记录（最新在前，分页）
+// GET /llm/conversation-group?taskId=&kind=&offset=&limit=
+func ListConversationGroup(c *gin.Context) {
+	taskID, _ := strconv.Atoi(c.DefaultQuery("taskId", "0"))
+	kind := strings.TrimSpace(c.DefaultQuery("kind", "chat"))
+	if kind == "" {
+		kind = "chat"
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	q := config.DB.Model(&model.LLMConversation{}).Where("task_id = ? AND kind = ?", taskID, kind)
+	var total int64
+	q.Count(&total)
+
+	var list []model.LLMConversation
+	q.Order("id DESC").Offset(offset).Limit(limit).Find(&list)
+
+	// 每条的一行摘要（取该会话的第一条 user 消息）
+	sums := map[uint]string{}
+	if len(list) > 0 {
+		ids := make([]uint, 0, len(list))
+		for _, it := range list {
+			ids = append(ids, it.ID)
+		}
+		type srow struct {
+			ConversationID uint
+			Content        string
+		}
+		var srs []srow
+		config.DB.Raw(`SELECT DISTINCT ON (conversation_id) conversation_id, content
+			FROM llm_messages WHERE conversation_id IN ? AND role = 'user'
+			ORDER BY conversation_id, id`, ids).Scan(&srs)
+		for _, s := range srs {
+			sums[s.ConversationID] = oneLineSnippet(s.Content, 90)
+		}
+	}
+
+	items := make([]gin.H, 0, len(list))
+	for _, it := range list {
+		items = append(items, gin.H{
+			"id": it.ID, "title": it.Title, "kind": kind, "label": KindLabel(kind),
+			"taskId": it.TaskID, "messageCount": it.MessageCount,
+			"updatedAt": it.UpdatedAt, "summary": sums[it.ID],
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"total": total, "offset": offset, "limit": limit, "items": items})
 }
 
-// convDTO 会话 + 搜索命中位置
-type convDTO struct {
-	model.LLMConversation
-	HitID      uint   `json:"hitId,omitempty"`
-	HitSnippet string `json:"hitSnippet,omitempty"`
+// oneLineSnippet 取首行/前 N 个字符
+func oneLineSnippet(s string, n int) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " ")
+	rs := []rune(s)
+	if len(rs) > n {
+		return string(rs[:n]) + "…"
+	}
+	return string(rs)
 }
 
 // snippetAround 取关键词前后的上下文，压成一行给列表用
@@ -246,11 +372,14 @@ func ClearAllConversations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// ============ 对话（带会话持久化）============
-
-// LlmChatV2 支持会话的对话
+// ============ 对话（一次提问一条会话）============
 //
-// 请求：{ conversationId?, message }
+// 不带上下文：每次提问独立成会话，system + 本条消息直接发给模型。
+// 单次 token 稳定、不受历史污染，也不会攒出几千条消息的巨型会话。
+
+// LlmChatV2 一次性问答
+//
+// 请求：{ message, maxRounds? }
 // 响应：{ conversationId, reply, rounds, toolCalls, totalTokens }
 func LlmChatV2(c *gin.Context) {
 	avail := llm.AvailableProfiles()
@@ -262,7 +391,7 @@ func LlmChatV2(c *gin.Context) {
 	}
 
 	var req struct {
-		ConversationID uint   `json:"conversationId"`
+		ConversationID uint   `json:"conversationId"` // 兼容旧调用方，忽略
 		Message        string `json:"message"`
 		MaxRounds      int    `json:"maxRounds"`
 	}
@@ -274,46 +403,25 @@ func LlmChatV2(c *gin.Context) {
 		req.MaxRounds = 5
 	}
 
-	// 1) 会话：有则复用，无则新建
-	var conv model.LLMConversation
-	if req.ConversationID > 0 {
-		if err := config.DB.First(&conv, req.ConversationID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
-			return
-		}
-	} else {
-		title := strings.TrimSpace(req.Message)
-		if len([]rune(title)) > 30 {
-			title = string([]rune(title)[:30]) + "…"
-		}
-		conv = model.LLMConversation{Title: title}
-		config.DB.Create(&conv)
+	// 一次提问 = 一条会话
+	title := strings.TrimSpace(req.Message)
+	if len([]rune(title)) > 30 {
+		title = string([]rune(title)[:30]) + "…"
+	}
+	conv := model.LLMConversation{Title: title, Kind: "chat"}
+	if err := config.DB.Create(&conv).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	// 2) 保存用户消息
-	userMsg := model.LLMMessage{
-		ConversationID: conv.ID, Role: "user", Content: req.Message,
-	}
+	userMsg := model.LLMMessage{ConversationID: conv.ID, Role: "user", Content: req.Message}
 	config.DB.Create(&userMsg)
 
-	// 3) 组装历史（最近 20 条，避免超长）
-	var history []model.LLMMessage
-	config.DB.Where("conversation_id = ? AND role IN ?", conv.ID, []string{"user", "assistant"}).
-		Order("id DESC").Limit(20).Find(&history)
-	// 反转为正序
-	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
-		history[i], history[j] = history[j], history[i]
+	msgs := []llm.Message{
+		{Role: "system", Content: llm.SystemPrompt()},
+		{Role: "user", Content: req.Message},
 	}
 
-	msgs := []llm.Message{{Role: "system", Content: llm.SystemPrompt()}}
-	for _, h := range history {
-		if strings.TrimSpace(h.Content) == "" {
-			continue
-		}
-		msgs = append(msgs, llm.Message{Role: h.Role, Content: h.Content})
-	}
-
-	// 4) 调用 LLM（含工具循环）
 	tools := llm.Tools()
 	var trace []gin.H
 	totalTokens := 0
@@ -322,10 +430,8 @@ func LlmChatV2(c *gin.Context) {
 	for round := 0; round < req.MaxRounds; round++ {
 		result, err := llm.ChatWithFailover(llm.ChatRequest{Messages: msgs, Tools: tools}, round)
 		if err != nil {
-			// 保存错误信息到会话，便于用户回看
 			config.DB.Create(&model.LLMMessage{
-				ConversationID: conv.ID, Role: "assistant",
-				Content: "❌ " + err.Error(),
+				ConversationID: conv.ID, Role: "assistant", Content: "❌ " + err.Error(),
 			})
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "trace": trace, "conversationId": conv.ID})
 			return
@@ -346,26 +452,17 @@ func LlmChatV2(c *gin.Context) {
 		msgs = append(msgs, msg)
 
 		if len(msg.ToolCalls) == 0 {
-			// 最终回答 → 保存
 			traceJSON, _ := json.Marshal(trace)
 			config.DB.Create(&model.LLMMessage{
 				ConversationID: conv.ID, Role: "assistant",
-				Content: msg.Content, ToolCalls: string(traceJSON),
-				Tokens: totalTokens,
+				Content: msg.Content, ToolCalls: string(traceJSON), Tokens: totalTokens,
 			})
-			// 更新会话统计
-			var cnt int64
-			var sumTokens int64
-			config.DB.Model(&model.LLMMessage{}).Where("conversation_id = ?", conv.ID).Count(&cnt)
-			config.DB.Model(&model.LLMMessage{}).Where("conversation_id = ?", conv.ID).
-				Select("COALESCE(SUM(tokens),0)").Scan(&sumTokens)
 			config.DB.Model(&model.LLMConversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
-				"message_count": cnt,
-				"total_tokens":  sumTokens,
+				"message_count": 2,
+				"total_tokens":  totalTokens,
 				"profile_name":  usedProfile,
 				"updated_at":    time.Now(),
 			})
-
 			c.JSON(http.StatusOK, gin.H{
 				"conversationId": conv.ID,
 				"reply":          msg.Content,

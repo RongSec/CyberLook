@@ -77,6 +77,7 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.GET("/llm/usage", LlmUsageStats)
 		// 会话
 		auth.GET("/llm/conversations", ListConversations)
+		auth.GET("/llm/conversation-group", ListConversationGroup)
 		auth.POST("/llm/conversations", CreateConversation)
 		auth.GET("/llm/conversations/:id", GetConversation)
 		auth.PUT("/llm/conversations/:id", RenameConversation)
