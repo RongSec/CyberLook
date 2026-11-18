@@ -266,12 +266,29 @@ function formatTime(t) {
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
-function renderText(t) {
-  if (!t) return ''
-  return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+function fmtText(s) {
+  return escHtml(s)
     .replace(/\n/g, '<br/>')
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+// 识别记录后半段是完整请求/响应报文：默认折叠，展开能看到逐字节的证据
+function renderText(t) {
+  if (!t) return ''
+  const m = t.match(/\n*={5,}\s*(原始请求[^\n]*|渲染链路明细)\s*={5,}\n?/)
+  if (!m) return fmtText(t)
+  const i = t.indexOf(m[0])
+  const head = t.slice(0, i)
+  const raw = t.slice(i + m[0].length)
+  const kb = (new Blob([raw]).size / 1024).toFixed(1)
+  const title = m[1].replace(/={5,}/g, '').trim()
+  return fmtText(head)
+    + `<details class="raw-box"><summary>${escHtml(title)} · ${kb} KB（点开查看）</summary>`
+    + `<pre class="raw-pre">${escHtml(raw)}</pre></details>`
 }
 
 async function scrollBottom() {
@@ -675,6 +692,18 @@ onMounted(() => {
 .msg.assistant .bubble { background: #f5f7fa; color: #333; }
 .tools { margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 .text :deep(code) { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 13px; }
+/* 完整报文折叠块 */
+.raw-box { margin-top: 8px; border-top: 1px dashed rgba(128,128,128,.35); padding-top: 6px; }
+.raw-box summary {
+  cursor: pointer; font-size: 12px; color: #2563eb; outline: none; user-select: none;
+}
+.raw-box summary:hover { text-decoration: underline; }
+.raw-pre {
+  margin: 6px 0 0; padding: 8px; max-height: 460px; overflow: auto;
+  background: rgba(0,0,0,.05); border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-all;
+}
 .input-area { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; padding-top: 12px; border-top: 1px solid #eee; }
 
 .trace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }

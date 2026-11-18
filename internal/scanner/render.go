@@ -59,7 +59,7 @@ func RenderPage(url string, wait time.Duration) (title, desc, text string, err e
 	if m := reBody.FindStringSubmatch(html); len(m) > 1 {
 		body = m[1]
 	}
-	text = firstRunes(cleanStr(body), 800)
+	text = firstRunes(cleanStr(body), 2000)
 	return title, desc, text, nil
 }
 
