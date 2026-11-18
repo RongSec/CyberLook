@@ -5,12 +5,13 @@
       <div class="sidebar-head">
         <n-button v-if="!sidebarCollapsed" type="primary" block @click="newConversation">+ 新对话</n-button>
         <n-button v-else type="primary" circle size="small" @click="newConversation">+</n-button>
-        <n-input
+        <!-- 用原生 input：n-input 的主题变量靠 class 透传，scoped 样式匹配不到它的根元素，
+             在深色主题下会变成 rgba(255,255,255,.1) 的深色控件，放在浅色侧栏上等于隐形。 -->
+        <input
           v-if="!sidebarCollapsed"
-          v-model:value="searchKw"
+          v-model="searchKw"
           class="conv-search"
-          size="small"
-          clearable
+          type="search"
           placeholder="搜索对话…"
         />
       </div>
@@ -535,18 +536,15 @@ onMounted(() => {
 .tree-convs { margin-left: 14px; }
 /* 搜索框：naive-ui 的输入框在深色主题下默认是深底白字，和浅色侧栏撞色后几乎看不见。
    用它的 CSS 变量显式改回浅色底 + 深色字。 */
-.conv-search { margin-top: 8px; }
-.conv-search :deep(.n-input) {
-  --n-color: #ffffff;
-  --n-color-focus: #ffffff;
-  --n-text-color: #334155;
-  --n-placeholder-color: #94a3b8;
-  --n-border: 1px solid #d9e0e8;
-  --n-border-hover: 1px solid #b9c6d4;
-  --n-border-focus: 1px solid #94a3b8;
-  --n-height: 30px;
-  --n-border-radius: 6px;
+.conv-search {
+  width: 100%; box-sizing: border-box; margin-top: 8px;
+  height: 30px; padding: 0 9px;
+  font-size: 12.5px; color: #334155;
+  background: #ffffff; border: 1px solid #d9e0e8; border-radius: 6px;
+  outline: none;
 }
+.conv-search::placeholder { color: #94a3b8; }
+.conv-search:focus { border-color: #94a3b8; box-shadow: 0 0 0 2px rgba(148, 163, 184, .18); }
 .conv-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; position: relative; }
 .conv-item:hover { background: #eef2f7; }
 .conv-item:hover .conv-actions { display: flex; }
