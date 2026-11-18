@@ -2,10 +2,12 @@ package scanner
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"net/http"
 	"strings"
 	"time"
@@ -42,28 +44,26 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 		DialContext:         (&net.Dialer{Timeout: 4 * time.Second}).DialContext,
 		DisableCompression:  false,
 	}
-	client := &http.Client{
-		Transport: tr,
-		Timeout:   8 * time.Second,
-		// 自己跟随跳转，才能把每一跳都记下来
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
+	// 不走 http.Client：它在拿到响应后会解析 Location，一旦目标返回畸形头
+	// （实测 10.24.12.151:80 回 `Location: https://10.24.12.151:80:443/`）
+	// 就直接报 "failed to parse Location header"，整条链路作废、白掉一次 AI 判定。
+	// 用 Transport.RoundTrip 只发一次请求，跳转由我们自己处理，畸形头也能记下来当证据。
 	target := fmt.Sprintf("%s://%s:%d/", scheme, ip, port)
 	var hops []Hop
 	for i := 0; i < maxHops; i++ {
-		req, err := http.NewRequest("GET", target, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 		if err != nil {
+			cancel()
 			break
 		}
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 
-		resp, err := client.Do(req)
+		resp, err := tr.RoundTrip(req)
 		if err != nil {
+			cancel()
 			if len(hops) == 0 {
 				return nil, err
 			}
@@ -80,17 +80,44 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 			BodyNote:        note,
 		}
 		resp.Body.Close()
+		cancel()
 		hops = append(hops, hop)
 
-		loc := resp.Header.Get("Location")
+		loc := strings.TrimSpace(resp.Header.Get("Location"))
 		if loc == "" || resp.StatusCode < 300 || resp.StatusCode >= 400 {
 			break
 		}
-		next, err := req.URL.Parse(loc)
-		if err != nil || next.Host == "" {
+		// 自己拼下一跳，而不是 next.String()：设备/反代的 Location 常写成
+		// "https://<ip>:80/" 或干脆缺端口，直接用会把 host:port 拼成 ":80:443" 这类畸形串，
+		// 抓包整条链路失败 → 白掉一次 AI 判定（实测 10.24.12.151:80）。
+		// 规则：主机固定为目标 IP，端口取 Location 里的（缺省按 scheme 补），只允许 http/https。
+		nu, perr := url.Parse(loc)
+		if perr != nil {
 			break
 		}
-		target = next.String()
+		nextScheme := strings.ToLower(nu.Scheme)
+		if nextScheme == "" {
+			nextScheme = req.URL.Scheme
+		}
+		if nextScheme != "http" && nextScheme != "https" {
+			break
+		}
+		nextPort := nu.Port()
+		if nextPort == "" {
+			if nextScheme == "https" {
+				nextPort = "443"
+			} else {
+				nextPort = "80"
+			}
+		}
+		if nu.Host != "" && !strings.EqualFold(nu.Hostname(), ip) {
+			break // 跨主机不跟，避免把别的资产拉进这次识别
+		}
+		pathQ := nu.RequestURI()
+		if pathQ == "" || pathQ == "/" {
+			pathQ = "/"
+		}
+		target = nextScheme + "://" + net.JoinHostPort(ip, nextPort) + pathQ
 	}
 	return hops, nil
 }
