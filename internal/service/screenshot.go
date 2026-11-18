@@ -2,16 +2,16 @@ package service
 
 import (
 	"context"
-	"sync"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/scanner"
 )
 
 // SnapshotDir 截图存储目录
@@ -86,30 +86,18 @@ func captureOne(url string, svc model.Service) error {
 	name := fmt.Sprintf("%s_%d_%d.png", safeIP, svc.Port, now.Unix())
 	path := filepath.Join(SnapshotDir, name)
 
-	// 超时保护：目标不响应/页面挂起时必须 kill，否则整个截图任务卡死
+	// 超时保护：目标不响应/页面挂起时必须收敛，否则整个截图任务卡死。
+	// 走 scanner 的常驻浏览器实例（CDP），不再为每张图拉一个新 chromium 进程。
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "chromium",
-		"--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-		// 跳过自签/过期证书的拦截页（否则截到 "Your connection is not private"）
-		"--ignore-certificate-errors",
-		"--ignore-certificate-errors-spki-list",
-		"--allow-running-insecure-content",
-		"--hide-scrollbars",
-		// 用 1920x1080 + 固定缩放，避免页面被拉伸或截不全
-		"--window-size=1920,1080",
-		"--force-device-scale-factor=1",
-		"--disable-features=IsolateOrigins,site-per-process",
-		"--virtual-time-budget=8000",
-		"--screenshot="+path, url)
-	cmd.Env = append(os.Environ(), "HOME=/tmp")
-	if err := cmd.Run(); err != nil {
+	if err := scanner.CaptureScreenshot(ctx, url, path, 8*time.Second); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("截图超时（25s 未完成）")
 		}
 		return err
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+		_ = os.Remove(path)
 		return fmt.Errorf("截图文件为空")
 	}
 

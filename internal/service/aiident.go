@@ -350,10 +350,10 @@ func runAIIdentify(job aiIdentifyJob) {
 	recordIdentConversation(job.TaskID, svc, r, changed)
 }
 
-// recordIdentConversation 把识别链路写进该扫描任务的会话；
+// recordIdentConversation 把识别链路写进该扫描任务的服务识别会话；
 // 完整请求响应包放进 meta（前端折叠成按钮 + 四栏弹窗），不铺满对话。
 func recordIdentConversation(taskID uint, svc model.Service, r IdentResult, changed bool) {
-	conv := taskConversation(taskID)
+	conv := taskConversation(taskID, "svc_ident")
 	if conv == nil {
 		return
 	}
@@ -388,11 +388,13 @@ func recordIdentConversation(taskID uint, svc model.Service, r IdentResult, chan
 	}
 	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "user", Content: sb.String(), Meta: meta})
 	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "assistant", Content: orNone(r.Title)})
-	config.DB.Model(&model.LLMConversation{}).Where("id = ?", conv.ID).
-		Updates(map[string]interface{}{
-			"message_count": gorm.Expr("message_count + 2"),
-			"updated_at":    time.Now(),
-		})
+	touchConv(conv.ID, 2)
+
+	// 只有真走了浏览器渲染的才单独记一份，供「渲染复核」分类追溯
+	// （同一任务的识别会话里仍有完整链路，这里只是给"哪些是靠渲染才判出来的"一个入口）
+	if renderedSucceeded(r.Stages) {
+		recordRenderReview(taskID, svc, r, changed)
+	}
 }
 
 // RecordIdentConversation 供手动识别复用：把识别链路写进任务会话
@@ -400,24 +402,91 @@ func RecordIdentConversation(taskID uint, svc model.Service, r IdentResult, chan
 	recordIdentConversation(taskID, svc, r, changed)
 }
 
-// taskConversation 取（或创建）某个扫描任务对应的会话
-func taskConversation(taskID uint) *model.LLMConversation {
+// renderedSucceeded 渲染阶段是否真的拿到了页面
+func renderedSucceeded(stages []IdentStage) bool {
+	for _, st := range stages {
+		if st.Stage == "浏览器渲染" && st.OK {
+			return true
+		}
+	}
+	return false
+}
+
+// recordRenderReview 写一条渲染复核记录
+func recordRenderReview(taskID uint, svc model.Service, r IdentResult, changed bool) {
+	conv := taskConversation(taskID, "render")
+	if conv == nil {
+		return
+	}
+	var title, verdict, reason string
+	for _, st := range r.Stages {
+		switch st.Stage {
+		case "浏览器渲染":
+			title = oneLine(st.Output)
+		case "AI·渲染结果":
+			verdict = oneLine(st.Output)
+		}
+	}
+	reason = r.Reason
+	body := fmt.Sprintf("目标：%s:%d（%s）\n渲染结果：%s\nAI 判定：%s\n依据：%s\n结论：%s（置信=%v）",
+		svc.IP, svc.Port, svc.Protocol, orNone(title), orNone(verdict), orNone(reason),
+		orNone(r.Title), r.Confident)
+	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "user", Content: body})
+	config.DB.Create(&model.LLMMessage{ConversationID: conv.ID, Role: "assistant", Content: orNone(r.Title)})
+	touchConv(conv.ID, 2)
+}
+
+// touchConv 更新会话统计与时间
+func touchConv(id uint, add int) {
+	config.DB.Model(&model.LLMConversation{}).Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"message_count": gorm.Expr("message_count + ?", add),
+			"updated_at":    time.Now(),
+		})
+}
+
+// convCache 任务 → 会话 ID，避免每条服务都查一次库
+var convCache sync.Map // "taskID|kind" -> uint
+
+// taskConversation 取（或创建）某个扫描任务某一类型的会话。
+// 识别 worker 是并发的，首次运行必然出现"同时查不到 → 各自创建"，
+// 这里靠 (task_id, kind) 唯一索引 + 创建失败重查来保证只有一条。
+func taskConversation(taskID uint, kind string) *model.LLMConversation {
 	if config.DB == nil || taskID == 0 {
 		return nil
 	}
+	if kind == "" {
+		kind = "svc_ident"
+	}
+	cacheKey := fmt.Sprintf("%d|%s", taskID, kind)
+	if v, ok := convCache.Load(cacheKey); ok {
+		id := v.(uint)
+		var conv model.LLMConversation
+		if err := config.DB.First(&conv, id).Error; err == nil {
+			return &conv
+		}
+		convCache.Delete(cacheKey)
+	}
+
 	var conv model.LLMConversation
-	if err := config.DB.Where("task_id = ?", taskID).Order("id").First(&conv).Error; err == nil {
+	if err := config.DB.Where("task_id = ? AND kind = ?", taskID, kind).Order("id").First(&conv).Error; err == nil {
+		convCache.Store(cacheKey, conv.ID)
 		return &conv
 	}
+
 	var task model.ScanTask
 	name := fmt.Sprintf("任务 #%d", taskID)
 	if err := config.DB.First(&task, taskID).Error; err == nil && task.Name != "" {
 		name = fmt.Sprintf("扫描任务 #%d · %s", taskID, task.Name)
 	}
-	conv = model.LLMConversation{Title: name, TaskID: taskID, Kind: "svc_ident"}
+	conv = model.LLMConversation{Title: name, TaskID: taskID, Kind: kind}
 	if err := config.DB.Create(&conv).Error; err != nil {
-		return nil
+		// 唯一索引冲突 = 别的 worker 刚建好，重查一次即可
+		if err := config.DB.Where("task_id = ? AND kind = ?", taskID, kind).Order("id").First(&conv).Error; err != nil {
+			return nil
+		}
 	}
+	convCache.Store(cacheKey, conv.ID)
 	return &conv
 }
 

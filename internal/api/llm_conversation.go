@@ -40,12 +40,39 @@ func ListConversations(c *gin.Context) {
 	var list []model.LLMConversation
 	q.Order("updated_at DESC").Limit(limit).Find(&list)
 
+	// 搜索时把"命中的那条消息"一起带回去：
+	// 前端点开结果后直接滚到该条并高亮，而不是让用户自己从头翻。
+	hits := map[uint]convHit{}
+	if keyword != "" && len(list) > 0 {
+		ids := make([]uint, 0, len(list))
+		for _, it := range list {
+			ids = append(ids, it.ID)
+		}
+		type hrow struct {
+			ConversationID uint
+			ID             uint
+			Content        string
+		}
+		var rows []hrow
+		config.DB.Raw(
+			`SELECT conversation_id, id, content FROM llm_messages
+			 WHERE conversation_id IN ? AND content ILIKE ?
+			 ORDER BY conversation_id, id`,
+			ids, "%"+keyword+"%").Scan(&rows)
+		for _, r := range rows {
+			if _, ok := hits[r.ConversationID]; ok {
+				continue
+			}
+			hits[r.ConversationID] = convHit{ID: r.ID, Snippet: snippetAround(r.Content, keyword, 60)}
+		}
+	}
+
 	// 按 (任务, 类型) 分组，供左侧树直接渲染；任务名一次查出来，避免前端再发 N 个请求
 	type node struct {
-		TaskID   uint                      `json:"taskId"`
-		TaskName string                    `json:"taskName"`
-		Kind     string                    `json:"kind"`
-		Items    []model.LLMConversation   `json:"items"`
+		TaskID   uint    `json:"taskId"`
+		TaskName string  `json:"taskName"`
+		Kind     string  `json:"kind"`
+		Items    []convDTO `json:"items"`
 	}
 	taskNames := map[uint]string{}
 	var ids []uint
@@ -67,20 +94,73 @@ func ListConversations(c *gin.Context) {
 	}
 	index := map[string]int{}
 	var groups []node
+	out := make([]convDTO, 0, len(list))
 	for _, it := range list {
 		k := it.Kind
 		if k == "" {
 			k = "chat"
 		}
+		dto := convDTO{LLMConversation: it}
+		if h, ok := hits[it.ID]; ok {
+			dto.HitID = h.ID
+			dto.HitSnippet = h.Snippet
+		}
+		out = append(out, dto)
+
 		key := strconv.Itoa(int(it.TaskID)) + "|" + k
 		if i, ok := index[key]; ok {
-			groups[i].Items = append(groups[i].Items, it)
+			groups[i].Items = append(groups[i].Items, dto)
 			continue
 		}
 		index[key] = len(groups)
-		groups = append(groups, node{TaskID: it.TaskID, TaskName: taskNames[it.TaskID], Kind: k, Items: []model.LLMConversation{it}})
+		groups = append(groups, node{TaskID: it.TaskID, TaskName: taskNames[it.TaskID], Kind: k, Items: []convDTO{dto}})
 	}
-	c.JSON(http.StatusOK, gin.H{"count": len(list), "items": list, "groups": groups})
+	c.JSON(http.StatusOK, gin.H{"count": len(list), "items": out, "groups": groups})
+}
+
+// convHit 搜索命中的那条消息
+type convHit struct {
+	ID      uint
+	Snippet string
+}
+
+// convDTO 会话 + 搜索命中位置
+type convDTO struct {
+	model.LLMConversation
+	HitID      uint   `json:"hitId,omitempty"`
+	HitSnippet string `json:"hitSnippet,omitempty"`
+}
+
+// snippetAround 取关键词前后的上下文，压成一行给列表用
+func snippetAround(s, kw string, width int) string {
+	rs := []rune(strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " "))
+	idx := -1
+	lowS, lowK := strings.ToLower(string(rs)), strings.ToLower(kw)
+	if p := strings.Index(lowS, lowK); p >= 0 {
+		idx = len([]rune(lowS[:p]))
+	}
+	if idx < 0 {
+		if len(rs) > width {
+			return string(rs[:width]) + "…"
+		}
+		return string(rs)
+	}
+	start := idx - width/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + width
+	if end > len(rs) {
+		end = len(rs)
+	}
+	out := string(rs[start:end])
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(rs) {
+		out += "…"
+	}
+	return out
 }
 
 // CreateConversation 新建会话

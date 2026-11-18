@@ -19,7 +19,7 @@
       <div v-if="!sidebarCollapsed" class="conv-list">
         <n-empty v-if="tree.length === 0" :description="searchKw ? '没有匹配的会话' : '暂无历史会话'" size="small" style="margin-top:40px" />
 
-        <!-- 两级树：任务（或"独立对话"） → 会话类型 → 会话 -->
+        <!-- 两级树：任务（或"独立对话"） → 会话类型 → 会话；默认全部折叠 -->
         <div v-for="t in tree" :key="t.key" class="tree-task">
           <div class="tree-task-head" @click="toggleTask(t.key)">
             <span class="caret">{{ t.open ? '▾' : '▸' }}</span>
@@ -27,7 +27,7 @@
             <span class="tree-count">{{ t.count }}</span>
           </div>
           <div v-if="t.open" class="tree-kinds">
-            <div v-for="k in t.kinds" :key="k.key" class="tree-kind">
+            <div v-for="k in t.kinds" :key="k.kind" class="tree-kind">
               <div class="tree-kind-head" @click="toggleKind(t.key + '/' + k.kind)">
                 <span class="caret small">{{ isKindOpen(t.key + '/' + k.kind) ? '▾' : '▸' }}</span>
                 <span class="kind-dot" :style="{ background: k.color }"></span>
@@ -39,13 +39,15 @@
                   v-for="c in k.items"
                   :key="c.id"
                   :class="['conv-item', { active: c.id === currentConvId }]"
-                  @click="loadConversation(c.id)"
+                  @click="openConv(c)"
                 >
                   <div class="conv-title">{{ c.title || '未命名' }}</div>
+                  <div v-if="searchKw && c.hitSnippet" class="conv-hit">{{ c.hitSnippet }}</div>
                   <div class="conv-meta">
                     <span>{{ c.messageCount }} 条</span>
                     <span v-if="c.totalTokens">{{ formatTokens(c.totalTokens) }}</span>
                     <span>{{ formatTime(c.updatedAt) }}</span>
+                    <span v-if="searchKw && c.hitSnippet" class="conv-hit-tag">命中</span>
                   </div>
                   <div class="conv-actions" @click.stop>
                     <n-button size="tiny" quaternary @click="renameConv(c)">改名</n-button>
@@ -97,17 +99,13 @@
           </div>
         </div>
 
-        <div v-for="(m, i) in messages" :key="i" :class="['msg', m.role]">
+        <div v-for="(m, i) in messages" :key="m.id || i" :data-mid="m.id || null"
+             :class="['msg', m.role, { 'msg-hit': hitActive && m.id === hitActive }]">
           <div class="bubble">
             <div v-if="m.toolCalls && m.toolCalls.length" class="tools">
               <n-tag v-for="(t, j) in m.toolCalls" :key="j" size="tiny" type="info" round>
                 {{ t.tool }}
               </n-tag>
-            </div>
-            <div v-if="traceOf(m)" style="margin-bottom:6px">
-              <n-button size="tiny" secondary type="info" @click="openTrace(traceOf(m))">
-                查看请求/响应包（{{ traceOf(m).hops.length }} 跳）
-              </n-button>
             </div>
             <div v-if="traceOf(m)" style="margin-bottom:6px">
               <n-button size="tiny" secondary type="info" @click="openTrace(traceOf(m))">
@@ -137,24 +135,6 @@
         </n-button>
       </div>
     </n-card>
-
-    <!-- 请求响应包：四栏（最多 4 跳，覆盖 302 与二次跳转） -->
-    <n-modal v-model:show="showTrace" preset="card"
-      :title="`请求响应包 · ${traceData.target || ''}（${(traceData.hops || []).length} 跳）`"
-      style="width: 96vw; max-width: 1500px">
-      <div class="trace-grid">
-        <div v-for="h in (traceData.hops || []).slice(0, 4)" :key="h.index" class="trace-pane">
-          <div class="trace-h">第 {{ h.index }} 跳 · {{ h.responseLine }}</div>
-          <div class="trace-label">请求</div>
-          <pre class="trace-pre">{{ h.requestLine }}
-{{ h.requestHeaders }}</pre>
-          <div class="trace-label">响应</div>
-          <pre class="trace-pre">{{ h.responseLine }}
-{{ h.responseHeaders }}
-{{ h.body || h.bodyNote || '（空响应体）' }}</pre>
-        </div>
-      </div>
-    </n-modal>
 
     <!-- 请求响应包：四栏（最多 4 跳，覆盖 302 与二次跳转） -->
     <n-modal v-model:show="showTrace" preset="card"
@@ -304,8 +284,9 @@ const KIND_META = {
 }
 const convGroups = ref([])
 const searchKw = ref('')
-const openTasks = ref({})   // taskKey -> bool
+const openTasks = ref({})   // taskKey -> bool，只有显式 true 才展开
 const openKinds = ref({})   // taskKey/kind -> bool
+const hitActive = ref(0)    // 当前高亮的命中消息 id
 
 const tree = computed(() => {
   const byTask = new Map()
@@ -331,18 +312,27 @@ const tree = computed(() => {
     for (const k of order.concat([...node.kinds.keys()].filter(x => !order.includes(x)))) {
       if (!node.kinds.has(k)) continue
       const meta = KIND_META[k] || { label: k, color: '#94a3b8' }
-      kinds.push({ key: (node.key) + k, kind: k, label: meta.label, color: meta.color, items: node.kinds.get(k) })
+      kinds.push({ kind: k, label: meta.label, color: meta.color, items: node.kinds.get(k) })
     }
     if (node.taskId && nameOf[node.taskId]) node.label = `任务 #${node.taskId} · ${nameOf[node.taskId]}`
-    out.push({ ...node, kinds, count: kinds.reduce((n, k) => n + k.items.length, 0), open: openTasks.value[node.key] !== false })
+    // 默认折叠：不写死展开，用户点一次才开
+    out.push({ ...node, kinds, count: kinds.reduce((n, k) => n + k.items.length, 0), open: openTasks.value[node.key] === true })
   }
   // 有任务的排前面，其次按会话数
   return out.sort((a, b) => (b.taskId ? 1 : 0) - (a.taskId ? 1 : 0) || b.count - a.count)
 })
 
-function toggleTask(key) { openTasks.value = { ...openTasks.value, [key]: openTasks.value[key] === false } }
-function isKindOpen(key) { return openKinds.value[key] !== false }
-function toggleKind(key) { openKinds.value = { ...openKinds.value, [key]: openKinds.value[key] === false } }
+function toggleTask(key) { openTasks.value = { ...openTasks.value, [key]: openTasks.value[key] !== true } }
+function isKindOpen(key) { return openKinds.value[key] === true }
+function toggleKind(key) { openKinds.value = { ...openKinds.value, [key]: openKinds.value[key] !== true } }
+
+// 展开某条会话所在的路径（否则选中项藏在折叠里，看不出来）
+function revealConv(c) {
+  if (!c) return
+  const tk = 't' + (c.taskId || 0)
+  openTasks.value = { ...openTasks.value, [tk]: true }
+  openKinds.value = { ...openKinds.value, [tk + '/' + (c.kind || 'chat')]: true }
+}
 
 let searchTimer = null
 function onSearchInput() {
@@ -358,37 +348,72 @@ async function loadConversations() {
     const r = await api.get(q)
     conversations.value = r.items || []
     convGroups.value = r.groups || []
-    // 搜索时自动展开，避免"搜到了但看不见"
     if (kw) {
-      const all = {}
-      for (const c of conversations.value) all['t' + (c.taskId || 0)] = true
-      openTasks.value = { ...openTasks.value, ...all }
+      // 搜索时必须展开，否则"搜到了但看不见"；命中项自己带 hitId，点开直接跳
+      const tks = {}, kks = {}
+      for (const c of conversations.value) {
+        const tk = 't' + (c.taskId || 0)
+        tks[tk] = true
+        kks[tk + '/' + (c.kind || 'chat')] = true
+      }
+      openTasks.value = tks
+      openKinds.value = kks
+    } else {
+      // 清空搜索后回到默认折叠，只保留当前会话所在路径
+      openTasks.value = {}
       openKinds.value = {}
+      const cur = conversations.value.find(x => x.id === currentConvId.value)
+      if (cur) revealConv(cur)
     }
   } catch { /* ignore */ }
 }
 
-async function loadConversation(id) {
+function openConv(c) {
+  revealConv(c)
+  currentConvId.value = c.id
+  loadConversation(c.id, c.hitId || 0)
+}
+
+async function loadConversation(id, hitId = 0) {
   if (loading.value) return
   currentConvId.value = id
+  hitActive.value = 0
   try {
     const r = await api.get(`/llm/conversations/${id}`)
     messages.value = (r.messages || []).map(m => ({
+      id: m.id,
       role: m.role,
       content: m.content,
       toolCalls: m.toolCallsParsed || [],
       meta: m.meta || '',   // http_trace 请求响应包（折叠成按钮）
     }))
-    await scrollBottom()
+    if (hitId) {
+      await nextTick()
+      jumpToHit(hitId)
+    } else {
+      await scrollBottom()
+    }
+    // 顺带把所在路径展开（从消息里点进来时也要能看见选中项）
+    const c = conversations.value.find(x => x.id === id)
+    if (c) revealConv(c)
   } catch (e) {
     message.error('加载会话失败')
   }
+}
+
+// 滚到搜索命中的那条并高亮，不再让用户自己翻
+function jumpToHit(mid) {
+  hitActive.value = mid
+  const el = document.querySelector(`[data-mid="${mid}"]`)
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  else scrollBottom()
 }
 
 function newConversation() {
   currentConvId.value = 0
   messages.value = []
   input.value = ''
+  hitActive.value = 0
 }
 
 async function removeConv(c) {
@@ -465,6 +490,8 @@ async function send(text) {
       toolCalls: r.toolCalls || [],
     })
     await loadConversations()
+    const cur = conversations.value.find(x => x.id === r.conversationId)
+    if (cur) revealConv(cur)
     loadStatus()
   } catch (e) {
     const msg = e.response?.data?.error || e.message || '请求失败'
@@ -550,6 +577,13 @@ onMounted(() => {
 .conv-item:hover .conv-actions { display: flex; }
 .conv-item.active { background: #e3edfb; }
 .conv-title { font-size: 13px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 3px; }
+/* 搜索结果里显示命中上下文，点进去直接定位到该条消息 */
+.conv-hit {
+  font-size: 11.5px; color: #6b7280; line-height: 1.45;
+  margin: 2px 0 4px; padding-left: 6px; border-left: 2px solid #fed7aa;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.conv-hit-tag { color: #b45309; background: #fff7ed; border-radius: 4px; padding: 0 4px; }
 .conv-meta { font-size: 11px; color: #aaa; display: flex; gap: 8px; }
 .conv-actions { display: none; position: absolute; right: 4px; top: 6px; background: inherit; gap: 2px; }
 .sidebar-foot { padding: 8px; border-top: 1px solid #eef0f3; }
@@ -586,12 +620,8 @@ onMounted(() => {
 .trace-pre { margin: 0; padding: 8px; background: rgba(128,128,128,.12); color: inherit; border-radius: 6px; font-size: 12px;
   line-height: 1.5; max-height: 32vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 
-.trace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.trace-pane { border: 1px solid rgba(128,128,128,.3); border-radius: 8px; padding: 10px 12px; min-width: 0; }
-.trace-h { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #4098fc; }
-.trace-label { font-size: 12px; color: rgba(128,128,128,1); margin: 6px 0 2px; }
-.trace-pre { margin: 0; padding: 8px; background: rgba(128,128,128,.12); color: inherit; border-radius: 6px; font-size: 12px;
-  line-height: 1.5; max-height: 32vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+/* 搜索命中：滚到该条后整块高亮，方便一眼看到 */
+.msg-hit .bubble { box-shadow: 0 0 0 2px #f59e0b, 0 0 0 6px rgba(245, 158, 11, .18); }
 
 .usage-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .stat { text-align: center; padding: 12px 8px; background: #f8fafc; border-radius: 8px; }
