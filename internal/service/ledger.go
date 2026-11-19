@@ -86,7 +86,11 @@ func ParseLedgerFile(data []byte) ([]LedgerRow, error) {
 	return result, nil
 }
 
-// ImportLedger 导入台账：IP 已存在则更新，否则新增
+// ImportLedger 导入台账：同一 (IP,系统名,负责人) 视为同一条归属，存在则更新，否则新增。
+//
+// 为什么不是「IP 存在即更新」：一个 IP 允许多归属（不同系统/负责人各一条），
+// 按 IP 匹配会把新归属写到别人的行上，或把合法的第二归属误报成冲突。
+// 冲突只发生在「同一条归属已被人工确认、而新台账改了它的部门/写法」时。
 func ImportLedger(rows []LedgerRow) (imported, updated, conflict, failed int, errs []string) {
 	for _, r := range rows {
 		r.Owner = NormalizeOwners(r.Owner)
@@ -106,9 +110,13 @@ func ImportLedger(rows []LedgerRow) (imported, updated, conflict, failed int, er
 		}
 
 		var existing model.Asset
-		err := config.DB.Where("ip = ?", r.IP).First(&existing).Error
+		err := config.DB.Where("ip = ?", r.IP).
+			Where("COALESCE(system_name,'') = ?", strings.TrimSpace(r.SystemName)).
+			Where("COALESCE(owner,'') = ?", r.Owner).
+			Order("id").First(&existing).Error
 		switch {
 		case err == gorm.ErrRecordNotFound:
+			// 该 IP 没有这条归属（要么全新，要么是合法的第二/第三归属）→ 新增一行
 			asset := model.Asset{
 				IP: r.IP, SystemName: r.SystemName, Owner: r.Owner,
 				Department: r.Department, Source: "ledger", Status: "pending",
@@ -122,16 +130,16 @@ func ImportLedger(rows []LedgerRow) (imported, updated, conflict, failed int, er
 		case err == nil:
 			// 已人工确认的资产：不覆盖，落冲突表等人工决定
 			if existing.Status == "confirmed" {
-				// 三项（系统名/责任人/部门）完全相同 → 无实质变化，不记录冲突
+				// 部门等其余字段完全相同 → 无实质变化，不记录冲突
 				if strings.TrimSpace(existing.SystemName) == strings.TrimSpace(r.SystemName) &&
 					strings.TrimSpace(existing.Owner) == strings.TrimSpace(r.Owner) &&
 					strings.TrimSpace(existing.Department) == strings.TrimSpace(r.Department) {
 					updated++
 					continue
 				}
-				// 同一 IP 已有未处理冲突则更新新值，避免重复条目
+				// 同一条归属已有未处理冲突则更新新值，避免重复条目
 				var c model.ImportConflict
-				if e := config.DB.Where("ip = ?", r.IP).First(&c).Error; e == nil {
+				if e := config.DB.Where("asset_id = ?", existing.ID).First(&c).Error; e == nil {
 					config.DB.Model(&c).Updates(map[string]interface{}{
 						"new_system_name": r.SystemName,
 						"new_owner":       r.Owner,

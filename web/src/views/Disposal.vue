@@ -3,6 +3,20 @@
     <n-card title="资产处置（待确认 Web 资产）">
       <SearchBar :fields="splFieldsPlus" @search="onSplSearch" @reset="onSplReset" />
 
+      <!-- 快捷分类筛选：存量里「主机新出现」往往上千条，容易把真正紧急的「端口新出现」淹没 -->
+      <div class="cat-chips">
+        <span class="cat-label">快捷筛选</span>
+        <n-button size="small" :type="filters.category === null ? 'primary' : 'default'"
+          :secondary="filters.category !== null" @click="toggleCategory(null)">
+          全部 {{ items.length }}
+        </n-button>
+        <n-button v-for="c in categoryOptions" :key="c.value" size="small"
+          :type="filters.category === c.value ? catType(c.value) : 'default'"
+          :secondary="filters.category !== c.value" @click="toggleCategory(c.value)">
+          {{ c.label }} {{ catCounts[c.value] }}
+        </n-button>
+      </div>
+
       <div class="toolbar" style="flex-wrap:wrap">
         <n-tooltip trigger="hover" placement="bottom">
           <template #trigger>
@@ -208,32 +222,61 @@ const page = ref(1)
 const pageSize = ref(20)
 
 const categoryOptions = [
-  { label: '新出现', value: 'new' },
-  { label: '台账有', value: 'in_ledger' },
+  { label: '主机新出现', value: 'host_new' },
+  { label: '端口新出现', value: 'port_new' },
   { label: '新变更', value: 'changed' }
 ]
 
+// 单行是否命中当前筛选（category 单独传，用于统计各类别数量）
+function matchItem(i, f, skipCategory) {
+  // SPL 条件（覆盖所有列）
+  for (const c of splConds.value) {
+    if (!matchCond(i, c)) return false
+  }
+  if (f.ip && !i.ip.includes(f.ip.trim())) return false
+  if (!skipCategory && f.category && i.category !== f.category) return false
+  if (f.title && !(i.title || '').toLowerCase().includes(f.title.trim().toLowerCase())) return false
+  if (f.port) {
+    const want = String(f.port).trim()
+    const ports = (i.webPorts && i.webPorts.length ? i.webPorts : [i.webPort]).map(String)
+    if (!ports.includes(want)) return false
+  }
+  if (f.statusCodes && f.statusCodes.length > 0) {
+    if (!f.statusCodes.includes(String(i.statusCode || ''))) return false
+  }
+  return true
+}
+
 const filteredItems = computed(() => {
   const f = filters.value
-  return items.value.filter(i => {
-    // SPL 条件（覆盖所有列）
-    for (const c of splConds.value) {
-      if (!matchCond(i, c)) return false
-    }
-    if (f.ip && !i.ip.includes(f.ip.trim())) return false
-    if (f.category && i.category !== f.category) return false
-    if (f.title && !(i.title || '').toLowerCase().includes(f.title.trim().toLowerCase())) return false
-    if (f.port) {
-      const want = String(f.port).trim()
-      const ports = (i.webPorts && i.webPorts.length ? i.webPorts : [i.webPort]).map(String)
-      if (!ports.includes(want)) return false
-    }
-    if (f.statusCodes && f.statusCodes.length > 0) {
-      if (!f.statusCodes.includes(String(i.statusCode || ''))) return false
-    }
-    return true
-  })
+  return items.value.filter(i => matchItem(i, f, false))
 })
+
+// 各类别在当前其它筛选条件下的条数（用于工具栏快捷筛选上的数字）
+const catCounts = computed(() => {
+  const m = { host_new: 0, port_new: 0, changed: 0 }
+  const f = filters.value
+  for (const i of items.value) {
+    if (!matchItem(i, f, true)) continue
+    if (m[i.category] !== undefined) m[i.category]++
+  }
+  return m
+})
+
+// 快捷筛选：点一下只看某一类，再点一次取消
+function toggleCategory(v) {
+  if (v === null) {
+    filters.value.category = null
+  } else {
+    filters.value.category = filters.value.category === v ? null : v
+  }
+  page.value = 1
+}
+
+// 类别对应的按钮颜色（与表格里的类别标签保持一致：红/橙/蓝）
+function catType(v) {
+  return { host_new: 'error', port_new: 'warning', changed: 'info' }[v] || 'default'
+}
 
 const pager = computed(() => ({
   pageSize: pageSize.value,
@@ -618,4 +661,6 @@ onMounted(() => { load(); loadDepartments() })
 <style scoped>
 .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .tip { color: #94a3b8; font-size: 12px; }
+.cat-chips { display: flex; gap: 8px; align-items: center; margin: 12px 0 4px; flex-wrap: wrap; }
+.cat-label { font-size: 12px; color: #94a3b8; margin-right: 2px; }
 </style>

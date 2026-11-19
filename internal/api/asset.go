@@ -114,7 +114,9 @@ func ListAssets(c *gin.Context) {
 	q.Count(&total)
 
 	var assets []model.Asset
-	q.Order("ip").Offset((page - 1) * size).Limit(size).Find(&assets)
+	// 同一 IP 有多条归属时，按 id 升序保证「列表第一条」稳定可预测——
+	// 服务的 asset_id（主归属）就是取的这个第一行，端口弹窗里的「主归属」必须与它一致。
+	q.Order("ip, id").Offset((page - 1) * size).Limit(size).Find(&assets)
 
 	// 附带：是否有 web 服务 / 该 IP 归属条数 / 主机活跃度
 	type assetWithWeb struct {
@@ -144,11 +146,45 @@ func ListAssets(c *gin.Context) {
 }
 
 // AssetPorts 某 IP 的端口列表（用于资产总览点击 IP 弹窗）
+//
+// 多归属下服务只挂一条资产（services.asset_id = 主归属），口径是「该 IP 归属列表的第一行」
+// （按 id 升序，与资产总览列表的第一条一致）。这里把主归属一起返回，前端在弹窗顶部标明，
+// 避免看端口时不知道这些服务算在哪个系统/负责人名下。
 func AssetPorts(c *gin.Context) {
 	ip := c.Param("ip")
 	var svcs []model.Service
 	config.DB.Where("ip = ?", ip).Order("port").Find(&svcs)
-	c.JSON(http.StatusOK, svcs)
+
+	var owners []model.Asset
+	config.DB.Where("ip = ?", ip).Order("id").Find(&owners)
+	var primary *model.Asset
+	if len(owners) > 0 {
+		primary = &owners[0]
+	}
+	// 兜底：按 services.asset_id 反查主归属（历史数据里第一行可能已被删）
+	var svcAssetID *uint
+	for _, s := range svcs {
+		if s.AssetID != nil {
+			svcAssetID = s.AssetID
+			break
+		}
+	}
+	if svcAssetID != nil {
+		for i := range owners {
+			if owners[i].ID == *svcAssetID {
+				primary = &owners[i]
+				break
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":       svcs,
+		"owners":      owners,
+		"ownerCount":  len(owners),
+		"primary":     primary,         // 主归属（services.asset_id 指向的那条）
+		"primaryRule": "取归属列表第一行（id 最小）", // 口径说明，前端原样展示
+	})
 }
 
 // UpdateAssetOwner 在资产总览标注系统/负责人/部门（同步确认该 IP 的待确认 web 资产）

@@ -229,7 +229,7 @@ func ConfirmByLedger(c *gin.Context) {
 func touchAssetConfirmed(ip, baselineTitle string, simhash uint64) {
 	updates := map[string]interface{}{"status": "confirmed", "content_changed": false}
 	var asset model.Asset
-	if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
+	if err := config.DB.Where("ip = ?", ip).Order("id").First(&asset).Error; err != nil {
 		// 没有资产行：扫描直接发现 web 服务但还没建资产
 		config.DB.Create(&model.Asset{
 			IP: ip, Source: "scan", Status: "confirmed", ConfirmedTitle: strings.TrimSpace(baselineTitle),

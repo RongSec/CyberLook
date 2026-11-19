@@ -133,10 +133,29 @@
     </n-modal>
 
     <!-- 右侧端口抽屉 -->
-    <n-drawer v-model:show="showPorts" :width="520" placement="right">
+    <n-drawer v-model:show="showPorts" :width="560" placement="right">
       <n-drawer-content :title="`${portIP} 端口详情`" closable>
+        <!-- 主归属：这些端口在服务表里挂的是哪一条归属（多归属下唯一确定） -->
+        <div class="primary-owner">
+          <div class="po-head">
+            <span class="po-title">主归属</span>
+            <n-tag v-if="portOwnerCount > 1" size="small" type="warning" round>
+              多归属 {{ portOwnerCount }} 条
+            </n-tag>
+            <span class="po-rule">口径：{{ portPrimaryRule }}</span>
+          </div>
+          <div v-if="portPrimary" class="po-body">
+            <span class="po-item"><b>系统</b>{{ portPrimary.systemName || '—' }}</span>
+            <span class="po-item"><b>负责人</b>{{ portPrimary.owner || '—' }}</span>
+            <span class="po-item"><b>部门</b>{{ portPrimary.department || '—' }}</span>
+            <span v-if="!portPrimary.systemName && !portPrimary.owner" class="po-warn">
+              这条还是扫描发现的行，未标注归属（可在资产总览里点它补填）
+            </span>
+          </div>
+          <div v-else class="po-body muted">该 IP 还没有归属记录</div>
+        </div>
         <n-empty v-if="ports.length === 0" description="暂无端口记录" />
-        <n-data-table v-else :columns="portColumns" :data="ports" size="small" :max-height="600" />
+        <n-data-table v-else :columns="portColumns" :data="ports" size="small" :max-height="520" />
       </n-drawer-content>
     </n-drawer>
 
@@ -274,6 +293,9 @@ async function doBatchEdit() {
 const showPorts = ref(false)
 const portIP = ref('')
 const ports = ref([])
+const portPrimary = ref(null)
+const portOwnerCount = ref(0)
+const portPrimaryRule = ref('')
 
 const showEdit = ref(false)
 const editForm = ref({ id: 0, ip: '', systemName: '', owner: null, department: null })
@@ -500,7 +522,11 @@ async function saveOwner() {
 
 async function openPorts(row) {
   portIP.value = row.ip
-  ports.value = await api.get(`/assets/${row.ip}/ports`)
+  const res = await api.get(`/assets/${row.ip}/ports`)
+  ports.value = res.items || []
+  portPrimary.value = res.primary || null
+  portOwnerCount.value = res.ownerCount || 0
+  portPrimaryRule.value = res.primaryRule || ''
   showPorts.value = true
 }
 
@@ -583,4 +609,17 @@ onMounted(() => {
 .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .history-ip { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
 .edit-tip { color: var(--text-muted); font-size: 12px; margin: 0 0 4px; }
+
+/* 端口抽屉顶部的主归属块 */
+.primary-owner {
+  border: 1px solid var(--n-border-color, rgba(128,128,128,.25));
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;
+  background: rgba(128,128,128,.06);
+}
+.po-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.po-title { font-size: 13px; font-weight: 600; }
+.po-rule { font-size: 11px; color: var(--text-muted, #888); margin-left: auto; }
+.po-body { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; line-height: 1.7; }
+.po-item b { font-weight: 500; color: var(--text-muted, #888); margin-right: 6px; }
+.po-warn { flex-basis: 100%; font-size: 12px; color: #d97706; }
 </style>

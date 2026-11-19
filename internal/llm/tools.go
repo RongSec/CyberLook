@@ -546,7 +546,7 @@ func listAssets(status, department, owner, keyword string, limit, offset int) st
 
 func getAssetDetail(ip string) string {
 	var asset model.Asset
-	if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
+	if err := config.DB.Where("ip = ?", ip).Order("id").First(&asset).Error; err != nil {
 		return jsonOut(map[string]string{"error": "资产不存在: " + ip})
 	}
 	var services []model.Service

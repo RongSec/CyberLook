@@ -13,14 +13,19 @@ import (
 // 活跃 / 睡眠 结算
 //
 // 口径（与用户确认过的规则一致）：
-//   * 每次「扫描完毕」结算一次，不是每个包结算一次；同一任务重复收尾不会双计
-//     （host_states.last_task_id / services.last_miss_task 做幂等）。
-//   * 主机存活（本次扫到至少一个开放端口）：
+//   * 计数单位是「这个 IP 被完整扫描的轮次」，不是任务条数。
+//     - 只有真正扫过的 IP 才计数：队列模式下只取 status=done 的单元，
+//       领取失败/隔离的 IP 不算一轮（否则会把没扫到的 IP 判成缺席）。
+//     - 幂等比较用 == 而不是 >=：同一任务重复收尾不双计，
+//       但并行/乱序完成的不同任务各算一轮（用 >= 会把小 ID 任务的整轮吞掉）。
+//   * 主机存活（本轮扫到至少一个开放端口）：
 //       - 扫到的端口 → active，缺席计数清零
-//       - 没扫到的端口 → 缺席 +1，连续 3 次 → sleeping
-//   * 主机不存活（本次一个端口都没扫到）：
-//       - 主机缺席 +1，连续 3 次 → 该 IP 旗下所有服务 sleeping
+//       - 没扫到的端口 → 缺席 +1，连续 3 轮 → sleeping
+//   * 主机不存活（本轮一个端口都没扫到）：
+//       - 主机缺席 +1，连续 3 轮 → 该 IP 旗下所有服务 sleeping
 //       - 期间任何一次重新扫到 → 立即回 active
+//   * 不做旁路存活探测（ICMP-only 主机不参与）：核心监控对象是服务不是主机，
+//     一个端口都不开的主机等价于没有服务，按睡眠处理即可，不值得为它加 probe 链路。
 //   * 任何情况下都不删除服务记录：只改 activity，避免"删了行，下轮重扫又变成新发现"。
 const activitySleepThreshold = 3
 
@@ -37,14 +42,23 @@ func SettleActivity(taskID uint, targetIPs []string, results []scanner.ScanResul
 }
 
 // SettleActivityForTask 队列/节点模式：按任务已入库的结果结算。
-// 判定依据是 services.last_task_id = 本任务（该端口本次被扫到过）。
+// 只统计「真正扫完」的单元（status=done）：领取失败/隔离的 IP 没被扫过，不能算缺席一轮。
+// 判定依据是 services.last_task_id = 本任务（该端口本轮被扫到过）。
 func SettleActivityForTask(taskID uint) {
 	if config.DB == nil || taskID == 0 {
 		return
 	}
 	var ips []string
-	config.DB.Model(&model.TaskUnit{}).Where("task_id = ?", taskID).Distinct("ip").Pluck("ip", &ips)
-	if len(ips) == 0 {
+	config.DB.Model(&model.TaskUnit{}).
+		Where("task_id = ? AND status = ?", taskID, "done").
+		Distinct("ip").Pluck("ip", &ips)
+
+	// 没有单元表（单机直扫、未走队列）才回退到任务 IP 段。
+	// 注意必须先看「有没有 unit」，而不是「有没有 done 的 unit」：
+	// 全部领取失败时 done 为空，回退到整段 IP 会把根本没扫到的 IP 判成缺席一轮。
+	var unitCount int64
+	config.DB.Model(&model.TaskUnit{}).Where("task_id = ?", taskID).Count(&unitCount)
+	if unitCount == 0 {
 		var task model.ScanTask
 		if err := config.DB.First(&task, taskID).Error; err == nil {
 			ips = target.Resolve(parseTargets(task.IPRanges), ExcludeRangeStrings())
@@ -77,8 +91,8 @@ func settle(taskID uint, targetIPs []string, alivePorts map[string]map[int]bool)
 	for _, ip := range targetIPs {
 		var hs model.HostState
 		hasHost := config.DB.Where("ip = ?", ip).First(&hs).Error == nil
-		if hasHost && hs.LastTaskID >= int64(taskID) {
-			continue // 本任务已结算过
+		if hasHost && hs.LastTaskID == int64(taskID) {
+			continue // 本任务已结算过（只跳过同一任务，不同任务各算一轮）
 		}
 		ports := alivePorts[ip]
 
@@ -95,7 +109,7 @@ func settle(taskID uint, targetIPs []string, alivePorts map[string]map[int]bool)
 					}
 					continue
 				}
-				if s.LastMissTask >= int64(taskID) {
+				if s.LastMissTask == int64(taskID) {
 					continue
 				}
 				miss := s.MissCount + 1

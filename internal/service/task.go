@@ -479,7 +479,9 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	isWeb := strings.HasPrefix(strings.ToUpper(p.Protocol), "HTTP")
 
 	var asset model.Asset
-	if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
+	// 主归属口径：同一 IP 多条归属时取 id 最小的那条（= 资产总览列表第一行），
+	// 服务的 asset_id 一律指向它，端口弹窗里也按这个口径标注「主归属」。
+	if err := config.DB.Where("ip = ?", ip).Order("id").First(&asset).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			// 主机资产不需要确认（默认已登记）；仅发现 web 服务才进入待处置
 			status := "confirmed"
@@ -488,7 +490,7 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 			}
 			asset = model.Asset{IP: ip, Source: "scan", Status: status}
 			config.DB.Create(&asset)
-			config.DB.Where("ip = ?", ip).First(&asset)
+			config.DB.Where("ip = ?", ip).Order("id").First(&asset)
 		} else {
 			return
 		}
