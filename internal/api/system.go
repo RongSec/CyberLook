@@ -166,3 +166,40 @@ func SystemStats(c *gin.Context) {
 		"gcCount":      m.NumGC,
 	})
 }
+
+// ===== 缓存清理 =====
+// 随任务产生的中间数据（AI 会话、扫描快照、队列残留、日志、用量）会持续增长，
+// 这里只做「看清占用 + 按需清理」，不做自动删，避免误伤历史。
+
+var cacheCleanMu sync.Mutex
+
+// CacheStats 各类缓存占用概览
+func CacheStats(c *gin.Context) {
+	c.JSON(http.StatusOK, service.CacheStat())
+}
+
+// CleanCache 清理指定类别
+func CleanCache(c *gin.Context) {
+	var req struct {
+		Keys          []string `json:"keys"`
+		RetentionDays int      `json:"retentionDays"`
+		Compact       bool     `json:"compact"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Keys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择要清理的类别"})
+		return
+	}
+	if req.RetentionDays < 0 || req.RetentionDays > 3650 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "保留天数不合法"})
+		return
+	}
+	// VACUUM FULL 会短暂锁表，串行执行避免互相等锁
+	if !cacheCleanMu.TryLock() {
+		c.JSON(http.StatusConflict, gin.H{"error": "已有清理任务在执行，请稍候"})
+		return
+	}
+	defer cacheCleanMu.Unlock()
+
+	res := service.CleanCaches(req.Keys, req.RetentionDays, req.Compact)
+	c.JSON(http.StatusOK, res)
+}

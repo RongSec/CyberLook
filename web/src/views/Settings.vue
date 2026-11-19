@@ -38,6 +38,66 @@
     </n-card>
   </div>
 
+    <n-card id="cache" title="缓存与清理" style="margin-top: 16px">
+      <p class="muted" style="margin: 0 0 12px">
+        随任务产生的中间数据（AI 会话、扫描快照、队列残留、运行日志、用量记录）。
+        这里只删这些可重建/纯历史的数据，资产、服务、任务定义、用户等业务数据不受影响。
+      </p>
+      <n-grid :cols="3" :x-gap="12" item-responsive style="margin-bottom: 14px">
+        <n-grid-item span="1">
+          <div class="stat"><div class="stat-num">{{ fmtBytes(cache.dbTotalBytes) }}</div><div class="stat-label">数据库总占用</div></div>
+        </n-grid-item>
+        <n-grid-item span="1">
+          <div class="stat"><div class="stat-num">{{ fmtBytes(cache.cleanableBytes) }}</div><div class="stat-label">缓存合计（{{ cache.cleanableRows.toLocaleString() }} 条）</div></div>
+        </n-grid-item>
+        <n-grid-item span="1">
+          <div class="stat"><div class="stat-num">{{ (cache.dbDeadTuples || 0).toLocaleString() }}</div><div class="stat-label">待回收死元组（行）</div></div>
+        </n-grid-item>
+      </n-grid>
+
+      <n-table :bordered="false" :single-line="false" size="small">
+        <thead>
+          <tr>
+            <th style="width: 210px">类别</th>
+            <th>内容</th>
+            <th style="width: 90px; text-align: right">条数</th>
+            <th style="width: 90px; text-align: right">占用</th>
+            <th style="width: 70px; text-align: center">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="it in cache.items" :key="it.key">
+            <td>
+              {{ it.label }}
+              <n-tag v-if="it.history" size="tiny" type="warning" :bordered="false" style="margin-left: 4px">丢历史</n-tag>
+            </td>
+            <td class="muted" style="font-size: 12px">{{ it.desc }}</td>
+            <td style="text-align: right">{{ it.rows.toLocaleString() }}</td>
+            <td style="text-align: right">{{ fmtBytes(it.bytes) }}</td>
+            <td style="text-align: center">
+              <n-button size="tiny" quaternary type="error" :disabled="!it.rows" @click="cleanOne(it)">清理</n-button>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+
+      <n-space justify="space-between" align="center" style="margin-top: 14px" wrap>
+        <n-space align="center" :size="8">
+          <span class="muted">保留最近</span>
+          <n-select v-model:value="cacheRetention" :options="retentionOpts" size="small" style="width: 108px" />
+          <n-checkbox v-model:checked="cacheCompact">清理后收缩表空间</n-checkbox>
+        </n-space>
+        <n-space :size="8">
+          <n-button size="small" :loading="cacheLoading" @click="loadCache">刷新</n-button>
+          <n-button size="small" type="error" :loading="cacheCleaning" @click="cleanAll">清理全部缓存</n-button>
+        </n-space>
+      </n-space>
+      <p class="desc" style="margin-top: 10px">
+        收缩表空间（VACUUM FULL）会把磁盘真正还回去，执行期间对应表短暂加锁（秒级）。
+        运行中任务的日志与队列单元始终跳过。
+      </p>
+    </n-card>
+
     <n-card id="access" title="访问控制" style="margin-top: 16px">
       <p class="muted" style="margin: 0 0 10px">
         限制哪些 IP 可以访问本系统。留空 = 不限制（任何 IP 都可访问）。
@@ -113,10 +173,11 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import api from '../api'
 
 const message = useMessage()
+const dialog = useDialog()
 const pwd = ref({ oldPassword: '', newPassword: '', confirm: '' })
 const saving = ref(false)
 
@@ -280,8 +341,84 @@ async function rollback() {
   }
 }
 
+// ===== 缓存与清理 =====
+const cache = ref({ dbTotalBytes: 0, dbDeadTuples: 0, cleanableBytes: 0, cleanableRows: 0, items: [] })
+const cacheLoading = ref(false)
+const cacheCleaning = ref(false)
+const cacheRetention = ref(30)   // 0 = 全部
+const cacheCompact = ref(true)
+const retentionOpts = [
+  { label: '全部', value: 0 },
+  { label: '7 天', value: 7 },
+  { label: '30 天', value: 30 },
+  { label: '90 天', value: 90 },
+  { label: '180 天', value: 180 },
+]
+
+function fmtBytes(n) {
+  n = Number(n) || 0
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB'
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+async function loadCache() {
+  cacheLoading.value = true
+  try {
+    const r = await api.get('/system/cache')
+    cache.value = { ...cache.value, ...r, items: r.items || [] }
+  } catch (e) {
+    message.error(e.response?.data?.error || '读取缓存占用失败')
+  } finally {
+    cacheLoading.value = false
+  }
+}
+
+async function doClean(keys, labels) {
+  const scope = cacheRetention.value > 0 ? `保留最近 ${cacheRetention.value} 天，` : '全部删除（不保留），'
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: '确认清理缓存',
+      content: `将清理：${labels.join('、')}。\n${scope}此操作不可恢复。`,
+      positiveText: '开始清理',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        cacheCleaning.value = true
+        try {
+          const r = await api.post('/system/cache/clean', {
+            keys,
+            retentionDays: cacheRetention.value,
+            compact: cacheCompact.value,
+          }, { timeout: 300000 })
+          const n = Object.values(r.deleted || {}).reduce((a, b) => a + (b || 0), 0)
+          message.success(`已删除 ${n.toLocaleString()} 条，释放 ${fmtBytes(r.freedBytes)}（${(r.durationMs / 1000).toFixed(1)}s）`)
+          await loadCache()
+        } catch (e) {
+          message.error(e.response?.data?.error || '清理失败')
+        } finally {
+          cacheCleaning.value = false
+        }
+        resolve()
+      },
+      onNegativeClick: resolve,
+      onClose: resolve,
+    })
+  })
+}
+
+function cleanOne(it) {
+  return doClean([it.key], [it.label])
+}
+
+function cleanAll() {
+  const keys = (cache.value.items || []).filter(x => x.rows > 0).map(x => x.key)
+  if (!keys.length) { message.info('没有可清理的缓存'); return }
+  return doClean(keys, ['全部缓存类别'])
+}
+
 onMounted(async () => {
-  await Promise.all([loadUpdateSettings(), loadVersion()])
+  await Promise.all([loadUpdateSettings(), loadVersion(), loadCache()])
   // 从左上角版本号跳转过来时定位到升级卡片
   if (location.hash === '#upgrade') {
     setTimeout(() => {
@@ -293,4 +430,7 @@ onMounted(async () => {
 
 <style scoped>
 .desc { font-size: 13px; margin: 4px 0; color: #6b7280; }
+.stat { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; }
+.stat-num { font-size: 18px; font-weight: 600; color: #1f2937; line-height: 1.3; }
+.stat-label { font-size: 12px; color: #6b7280; margin-top: 2px; }
 </style>

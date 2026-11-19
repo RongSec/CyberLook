@@ -209,6 +209,8 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.POST("/notify/test", TestNotify)
 		auth.GET("/system/settings", GetSystemSettings)
 		auth.POST("/system/settings", SaveSystemSettings)
+		auth.GET("/system/cache", CacheStats)
+		auth.POST("/system/cache/clean", CleanCache)
 		auth.GET("/system/update/check", CheckUpdate)
 		auth.POST("/system/update/apply", ApplyUpdate)
 		auth.POST("/system/update/rollback", RollbackUpdate)
