@@ -40,8 +40,9 @@
 
     <n-card id="cache" title="缓存与清理" style="margin-top: 16px">
       <p class="muted" style="margin: 0 0 12px">
-        随任务产生的中间数据（AI 会话、扫描快照、队列残留、运行日志、用量记录）。
-        这里只删这些可重建/纯历史的数据，资产、服务、任务定义、用户等业务数据不受影响。
+        随任务产生的中间数据（AI 会话、队列残留、运行日志、用量记录、截图）。
+        这里只删可重建/纯历史的数据；<b>扫描快照（IP 历史）属于核心数据，只统计占用、不提供清理</b>，
+        资产、服务、任务定义、用户等业务数据同样不受影响。
       </p>
       <n-grid :cols="3" :x-gap="12" item-responsive style="margin-bottom: 14px">
         <n-grid-item span="1">
@@ -69,13 +70,15 @@
           <tr v-for="it in cache.items" :key="it.key">
             <td>
               {{ it.label }}
-              <n-tag v-if="it.history" size="tiny" type="warning" :bordered="false" style="margin-left: 4px">丢历史</n-tag>
+              <n-tag v-if="it.protected" size="tiny" type="success" :bordered="false" style="margin-left: 4px">核心数据</n-tag>
+              <n-tag v-else-if="it.history" size="tiny" type="warning" :bordered="false" style="margin-left: 4px">丢历史</n-tag>
             </td>
             <td class="muted" style="font-size: 12px">{{ it.desc }}</td>
             <td style="text-align: right">{{ it.rows.toLocaleString() }}</td>
             <td style="text-align: right">{{ fmtBytes(it.bytes) }}</td>
             <td style="text-align: center">
-              <n-button size="tiny" quaternary type="error" :disabled="!it.rows" @click="cleanOne(it)">清理</n-button>
+              <span v-if="it.protected" class="muted" style="font-size: 12px">不清理</span>
+              <n-button v-else size="tiny" quaternary type="error" :disabled="!it.rows" @click="cleanOne(it)">清理</n-button>
             </td>
           </tr>
         </tbody>
@@ -392,7 +395,8 @@ async function doClean(keys, labels) {
             compact: cacheCompact.value,
           }, { timeout: 300000 })
           const n = Object.values(r.deleted || {}).reduce((a, b) => a + (b || 0), 0)
-          message.success(`已删除 ${n.toLocaleString()} 条，释放 ${fmtBytes(r.freedBytes)}（${(r.durationMs / 1000).toFixed(1)}s）`)
+          const skipped = (r.skipped || []).length
+          message.success(`已删除 ${n.toLocaleString()} 条，释放 ${fmtBytes(r.freedBytes)}（${(r.durationMs / 1000).toFixed(1)}s）` + (skipped ? `；${skipped} 类核心数据已跳过` : ''))
           await loadCache()
         } catch (e) {
           message.error(e.response?.data?.error || '清理失败')
@@ -412,7 +416,7 @@ function cleanOne(it) {
 }
 
 function cleanAll() {
-  const keys = (cache.value.items || []).filter(x => x.rows > 0).map(x => x.key)
+  const keys = (cache.value.items || []).filter(x => !x.protected && x.rows > 0).map(x => x.key)
   if (!keys.length) { message.info('没有可清理的缓存'); return }
   return doClean(keys, ['全部缓存类别'])
 }

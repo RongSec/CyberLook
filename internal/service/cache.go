@@ -22,8 +22,10 @@ type CacheItem struct {
 	Desc  string `json:"desc"`
 	Rows  int64  `json:"rows"`
 	Bytes int64  `json:"bytes"`
-	// History=true 表示清掉会丢历史（快照趋势 / 用量统计），界面上单独提示
+	// History=true 表示清掉会丢历史（用量统计），界面上单独提示
 	History bool `json:"history"`
+	// Protected=true 表示核心数据，只展示占用、不提供清理（如扫描快照）
+	Protected bool `json:"protected"`
 	// Note 清理时附带的动作说明
 	Note string `json:"note,omitempty"`
 }
@@ -48,8 +50,9 @@ type cacheDef struct {
 	Table   string
 	TimeCol string
 	Where   string // 附加过滤（清理与统计共用）
-	History bool
-	Note    string
+	History   bool
+	Protected bool
+	Note      string
 }
 
 var cacheDefs = []cacheDef{
@@ -65,9 +68,9 @@ var cacheDefs = []cacheDef{
 	},
 	{
 		Key: "scan_snapshots", Label: "扫描快照（IP 历史）",
-		Desc: "每次任务 × 每个 IP 一条，支撑资产变化趋势与 IP 历史",
-		Table: "scan_snapshots", TimeCol: "scanned_at", History: true,
-		Note: "清掉后 IP 历史与趋势图会缺失对应时段",
+		Desc: "每次任务 × 每个 IP 一条，支撑资产变化趋势与 IP 历史；核心数据，不提供清理",
+		Table: "scan_snapshots", TimeCol: "scanned_at", History: true, Protected: true,
+		Note: "核心数据：只统计占用，不可清理",
 	},
 	{
 		Key: "task_units", Label: "任务队列残留单元",
@@ -109,10 +112,12 @@ func CacheStat() CacheStats {
 		rows, bytes := statTable(d.Table, d.TimeCol, d.Where, 0, running)
 		st.Items = append(st.Items, CacheItem{
 			Key: d.Key, Label: d.Label, Desc: d.Desc,
-			Rows: rows, Bytes: bytes, History: d.History, Note: d.Note,
+			Rows: rows, Bytes: bytes, History: d.History, Protected: d.Protected, Note: d.Note,
 		})
-		st.CleanableRows += rows
-		st.CleanableBytes += bytes
+		if !d.Protected {
+			st.CleanableRows += rows
+			st.CleanableBytes += bytes
+		}
 	}
 	// 页面截图：记录行数 + 文件实际占用
 	{
@@ -190,6 +195,7 @@ type CleanResult struct {
 	BeforeBytes  int64            `json:"beforeBytes"`
 	AfterBytes   int64            `json:"afterBytes"`
 	Compacted    bool             `json:"compacted"`
+	Skipped      []string         `json:"skipped"` // 被保护、未清理的类别
 	DurationMs   int64            `json:"durationMs"`
 }
 
@@ -225,8 +231,9 @@ func CleanCaches(keys []string, retentionDays int, compact bool) CleanResult {
 			res.Deleted[key] = deleteByTime("llm_messages", "created_at", cutoff, "")
 			touch["llm_messages"] = true
 		case "scan_snapshots":
-			res.Deleted[key] = deleteByTime("scan_snapshots", "scanned_at", cutoff, "")
-			touch["scan_snapshots"] = true
+			// 核心数据（IP 历史 / 资产变化趋势的支撑），永不清除；前端也不给按钮，
+			// 这里再挡一次，防止直接调接口误删。
+			res.Skipped = append(res.Skipped, key)
 		case "task_units":
 			res.Deleted[key] = deleteByTime("task_units", "updated_at", cutoff, "status IN ('done','failed_unit')")
 			touch["task_units"] = true
