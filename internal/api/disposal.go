@@ -147,6 +147,8 @@ func listDisposalItems() []DisposalItem {
 // confirmPorts 确认一个 IP：所有服务标记已处置，并把**每个 web 端口当前的标题**记成该端口的基线。
 // 基线必须按端口记，否则多端口 IP 里除一个端口外，其余端口永远对不上基线 → 永久"新变更"。
 // 注意：标题为空时基线就记空串（空对空 = 没变化），不要再回退到 IP 级基线，否则空标题端口永远确认不掉。
+// 注意：这是「整 IP 已确认归属」的口径，只应被显式填写归属的路径调用；
+// 处置列表的「按台账确认」必须走端口级（ConfirmByLedger keys），否则会连坐未审端口。
 func confirmPorts(ip string) {
 	config.DB.Model(&model.Service{}).Where("ip = ?", ip).Update("confirmed", true)
 
@@ -158,43 +160,106 @@ func confirmPorts(ip string) {
 	}
 }
 
-// ConfirmByLedger 按台账确认（把当前扫描到的标题记为台账基线）
+// ConfirmByLedger 按台账确认。
+// 粒度必须是端口：处置列表一行 = 一个端口，确认一行只认这一行。
+// 早期实现按 IP 全量确认（confirmPorts），会把这个 IP 上**没被勾选的端口**一起标成已确认、
+// 并用当前标题覆盖它们的基线，导致两件事：
+//   1) 用户没审过的端口，之后标题一变就被判成「新变更」；
+//   2) 真正的「新变更」行在被批量确认时被静默接受（基线被改写成新值）。
+// 现在：keys 精确到端口，只写被选中端口的基线；资产级仅补一次归属痕迹，不覆盖已有基线。
 func ConfirmByLedger(c *gin.Context) {
 	var req struct {
-		IPs []string `json:"ips"`
+		Keys []string `json:"keys"` // ip:port，精确到端口（推荐）
+		IPs  []string `json:"ips"`  // 兼容旧调用：整 IP
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.IPs) == 0 {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	if len(req.Keys) == 0 && len(req.IPs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择要确认的资产"})
 		return
 	}
-	ok := 0
-	for _, ip := range req.IPs {
-		var svc model.Service
-		hasSvc := config.DB.Where("ip = ? AND (protocol ILIKE 'http%' OR title <> '')", ip).
-			Order("port").First(&svc).Error == nil
 
-		// 基线不再限制 source：扫描建的资产同样要写，否则确认完立刻又变"新变更"，永远确认不掉
-		updates := map[string]interface{}{"status": "confirmed", "content_changed": false}
-		if hasSvc {
-			updates["confirmed_title"] = svc.Title
-			updates["confirmed_simhash"] = svc.PageSimhash
-		}
-		config.DB.Model(&model.Asset{}).Where("ip = ?", ip).Updates(updates)
+	ok, skip := 0, 0
+	touchedAssets := map[string]bool{}
 
-		// 该 IP 所有服务标记已处置 + 每个 web 端口写自己的标题基线
-		confirmPorts(ip)
-
-		// 若 assets 表还没有这条记录（扫描直接发现 web 服务但未建资产），这里补一条
-		var asset model.Asset
-		if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
-			asset = model.Asset{
-				IP: ip, Source: "scan", Status: "confirmed",
+	if len(req.Keys) > 0 {
+		for _, k := range req.Keys {
+			ip, port, err := splitKey(k)
+			if err != nil {
+				skip++
+				continue
 			}
-			config.DB.Create(&asset)
+			var svc model.Service
+			if err := config.DB.Where("ip = ? AND port = ?", ip, port).First(&svc).Error; err != nil {
+				skip++
+				continue
+			}
+			// 只写这一行的基线（标题为空也照写：空对空 = 无变化，避免永久"新变更"）
+			config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(map[string]interface{}{
+				"confirmed":       true,
+				"confirmed_title": strings.TrimSpace(svc.Title),
+			})
+			if !touchedAssets[ip] {
+				touchAssetConfirmed(ip, svc.Title, svc.PageSimhash)
+				touchedAssets[ip] = true
+			}
+			ok++
 		}
-		ok++
+	} else {
+		// 旧口径：整 IP（保留给脚本/老前端）。仍然逐端口写基线，但不覆盖已有基线的端口。
+		for _, ip := range req.IPs {
+			if strings.TrimSpace(ip) == "" {
+				skip++
+				continue
+			}
+			confirmPorts(ip)
+			var svc model.Service
+			if err := config.DB.Where("ip = ? AND (protocol ILIKE 'http%' OR title <> '')", ip).
+				Order("port").First(&svc).Error; err == nil {
+				touchAssetConfirmed(ip, svc.Title, svc.PageSimhash)
+			}
+			ok++
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"confirmed": ok})
+
+	c.JSON(http.StatusOK, gin.H{"confirmed": ok, "skip": skip})
+}
+
+// touchAssetConfirmed 记录"这个 IP 已经人工确认过"的痕迹。
+// 只补空缺：已有的资产级基线不覆盖（否则会把其他端口的变更判定一起抹掉）。
+func touchAssetConfirmed(ip, baselineTitle string, simhash uint64) {
+	updates := map[string]interface{}{"status": "confirmed", "content_changed": false}
+	var asset model.Asset
+	if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
+		// 没有资产行：扫描直接发现 web 服务但还没建资产
+		config.DB.Create(&model.Asset{
+			IP: ip, Source: "scan", Status: "confirmed", ConfirmedTitle: strings.TrimSpace(baselineTitle),
+			ConfirmedSimhash: simhash,
+		})
+		return
+	}
+	if strings.TrimSpace(asset.ConfirmedTitle) == "" {
+		updates["confirmed_title"] = strings.TrimSpace(baselineTitle)
+	}
+	if asset.ConfirmedSimhash == 0 {
+		updates["confirmed_simhash"] = simhash
+	}
+	config.DB.Model(&model.Asset{}).Where("ip = ?", ip).Updates(updates)
+}
+
+// splitKey 解析 ip:port
+func splitKey(k string) (string, int, error) {
+	parts := strings.SplitN(strings.TrimSpace(k), ":", 2)
+	if len(parts) != 2 {
+		return "", 0, fmt.Errorf("bad key")
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("bad port")
+	}
+	return strings.TrimSpace(parts[0]), port, nil
 }
 
 // ListDisposal 资产处置列表

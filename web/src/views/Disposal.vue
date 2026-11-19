@@ -10,8 +10,9 @@
               按台账确认{{ ledgerChecked.length ? `(${ledgerChecked.length})` : '' }}
             </n-button>
           </template>
-          只对「台账有 / 新变更」的行生效：直接用台账里的归属一键确认。
-          「新出现」的资产台账里没有信息，请用「批量处置」填写部门/负责人。
+          只确认**勾选中的那些端口行**（不再连坐同 IP 的其它端口）。
+          「台账有」= 承认这个端口现状；「新变更」需要你逐行看过页面后再确认（全部/批量确认会显式提示）。
+          「新出现」台账里没有信息，请用「批量处置」填写部门/负责人。
         </n-tooltip>
         <n-button @click="checkAllLedger">{{ allLedgerSelected ? '取消选中台账有的' : '全选台账有的' }}</n-button>
         <n-button @click="checkAllFiltered">{{ allFilteredSelected ? '取消全选当前筛选' : '全选当前筛选' }}</n-button>
@@ -127,7 +128,7 @@
 
 <script setup>
 import { ref, h, computed, onMounted } from 'vue'
-import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
+import { NTag, NButton, NPopconfirm, useMessage, useDialog } from 'naive-ui'
 import api from '../api'
 import SearchBar from '../components/SearchBar.vue'
 import ExportButton from '../components/ExportButton.vue'
@@ -135,6 +136,7 @@ import ExportButton from '../components/ExportButton.vue'
 // 导出列
 
 const message = useMessage()
+const dialog = useDialog()
 const items = ref([])
 const checked = ref([])
 
@@ -311,7 +313,7 @@ const columns = [
     title: '操作', key: 'actions', width: 170,
     render: row => h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, [
       row.inLedger
-        ? h(NButton, { size: 'small', type: 'success', text: true, onClick: () => confirmLedger([row.ip]) }, { default: () => '按台账确认' })
+        ? h(NButton, { size: 'small', type: 'success', text: true, onClick: () => confirmLedger([row.ip + ':' + row.webPort]) }, { default: () => '按台账确认' })
         : null,
       h(NButton, { size: 'small', type: 'primary', onClick: () => openConfirm(row) }, { default: () => '确认处置' }),
       h(NPopconfirm, { onPositiveClick: () => delDisposal(row) },
@@ -400,9 +402,9 @@ function toggleIp(ip) {
     : [...new Set([...cur, ...keys])]
 }
 
-async function confirmLedger(ips) {
+async function confirmLedger(keys) {
   try {
-    const res = await api.post('/disposal/confirm-ledger', { ips })
+    const res = await api.post('/disposal/confirm-ledger', { keys })
     message.success(`已按台账确认 ${res.confirmed} 项`)
     checked.value = []
     load()
@@ -423,12 +425,20 @@ function twoLine(prev, cur) {
 }
 
 
-const ledgerChecked = computed(() =>
-  keysToIps(checked.value).filter(ip => items.value.find(i => i.ip === ip && i.inLedger)))
+// 选中且属于台账（含新变更）的端口 key —— 精确到端口，不再按 IP 传
+const ledgerChecked = computed(() => {
+  const byKey = new Map(items.value.map(i => [i.ip + ':' + i.webPort, i]))
+  return checked.value.filter(k => byKey.get(k)?.inLedger)
+})
+// 选中里有多少是「新变更」：确认前需要二次确认，避免静默接受页面变化
+const changedChecked = computed(() => {
+  const byKey = new Map(items.value.map(i => [i.ip + ':' + i.webPort, i]))
+  return checked.value.filter(k => byKey.get(k)?.category === 'changed')
+})
 
 const allLedgerSelected = computed(() => {
-  const ledgerIps = items.value.filter(i => i.inLedger).map(i => i.ip)
-  return ledgerIps.length > 0 && ledgerIps.every(ip => checkedIps.value.has(ip))
+  const keys = items.value.filter(i => i.category === 'in_ledger').map(i => i.ip + ':' + i.webPort)
+  return keys.length > 0 && keys.every(k => checked.value.includes(k))
 })
 const allFilteredSelected = computed(() => {
   const ips = filteredItems.value.map(i => i.ip)
@@ -436,10 +446,10 @@ const allFilteredSelected = computed(() => {
 })
 
 // 切换：已全选则取消，否则全选
+// 只选「台账有」的端口行：新变更（页面已变）必须逐行看过再确认，
+// 不能被"全选台账有的"顺带抹掉——那是把未审的变更当成了已确认。
 function checkAllLedger() {
-  // 全选台账有的：按 IP 口径（同 IP 的所有端口一起选中）
-  const ledgerIps = [...new Set(items.value.filter(i => i.inLedger).map(i => i.ip))]
-  const allKeys = ledgerIps.flatMap(ip => keysOfIp(ip))
+  const allKeys = items.value.filter(i => i.category === 'in_ledger').map(i => i.ip + ':' + i.webPort)
   if (allLedgerSelected.value) {
     const drop = new Set(allKeys)
     checked.value = checked.value.filter(k => !drop.has(k))
@@ -498,13 +508,22 @@ async function batchDelete() {
 }
 
 async function batchConfirmLedger() {
-  const ips = ledgerChecked.value
-  if (!ips.length) {
+  const keys = ledgerChecked.value
+  if (!keys.length) {
     // 选中的全是「新出现」（台账里没这个 IP）：给明确出路，别让按钮变成"点了没反应"
     message.warning('所选资产都不在台账中（新出现），请用「批量处置」填写部门/负责人来登记归属')
     return
   }
-  await confirmLedger(ips)
+  const changed = changedChecked.value.length
+  if (!changed) return confirmLedger(keys)
+  // 选中的含「新变更」：必须明确告知，避免像以前那样"确认台账有，变更也一起没了"
+  dialog.warning({
+    title: '选中包含页面已变更的端口',
+    content: `其中 ${changed} 行是「新变更」（页面标题/内容与上次确认不一致）。\n继续确认 = 接受这些变化并写入新基线。建议先逐行核对页面。`,
+    positiveText: `确认 ${keys.length} 项（含 ${changed} 项变更）`,
+    negativeText: '返回核对',
+    onPositiveClick: () => confirmLedger(keys),
+  })
 }
 
 async function load() {

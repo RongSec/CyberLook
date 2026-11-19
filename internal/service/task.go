@@ -597,7 +597,9 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	}
 }
 
-// markMissingServices 本次扫描未发现的服务累计缺席，连续 3 次才剔除
+// markMissingServices 本次扫描未发现的服务累计缺席，连续 3 次才剔除。
+// 已人工确认(confirmed)的服务不剔除：删了行 = 连 confirmed 与基线一起丢，
+// 下轮扫到同一个 ip:port 会当成全新服务重新插入 → 处置列表里"确认过的又变回台账有"。
 func markMissingServices(targetIPs []string, results []scanner.ScanResult) {
 	if len(targetIPs) == 0 {
 		return
@@ -610,6 +612,11 @@ func markMissingServices(targetIPs []string, results []scanner.ScanResult) {
 	config.DB.Where("ip IN ?", targetIPs).Find(&svcs)
 	for _, s := range svcs {
 		if found[fmt.Sprintf("%s:%d", s.IP, s.Port)] {
+			continue
+		}
+		if s.Confirmed {
+			// 人确认过的记录只累加缺席次数，不删（保留归属/基线）
+			config.DB.Model(&model.Service{}).Where("id = ?", s.ID).Update("miss_count", s.MissCount+1)
 			continue
 		}
 		if s.MissCount+1 >= 3 {
