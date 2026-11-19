@@ -319,6 +319,16 @@ const columns = [
     title: '是否有WEB', key: 'hasWeb', width: 110,
     render: row => h(NTag, { size: 'small', type: row.hasWeb ? 'success' : 'default' }, { default: () => row.hasWeb ? '有' : '无' })
   },
+  {
+    title: '归属', key: 'multiOwner', width: 100,
+    render: row => h(NTag, { size: 'small', type: row.multiOwner ? 'warning' : 'default', bordered: false },
+      { default: () => row.multiOwner ? `多归属 ${row.ownerCount}` : '单一归属' })
+  },
+  {
+    title: '活跃状态', key: 'activity', width: 100,
+    render: row => h(NTag, { size: 'small', type: row.activity === 'sleeping' ? 'default' : 'success', bordered: false },
+      { default: () => row.activity === 'sleeping' ? '睡眠' : '活跃' })
+  },
   { title: '关联业务', key: 'systemName' },
   { title: '负责人', key: 'owner', width: 150, render: r => renderOwners(r.owner) },
   { title: '隶属部门', key: 'department', width: 130 },
@@ -354,7 +364,9 @@ const columns = [
 const SPL_FIXED_OPTIONS = {
   hasWeb: [{ label: '有', value: 'true' }, { label: '无', value: 'false' }],
   source: [{ label: '台账导入', value: 'ledger' }, { label: '扫描发现', value: 'scan' }],
-  status: [{ label: '待确认', value: 'pending' }, { label: '已登记', value: 'confirmed' }]
+  status: [{ label: '待确认', value: 'pending' }, { label: '已登记', value: 'confirmed' }],
+  multiOwner: [{ label: '多归属', value: 'true' }, { label: '单一归属', value: 'false' }],
+  activity: [{ label: '活跃', value: 'active' }, { label: '睡眠', value: 'sleeping' }]
 }
 
 // 导出列 = 表格所有列（排除操作列），与页面显示保持一致

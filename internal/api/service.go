@@ -57,7 +57,7 @@ func ListServices(c *gin.Context) {
 			}
 			q = ApplySearchConds(q, rest, map[string]string{
 				"ip": "ip", "port": "port", "service": "service", "protocol": "protocol",
-				"title": "title", "statusCode": "status_code", "banner": "banner",
+				"title": "title", "statusCode": "status_code", "banner": "banner", "activity": "activity",
 				"contentLength": "content_length", "finger": "fingerprint",
 				"lastSeen": "last_seen", "firstSeen": "first_seen",
 			})

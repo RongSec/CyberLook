@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -435,9 +434,9 @@ func ExecuteTask(taskID uint) error {
 		config.DB.Model(&task).Updates(map[string]interface{}{"status": "failed", "finished_at": time.Now()})
 		return err
 	}
-	// 连续 3 次未发现才剔除
+	// 活跃 / 睡眠结算（每次扫描完毕计一次，不删除任何记录）
 	expanded := target.Resolve(targets, ExcludeRangeStrings())
-	markMissingServices(expanded, results)
+	SettleActivity(task.ID, expanded, results)
 	// 注意：扫描结束后不再自动跑合规检测。合规结果只由「合规检测」页手动触发产生
 	//（手动检测会对端口做实连确认），避免用陈旧扫描数据刷出一堆假违规。
 	// 记录本次报告文件
@@ -594,36 +593,6 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	// 也会误伤（合法产品名被当成垃圾）。
 	if p.NeedAI {
 		EnqueueAIIdentify(taskID, ip, p.Port)
-	}
-}
-
-// markMissingServices 本次扫描未发现的服务累计缺席，连续 3 次才剔除。
-// 已人工确认(confirmed)的服务不剔除：删了行 = 连 confirmed 与基线一起丢，
-// 下轮扫到同一个 ip:port 会当成全新服务重新插入 → 处置列表里"确认过的又变回台账有"。
-func markMissingServices(targetIPs []string, results []scanner.ScanResult) {
-	if len(targetIPs) == 0 {
-		return
-	}
-	found := map[string]bool{}
-	for _, r := range results {
-		found[fmt.Sprintf("%s:%d", r.IP, r.Port)] = true
-	}
-	var svcs []model.Service
-	config.DB.Where("ip IN ?", targetIPs).Find(&svcs)
-	for _, s := range svcs {
-		if found[fmt.Sprintf("%s:%d", s.IP, s.Port)] {
-			continue
-		}
-		if s.Confirmed {
-			// 人确认过的记录只累加缺席次数，不删（保留归属/基线）
-			config.DB.Model(&model.Service{}).Where("id = ?", s.ID).Update("miss_count", s.MissCount+1)
-			continue
-		}
-		if s.MissCount+1 >= 3 {
-			config.DB.Delete(&model.Service{}, s.ID)
-		} else {
-			config.DB.Model(&s).Update("miss_count", s.MissCount+1)
-		}
 	}
 }
 

@@ -98,10 +98,15 @@ const columns = [
   { title: 'Banner', key: 'banner', ellipsis: { tooltip: true } },
   { title: '台账登记', key: 'ledger', width: 200,
     render: r => h('div', { style: 'font-size:12px;line-height:1.5' }, [
-      h('div', { style: 'color:#15803d' }, r.systemName || (r.confirmed ? '（台账未填系统名）' : '—')),
+      h('div', { style: r.systemName ? 'color:#15803d' : 'color:#c0c4cc' }, r.systemName || '—'),
       h('div', { style: 'color:#6b7280;font-size:11px' },
         [r.owner || '', r.department || ''].filter(Boolean).join(' · ') || '—')
     ]) },
+  {
+    title: '活跃状态', key: 'activity', width: 100,
+    render: r => h(NTag, { size: 'small', type: r.activity === 'sleeping' ? 'default' : 'success', bordered: false },
+      { default: () => r.activity === 'sleeping' ? '睡眠' : '活跃' })
+  },
   { title: '最近发现', key: 'lastSeen', width: 160, render: r => fmt(r.lastSeen) },
   {
     title: '操作', key: 'actions', width: 170,
@@ -117,6 +122,7 @@ const columns = [
 // 检索字段 = 表格所有列（排除操作列），新增列时自动多一项
 // 固定选项字段（不给手输）
 const SPL_FIXED_OPTIONS = {
+  activity: [{ label: '活跃', value: 'active' }, { label: '睡眠', value: 'sleeping' }],
   protocol: [{ label: 'https', value: 'https' }, { label: 'http', value: 'http' }],
   statusCode: {
     multiple: true, filterable: true,

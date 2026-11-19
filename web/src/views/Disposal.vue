@@ -14,15 +14,14 @@
           「台账有」= 承认这个端口现状；「新变更」需要你逐行看过页面后再确认（全部/批量确认会显式提示）。
           「新出现」台账里没有信息，请用「批量处置」填写部门/负责人。
         </n-tooltip>
-        <n-button @click="checkAllLedger">{{ allLedgerSelected ? '取消选中台账有的' : '全选台账有的' }}</n-button>
-        <n-button @click="checkAllFiltered">{{ allFilteredSelected ? '取消全选当前筛选' : '全选当前筛选' }}</n-button>
         <n-tooltip trigger="hover" placement="bottom">
           <template #trigger>
             <n-button type="primary" ghost @click="openBatchConfirm">批量处置</n-button>
           </template>
-          选中资产后点击，会自动把 IP 填入处置框（可编辑）；
+          选中端口后点击：填写部门/负责人，把这些端口登记到该归属；
           未选中时打开空白处置框，手动填写 IP 后同样可提交。
         </n-tooltip>
+        <n-button @click="checkAllFiltered">{{ allFilteredSelected ? '取消全选当前筛选' : '全选当前筛选' }}</n-button>
         <n-button type="info" :disabled="checked.length === 0" @click="copyUrls">
           复制 URL{{ checked.length ? `(${checked.length})` : '' }}
         </n-button>
@@ -37,8 +36,8 @@
         </n-popconfirm>
         <ExportButton type="disposal" title="资产处置" :columns="exportCols" :conds="splConds" />
         <n-tag type="warning" round>{{ filteredItems.length }} 项待处理（共 {{ items.length }}）</n-tag>
-        <span class="tip">红=台账没有 · 绿=台账有 · 黄=确认过但页面相似度变更 ·
-          勾选精确到端口；点 IP 旁「N 端口」一次选中整个 IP</span>
+        <span class="tip">红=主机新出现 · 橙=端口新出现 · 黄=新变更（确认过但页面已变）·
+          勾选精确到端口；点 IP 旁「N 端口」一次选中整个 IP；台账登记列仅作参考</span>
       </div>
       <n-data-table :columns="columns" :data="filteredItems" :loading="loading" size="small"
         :row-key="r => r.ip + ':' + r.webPort" v-model:checked-row-keys="checked" @update:checked-row-keys="onCheckedChange"
@@ -51,8 +50,10 @@
           <n-input v-model:value="form.ip" type="textarea" :rows="3" :disabled="!batchMode"
             placeholder="多个 IP 用换行或逗号分隔" />
         </n-form-item>
-        <n-form-item label="响应码"><n-input :value="form.statusCode || '-'" disabled /></n-form-item>
-        <n-form-item label="网站标题">
+        <n-form-item v-if="form.statusCode" label="响应码">
+          <n-input :value="form.statusCode" disabled />
+        </n-form-item>
+        <n-form-item v-if="form.title || form.prevTitle" label="网站标题">
           <div style="width:100%">
             <div v-if="form.prevTitle && form.prevTitle !== form.title" style="margin-bottom:6px">
               <n-tag size="small" type="warning">旧</n-tag>
@@ -66,7 +67,7 @@
             </div>
           </div>
         </n-form-item>
-        <n-form-item label="指纹">
+        <n-form-item v-if="form.fingerprint || form.prevFingerprint" label="指纹">
           <div style="width:100%">
             <div v-if="form.prevFingerprint && form.prevFingerprint !== form.fingerprint" style="margin-bottom:6px">
               <n-tag size="small" type="warning">旧</n-tag>
@@ -163,7 +164,7 @@ const CELL_FIELD_MAP = {
 }
 
 function cellValue(it, field) {
-  if (field === 'inLedger') return it.inLedger ? '是' : '否'
+  if (field === 'inLedger') return (it.ledgerSystem || it.ledgerOwner || it.ledgerDept) ? '是' : '否'
   const realField = CELL_FIELD_MAP[field] || field
   const v = it[realField]
   if (v === null || v === undefined) return ''
@@ -273,7 +274,11 @@ const columns = [
   {
     title: '类别', key: 'category', width: 90,
     render: r => {
-      const m = { new: ['新出现', 'error'], in_ledger: ['台账有', 'success'], changed: ['新变更', 'warning'] }[r.category] || ['-', 'default']
+      const m = {
+        host_new: ['主机新出现', 'error'],
+        port_new: ['端口新出现', 'warning'],
+        changed: ['新变更', 'info']
+      }[r.category] || ['-', 'default']
       return h(NTag, { size: 'small', type: m[1] }, { default: () => m[0] })
     }
   },
@@ -299,35 +304,27 @@ const columns = [
   { title: '网站标题', key: 'title', ellipsis: { tooltip: true }, render: r => twoLine(r.prevTitle, r.title) },
   { title: '指纹', key: 'fingerprint', ellipsis: { tooltip: true }, render: r => twoLine(r.prevFingerprint, r.fingerprint) },
   {
-    title: '台账登记', key: 'ledger', width: 190,
-    render: r => r.inLedger
-      ? h('div', { style: 'font-size:12px;line-height:1.5' }, [
-          h('div', { style: 'color:#15803d' }, r.ledgerSystem || '（台账未填系统名）'),
-          h('div', { style: 'color:#6b7280;font-size:11px' },
-            [r.ledgerOwner, r.ledgerDept].filter(Boolean).join(' · ') || '（台账未填负责人）')
-        ])
-      : h('span', { style: 'color:#9ca3af;font-size:12px' }, '台账未登记')
+    title: '台账登记', key: 'ledger', width: 200,
+    // 仅作参考：IP 登记过就展示登记内容，没登记就一个「—」，不再有"台账未填系统名"这种噪音
+    render: r => {
+      const sys = (r.ledgerSystem || '').trim()
+      const rest = [r.ledgerOwner, r.ledgerDept].map(x => (x || '').trim()).filter(Boolean).join(' · ')
+      if (!sys && !rest) return h('span', { style: 'color:#c0c4cc;font-size:12px' }, '—')
+      return h('div', { style: 'font-size:12px;line-height:1.5' }, [
+        sys ? h('div', { style: 'color:#15803d' }, sys) : null,
+        rest ? h('div', { style: 'color:#6b7280;font-size:11px' }, rest) : null,
+        r.ledgerCount > 1 ? h('div', { style: 'color:#d97706;font-size:11px' }, `多归属（${r.ledgerCount} 条记录）`) : null
+      ])
+    }
   },
-  { title: '发现时间', key: 'createdAt', width: 160, render: r => fmt(r.createdAt) },
-  {
-    title: '操作', key: 'actions', width: 170,
-    render: row => h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, [
-      row.inLedger
-        ? h(NButton, { size: 'small', type: 'success', text: true, onClick: () => confirmLedger([row.ip + ':' + row.webPort]) }, { default: () => '按台账确认' })
-        : null,
-      h(NButton, { size: 'small', type: 'primary', onClick: () => openConfirm(row) }, { default: () => '确认处置' }),
-      h(NPopconfirm, { onPositiveClick: () => delDisposal(row) },
-        { trigger: () => h(NButton, { size: 'small', type: 'error', text: true }, { default: () => '删除' }),
-          default: () => `确认删除 ${row.ip} 及其服务记录？` })
-    ])
-  }
+  { title: '发现时间', key: 'createdAt', width: 160, render: r => fmt(r.createdAt) }
 ]
 
 // 检索字段 = 表格所有列（排除操作列），新增列时自动多一项
 // 固定选项字段（不给手输）
 const SPL_FIXED_OPTIONS = {
-  category: [{ label: '新出现', value: 'new' }, { label: '台账有', value: 'in_ledger' }, { label: '新变更', value: 'changed' }],
-  inLedger: [{ label: '是', value: '是' }, { label: '否', value: '否' }],
+  category: [{ label: '主机新出现', value: 'host_new' }, { label: '端口新出现', value: 'port_new' }, { label: '新变更', value: 'changed' }],
+  activity: [{ label: '活跃', value: 'active' }, { label: '睡眠', value: 'sleeping' }],
   statusCode: {
     multiple: true, filterable: true,
     options: [
@@ -425,38 +422,18 @@ function twoLine(prev, cur) {
 }
 
 
-// 选中且属于台账（含新变更）的端口 key —— 精确到端口，不再按 IP 传
-const ledgerChecked = computed(() => {
-  const byKey = new Map(items.value.map(i => [i.ip + ':' + i.webPort, i]))
-  return checked.value.filter(k => byKey.get(k)?.inLedger)
-})
+// 选中的端口 key —— 精确到端口，不再按 IP 传
+const ledgerChecked = computed(() => checked.value.slice())
 // 选中里有多少是「新变更」：确认前需要二次确认，避免静默接受页面变化
 const changedChecked = computed(() => {
   const byKey = new Map(items.value.map(i => [i.ip + ':' + i.webPort, i]))
   return checked.value.filter(k => byKey.get(k)?.category === 'changed')
 })
 
-const allLedgerSelected = computed(() => {
-  const keys = items.value.filter(i => i.category === 'in_ledger').map(i => i.ip + ':' + i.webPort)
-  return keys.length > 0 && keys.every(k => checked.value.includes(k))
-})
 const allFilteredSelected = computed(() => {
   const ips = filteredItems.value.map(i => i.ip)
   return ips.length > 0 && ips.every(ip => checkedIps.value.has(ip))
 })
-
-// 切换：已全选则取消，否则全选
-// 只选「台账有」的端口行：新变更（页面已变）必须逐行看过再确认，
-// 不能被"全选台账有的"顺带抹掉——那是把未审的变更当成了已确认。
-function checkAllLedger() {
-  const allKeys = items.value.filter(i => i.category === 'in_ledger').map(i => i.ip + ':' + i.webPort)
-  if (allLedgerSelected.value) {
-    const drop = new Set(allKeys)
-    checked.value = checked.value.filter(k => !drop.has(k))
-  } else {
-    checked.value = [...new Set([...checked.value, ...allKeys])]
-  }
-}
 
 async function copyUrls() {
   const rows = filteredItems.value.filter(i => checked.value.includes(i.ip + ':' + i.webPort))

@@ -374,11 +374,14 @@ func matchDisposalConds(it DisposalItem, conds []SearchCond) bool {
 		case "fingerprint":
 			actual = it.Fingerprint
 		case "inLedger":
-			if it.InLedger {
+			// 兼容旧导出条件：现在用「有没有台账登记信息」表达
+			if it.LedgerSystem != "" || it.LedgerOwner != "" || it.LedgerDept != "" {
 				actual = "是"
 			} else {
 				actual = "否"
 			}
+		case "activity":
+			actual = it.Activity
 		case "lastSeen", "createdAt":
 			t := it.CreatedAt
 			if c.Field == "lastSeen" && it.LastSeen != nil {

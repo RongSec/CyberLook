@@ -9,6 +9,7 @@ import (
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
@@ -27,8 +28,11 @@ type DisposalItem struct {
 	PrevContentLength int  `json:"prevContentLength"`
 	StatusCode   string     `json:"statusCode"`
 	ContentLength int       `json:"contentLength"`
-	Category     string     `json:"category"` // new=新出现 / in_ledger=台账有 / changed=新变更
-	InLedger     bool       `json:"inLedger"`
+	Category string `json:"category"` // host_new=主机新出现 / port_new=端口新出现 / changed=新变更
+	// 台账登记信息（仅参考展示，不参与分类）
+	LedgerCount int `json:"ledgerCount"`
+	// Activity 该端口活跃度：active / sleeping
+	Activity string `json:"activity"`
 	Confirmed    bool       `json:"confirmed"`
 	LedgerSystem string     `json:"ledgerSystem"`
 	LedgerOwner  string     `json:"ledgerOwner"`
@@ -39,109 +43,102 @@ type DisposalItem struct {
 }
 
 // listDisposalItems 待处置 web 资产（以扫描结果为准，台账只作参考）
-// 分类规则：
-//   new       台账/资产里都没有这个 IP              → 红
-//   in_ledger 这个 IP 已确认过（台账导入或有确认痕迹）→ 绿，只需确认这次新出现的端口
-//   changed   该端口确认过、但标题/内容变了          → 黄
-// 已确认且标题未变的不再列出
+//
+// 分类口径（v0.0.49 重定）：
+//   主机新出现  host_new  这个 IP 从未被登记/确认过（台账里也没有） → 需要先认领主机
+//   端口新出现  port_new  主机已登记，但这个端口还没确认过          → 只需确认端口
+//   新变更      changed   端口确认过，但标题与确认基线不一致          → 需要核对页面
+//
+// 不再有「台账有」这个标签：端口确认后该 IP 会进资产总览，如果还留「台账有」，
+// 同 IP 其它端口会立刻变成"台账有"，看上去像"确认了又回来"。
+// 台账信息只作为「台账登记」列的参考展示，不参与分类。
 func listDisposalItems() []DisposalItem {
 	var svcs []model.Service
 	// 只保留真正能访问的：有响应码或有页面标题（哪怕 404/502 也算可达）
 	config.DB.Where("protocol ILIKE 'http%' OR service ILIKE '%http%'").
-		// "有 web 服务就要处置"：只要有响应码、标题或响应体长度任一就算可达
 		Where("COALESCE(status_code,'') <> '' OR COALESCE(title,'') <> '' OR COALESCE(content_length,0) > 0").
 		Order("ip, port").Find(&svcs)
 
-	// assets.ip 是唯一索引（一个 IP 一行），来源两类：
-	//   ledger = 台账导入；scan = 扫描时自动建的主机记录（非 web 服务默认 confirmed，web 服务 pending）
-	// 之前只把 source=ledger 当"台账有"，导致「已确认过的 IP 上又扫出新端口」被误判成新出现。
-	var assets []model.Asset
-	config.DB.Find(&assets)
-	assetMap := make(map[string]model.Asset, len(assets))
-	for _, a := range assets {
-		assetMap[a.IP] = a
+	// 一个 IP 可能有多条归属（多归属），台账信息取"最完整"的那条作参考
+	assets := map[string][]model.Asset{}
+	var rows []model.Asset
+	config.DB.Find(&rows)
+	for _, a := range rows {
+		assets[a.IP] = append(assets[a.IP], a)
 	}
 
-	// 每个 web 端口一行，端口之间是平行关系（同一 IP 的多个 web 端口 = 同一业务的不同页面）
 	items := []DisposalItem{}
 	for _, svc := range svcs {
-		ports := []int{svc.Port}
+		ledger, hasTrace := pickAsset(assets[svc.IP])
 
 		it := DisposalItem{
 			IP: svc.IP, Title: svc.Title, Fingerprint: svc.Fingerprint,
-			WebPort: svc.Port, WebPorts: ports, StatusCode: svc.StatusCode, ContentLength: svc.ContentLength,
+			WebPort: svc.Port, WebPorts: []int{svc.Port},
+			StatusCode: svc.StatusCode, ContentLength: svc.ContentLength,
 			PrevTitle: svc.PrevTitle, PrevFingerprint: svc.PrevFingerprint,
 			PrevStatusCode: svc.PrevStatusCode, PrevContentLength: svc.PrevContentLength,
 			FirstSeen: svc.FirstSeen, LastSeen: svc.LastSeen,
 			Confirmed: svc.Confirmed,
+			Activity:  svc.Activity,
 		}
 		if svc.FirstSeen != nil {
 			it.CreatedAt = *svc.FirstSeen
 		}
-
-		asset, hasAsset := assetMap[svc.IP]
-		// 人工确认痕迹：确认过页面标题/内容指纹，或填过归属。只有这种才代表"这个 IP 我们知道是谁的"
-		hasTrace := asset.ConfirmedTitle != "" || asset.ConfirmedSimhash != 0 ||
-			strings.TrimSpace(asset.Owner) != "" || strings.TrimSpace(asset.SystemName) != ""
-
-		switch {
-		case !hasAsset:
-			// 台账和资产里都没有 → 真·新出现；已处置过的不再打扰
-			if svc.Confirmed {
-				continue
-			}
-			it.Category = "new"
-
-		case asset.Source == "ledger":
-			// ==== 台账导入：原有口径，保持不动 ====
-			it.InLedger = true
-			it.LedgerSystem = asset.SystemName
-			it.LedgerOwner = asset.Owner
-			it.LedgerDept = asset.Department
-
-			// 只有「这个端口自己确认过」才有基线可比。资产级 status/confirmed_title 是 IP 口径的，
-			// 拿去比较端口会把「已确认 IP 上新出现的端口」误判成变更（尤其是标题为空时永远对不上）。
-			if !svc.Confirmed {
-				it.Category = "in_ledger" // 台账有，端口待确认
-				break
-			}
-			if asset.ContentChanged || strings.TrimSpace(svc.ConfirmedTitle) != strings.TrimSpace(svc.Title) {
-				it.Category = "changed" // 页面内容变化，或标题与确认时不符
-				break
-			}
-			continue // 已确认且没变化，不再打扰
-
-		case hasTrace:
-			// ==== 扫描建的资产，但这个 IP 已经人工确认过 ====
-			// 端口级判断：这个端口自己确认过才算"有基线可比"，否则只是这个 IP 上多开了一个口
-			it.InLedger = true
-			it.LedgerSystem = asset.SystemName
-			it.LedgerOwner = asset.Owner
-			it.LedgerDept = asset.Department
-
-			if !svc.Confirmed {
-				it.Category = "in_ledger" // IP 已知，新端口 → 台账有，直接确认归属即可
-				break
-			}
-			if asset.ContentChanged || strings.TrimSpace(svc.ConfirmedTitle) != strings.TrimSpace(svc.Title) {
-				it.Category = "changed"
-				break
-			}
-			continue // 该端口确认过且没变化，不打扰
-
-		default:
-			// ==== 扫描自动建的主机记录，没有任何归属/确认信息 ====
-			// 这种"发现过"不含任何人工判断，仍按新出现处理（否则新出现分类会被淹没）；
-			// 也不显示台账字段，避免出现"（台账未填系统名）"的误导提示
-			if svc.Confirmed {
-				continue
-			}
-			it.Category = "new"
+		if ledger != nil {
+			it.LedgerSystem = ledger.SystemName
+			it.LedgerOwner = ledger.Owner
+			it.LedgerDept = ledger.Department
+			it.LedgerCount = len(assets[svc.IP])
 		}
 
+		switch {
+		case !hasTrace:
+			// 没有任何登记/确认痕迹 → 主机级新出现
+			it.Category = "host_new"
+		case !svc.Confirmed:
+			// 主机已登记，端口还没认过
+			it.Category = "port_new"
+		case strings.TrimSpace(svc.ConfirmedTitle) != strings.TrimSpace(svc.Title):
+			it.Category = "changed"
+		default:
+			continue // 确认过且没变化，不再打扰
+		}
 		items = append(items, it)
 	}
 	return items
+}
+
+// pickAsset 从一个 IP 的多条归属里挑一条作展示，并判断这个 IP 是否"已登记"。
+// 已登记 = 有人工痕迹：姓名/系统/部门任一非空，或确认过标题/指纹。
+func pickAsset(list []model.Asset) (*model.Asset, bool) {
+	if len(list) == 0 {
+		return nil, false
+	}
+	var best *model.Asset
+	bestScore := -1
+	hasTrace := false
+	for i := range list {
+		a := &list[i]
+		score := 0
+		if strings.TrimSpace(a.SystemName) != "" {
+			score += 2
+		}
+		if strings.TrimSpace(a.Owner) != "" {
+			score++
+		}
+		if strings.TrimSpace(a.Department) != "" {
+			score++
+		}
+		if score > bestScore {
+			best, bestScore = a, score
+		}
+		if strings.TrimSpace(a.SystemName) != "" || strings.TrimSpace(a.Owner) != "" ||
+			strings.TrimSpace(a.Department) != "" || strings.TrimSpace(a.ConfirmedTitle) != "" ||
+			a.ConfirmedSimhash != 0 {
+			hasTrace = true
+		}
+	}
+	return best, hasTrace
 }
 
 // confirmPorts 确认一个 IP：所有服务标记已处置，并把**每个 web 端口当前的标题**记成该端口的基线。
@@ -426,25 +423,15 @@ func ConfirmDisposal(c *gin.Context) {
 		return
 	}
 
-	// 查/建资产记录
-	var asset model.Asset
-	if err := config.DB.Where("ip = ?", req.IP).First(&asset).Error; err != nil {
-		asset = model.Asset{
-			IP: req.IP, Source: "scan", Status: "confirmed",
-			SystemName: req.SystemName, Owner: req.Owner, Department: req.Department,
-		}
-		config.DB.Create(&asset)
-	} else {
-		config.DB.Model(&model.Asset{}).Where("ip = ?", req.IP).Updates(map[string]interface{}{
-			"status":       "confirmed",
-			"system_name":  req.SystemName,
-			"owner":        req.Owner,
-			"department":   req.Department,
-		})
+	// 查/建资产记录：同一 IP 允许多归属，按 (IP, 系统, 负责人, 部门) 精确匹配
+	if _, err := upsertOwnerAsset(req.IP, req.SystemName, req.Owner, req.Department); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	// 标记所有服务已处置，并按端口记录确认基线
 	confirmPorts(req.IP)
+	service.WakeServices(req.IP)
 
 	// 记录页面指纹基线（IP 级，内容变更判定用）
 	var svc model.Service
@@ -462,25 +449,39 @@ func ConfirmDisposal(c *gin.Context) {
 
 // confirmOneIP 确认单个 IP 的归属（批量处置复用）
 func confirmOneIP(ip, systemName, owner, department string) error {
-	var asset model.Asset
-	if err := config.DB.Where("ip = ?", ip).First(&asset).Error; err != nil {
-		a := model.Asset{
-			IP: ip, Source: "scan", Status: "confirmed",
-			SystemName: systemName, Owner: owner, Department: department,
-		}
-		if err := config.DB.Create(&a).Error; err != nil {
-			return err
-		}
-		confirmPorts(ip)
-		return nil
-	}
-	if err := config.DB.Model(&model.Asset{}).Where("ip = ?", ip).Updates(map[string]interface{}{
-		"status": "confirmed", "system_name": systemName,
-		"owner": owner, "department": department,
-	}).Error; err != nil {
+	if _, err := upsertOwnerAsset(ip, systemName, owner, department); err != nil {
 		return err
 	}
-	// 批量处置原来只改资产、没标记服务已确认，也没写基线 → 确认完行还在、还永远算"台账有"
 	confirmPorts(ip)
+	service.WakeServices(ip)
 	return nil
+}
+
+// upsertOwnerAsset 按 (IP, 系统, 负责人, 部门) 落一条归属记录。
+// 同一 IP 允许多归属（不同系统/负责人各一行）；完全相同的归属只更新状态，不新增。
+// 只动归属字段：title/fingerprint 等识别结果一律不碰，
+// 批量处置弹窗里显示的「-」不会被写进库。
+func upsertOwnerAsset(ip, systemName, owner, department string) (*model.Asset, error) {
+	systemName = strings.TrimSpace(systemName)
+	owner = strings.TrimSpace(owner)
+	department = strings.TrimSpace(department)
+
+	var asset model.Asset
+	q := config.DB.Where("ip = ?", ip)
+	q = q.Where("COALESCE(system_name,'') = ?", systemName)
+	q = q.Where("COALESCE(owner,'') = ?", owner)
+	q = q.Where("COALESCE(department,'') = ?", department)
+	if err := q.Order("id").First(&asset).Error; err == nil {
+		config.DB.Model(&model.Asset{}).Where("id = ?", asset.ID).
+			Update("status", "confirmed")
+		return &asset, nil
+	}
+	asset = model.Asset{
+		IP: ip, Source: "scan", Status: "confirmed",
+		SystemName: systemName, Owner: owner, Department: department,
+	}
+	if err := config.DB.Create(&asset).Error; err != nil {
+		return nil, err
+	}
+	return &asset, nil
 }

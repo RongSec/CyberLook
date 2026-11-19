@@ -65,6 +65,28 @@ func ListAssets(c *gin.Context) {
 		if json.Unmarshal([]byte(cs), &conds) == nil {
 			rest := make([]SearchCond, 0, len(conds))
 			for _, c := range conds {
+				// 多归属：该 IP 的归属记录数 > 1
+				if c.Field == "multiOwner" {
+					v := strings.ToLower(c.Str())
+					yes := v == "true" || v == "1" || v == "是" || v == "多归属"
+					sub := "SELECT COUNT(*) FROM assets a2 WHERE a2.ip = assets.ip"
+					if yes {
+						q = q.Where("(" + sub + ") > 1")
+					} else {
+						q = q.Where("(" + sub + ") = 1")
+					}
+					continue
+				}
+				// 活跃度是主机级（host_states），service 侧的 activity 由服务自身决定
+				if c.Field == "activity" {
+					v := c.Str()
+					if v == model.ActivitySleeping || v == "睡眠" {
+						q = q.Where("NOT EXISTS (SELECT 1 FROM host_states h WHERE h.ip = assets.ip AND h.alive)")
+					} else if v == model.ActivityActive || v == "活跃" {
+						q = q.Where("NOT EXISTS (SELECT 1 FROM host_states h WHERE h.ip = assets.ip AND NOT h.alive)")
+					}
+					continue
+				}
 				// hasWeb 是计算列（是否存在 web 服务），需转 EXISTS
 				if c.Field == "hasWeb" {
 					v := strings.ToLower(c.Str())
@@ -94,10 +116,13 @@ func ListAssets(c *gin.Context) {
 	var assets []model.Asset
 	q.Order("ip").Offset((page - 1) * size).Limit(size).Find(&assets)
 
-	// 附带「是否有 web 服务」
+	// 附带：是否有 web 服务 / 该 IP 归属条数 / 主机活跃度
 	type assetWithWeb struct {
 		model.Asset
-		HasWeb bool `json:"hasWeb"`
+		HasWeb     bool   `json:"hasWeb"`
+		OwnerCount int    `json:"ownerCount"` // 该 IP 的归属条数（>1 = 多归属）
+		MultiOwner bool   `json:"multiOwner"`
+		Activity   string `json:"activity"` // active / sleeping（主机级）
 	}
 	items := make([]assetWithWeb, len(assets))
 	for i, a := range assets {
@@ -105,7 +130,15 @@ func ListAssets(c *gin.Context) {
 		config.DB.Model(&model.Service{}).
 			Where("ip = ? AND (protocol ILIKE '%http%' OR service ILIKE '%http%' OR title <> '' OR status_code <> '')", a.IP).
 			Count(&cnt)
-		items[i] = assetWithWeb{Asset: a, HasWeb: cnt > 0}
+		var owners int64
+		config.DB.Model(&model.Asset{}).Where("ip = ?", a.IP).Count(&owners)
+		act := "active"
+		var hs model.HostState
+		if err := config.DB.Where("ip = ?", a.IP).First(&hs).Error; err == nil && !hs.Alive {
+			act = "sleeping"
+		}
+		items[i] = assetWithWeb{Asset: a, HasWeb: cnt > 0, OwnerCount: int(owners),
+			MultiOwner: owners > 1, Activity: act}
 	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "size": size, "items": items})
 }

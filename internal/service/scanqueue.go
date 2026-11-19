@@ -599,6 +599,8 @@ func CheckQueueDone(taskID uint) bool {
 		return false
 	}
 	ClearTaskCtrl(taskID)
+	// 活跃/睡眠结算：队列模式同样在「扫描完毕」时计一次
+	SettleActivityForTask(taskID)
 	// 会话行收尾：running 的队列会话置 done
 	config.DB.Model(&model.AgentTask{}).
 		Where("task_id = ? AND batch_no = 0 AND status IN ?", taskID, []string{"pending", "running"}).

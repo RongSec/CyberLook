@@ -3,9 +3,10 @@ package model
 import "time"
 
 // Asset 资产主表（台账 + 扫描发现，IP 为关联键）
+// IP 不再唯一：同一 IP 允许多条归属记录（不同系统/负责人），前端用「单一归属 / 多归属」标注。
 type Asset struct {
 	ID             uint   `gorm:"primaryKey" json:"id"`
-	IP             string `gorm:"column:ip;uniqueIndex" json:"ip"`
+	IP             string `gorm:"column:ip;index" json:"ip"`
 	SystemName     string `gorm:"column:system_name" json:"systemName"`
 	Owner          string `gorm:"column:owner" json:"owner"`
 	Department     string `gorm:"column:department" json:"department"`
@@ -95,8 +96,12 @@ type Service struct {
 	PrevContentLength int    `gorm:"column:prev_content_length" json:"prevContentLength"`
 	// TitleSource 标题来源：tscan / fingerprint / ai
 	TitleSource string `gorm:"column:title_source;size:20" json:"titleSource"`
-	MissCount   int    `gorm:"column:miss_count;default:0" json:"missCount"`
-	Confirmed   bool   `gorm:"column:confirmed;default:false" json:"confirmed"`
+	MissCount int `gorm:"column:miss_count;default:0" json:"missCount"`
+	// Activity 活跃/睡眠：active 本次扫到过；sleeping 连续 3 次扫不到（不删除记录）
+	Activity string `gorm:"column:activity;default:active;index" json:"activity"`
+	// LastMissTask 最近一次被计缺席的任务，保证「一次扫描只计一次」
+	LastMissTask int64  `gorm:"column:last_miss_task;default:0" json:"-"`
+	Confirmed    bool   `gorm:"column:confirmed;default:false" json:"confirmed"`
 	// ConfirmedTitle 该端口确认时的标题基线（端口级）。
 	// 之前基线只有 assets.confirmed_title 一个值（IP 级），多端口 IP 必然互相误判成"新变更"，
 	// 而且按台账确认时对 source=scan 的资产不写基线 → 确认完立刻又变"新变更"，永远确认不掉。
@@ -112,6 +117,23 @@ type Service struct {
 }
 
 func (Service) TableName() string { return "services" }
+
+// 服务活跃度
+const (
+	ActivityActive   = "active"
+	ActivitySleeping = "sleeping"
+)
+
+// HostState 主机级存活状态（每个 IP 一行，判定「主机不存活」用）
+type HostState struct {
+	IP         string    `gorm:"column:ip;primaryKey" json:"ip"`
+	Alive      bool      `gorm:"column:alive;default:true" json:"alive"`
+	MissCount  int       `gorm:"column:miss_count;default:0" json:"missCount"`
+	LastTaskID int64     `gorm:"column:last_task_id;default:0" json:"lastTaskId"`
+	UpdatedAt  time.Time `gorm:"column:updated_at" json:"updatedAt"`
+}
+
+func (HostState) TableName() string { return "host_states" }
 
 // ComplianceRule 合规规则（敏感端口清单）
 type ComplianceRule struct {

@@ -66,7 +66,9 @@ func CreateExclude(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "已添加"})
+	// 新增排除范围 = 这个范围不该出现在资产里：把存量数据清掉
+	a, sv := service.PurgeExcludedData([]string{req.IPRange})
+	c.JSON(http.StatusOK, gin.H{"message": "已添加", "purgedAssets": a, "purgedServices": sv})
 }
 
 // DeleteExclude 删除免扫描范围
@@ -122,5 +124,6 @@ func UpdateExclude(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "已更新"})
+	a, sv := service.PurgeExcludedData([]string{req.IPRange})
+	c.JSON(http.StatusOK, gin.H{"message": "已更新", "purgedAssets": a, "purgedServices": sv})
 }

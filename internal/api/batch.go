@@ -7,6 +7,8 @@ import (
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/service"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -38,6 +40,7 @@ func BatchCreateSegments(c *gin.Context) {
 	}
 	var results []result
 	created := 0
+	var purgedRanges []string
 
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
@@ -76,7 +79,11 @@ func BatchCreateSegments(c *gin.Context) {
 		}
 	}
 
+	// 新加的排除范围：把存量资产/服务清掉
+	pa, psv := service.PurgeExcludedData(purgedRanges)
+
 	c.JSON(http.StatusOK, gin.H{
+		"purgedAssets": pa, "purgedServices": psv,
 		"total":   len(results),
 		"created": created,
 		"failed":  len(results) - created,
@@ -110,6 +117,7 @@ func BatchCreateExcludes(c *gin.Context) {
 	}
 	var results []result
 	created := 0
+	var purgedRanges []string
 
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
@@ -134,10 +142,15 @@ func BatchCreateExcludes(c *gin.Context) {
 		} else {
 			results = append(results, result{Line: i + 1, Range: ipRange, Reason: reason, OK: true})
 			created++
+			purgedRanges = append(purgedRanges, ipRange)
 		}
 	}
 
+	// 新加的排除范围：把存量资产/服务清掉
+	pa, psv := service.PurgeExcludedData(purgedRanges)
+
 	c.JSON(http.StatusOK, gin.H{
+		"purgedAssets": pa, "purgedServices": psv,
 		"total":   len(results),
 		"created": created,
 		"failed":  len(results) - created,

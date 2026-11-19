@@ -283,8 +283,11 @@ async function delSegment(id) { await api.delete(`/segments/${id}`); message.suc
 async function addExclude() {
   if (!excForm.value.ipRange) { message.warning('IP 范围必填'); return }
   if (!excForm.value.reason) { message.warning('请填写原因'); return }
-  await api.post('/excludes', { ipRange: excForm.value.ipRange, reason: excForm.value.reason })
-  message.success('已加入免扫描')
+  const r = await api.post('/excludes', { ipRange: excForm.value.ipRange, reason: excForm.value.reason })
+  const pa = r.purgedAssets || 0, psv = r.purgedServices || 0
+  message.success(pa || psv
+    ? `已加入免扫描，同时清掉该范围内 ${pa} 条资产、${psv} 条服务`
+    : '已加入免扫描')
   excForm.value = { ipRange: '', reason: '' }
   loadExcludes()
 }
