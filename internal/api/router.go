@@ -229,6 +229,9 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.DELETE("/segments/:id", DeleteSegment)
 
 		// 免扫描清单（写操作）
+		auth.GET("/excludes/groups", ListExcludeGroups)
+		auth.PUT("/excludes/group", ReplaceExcludeGroup)
+		auth.DELETE("/excludes/group", DeleteExcludeGroup)
 		auth.POST("/excludes", CreateExclude)
 		auth.PUT("/excludes/:id", UpdateExclude)
 		auth.DELETE("/excludes/:id", DeleteExclude)

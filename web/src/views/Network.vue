@@ -19,14 +19,15 @@
     </n-card>
 
     <n-card title="免扫描清单（避开范围）">
-      <p class="tip">这些 IP 范围会在扫描时由平台自动排除（如电子设备受不了端口扫描），请务必填写原因。支持三种写法：<b>198.18.5.10-20</b>（范围）、<b>198.18.5.0/24</b>（网段）、<b>*.*.*.1</b>（每个网段的网关/交换机，已内置一条）。</p>
+      <p class="tip">这些 IP 范围会在扫描时由平台自动排除（如电子设备受不了端口扫描）。<b>同一个原因折叠成一行</b>，点「编辑」可在文本框里看到该原因下的全部 IP 并直接改。支持三种写法：<b>198.18.5.10-20</b>（范围）、<b>198.18.5.0/24</b>（网段）、<b>*.*.*.1</b>（每个网段的网关/交换机，已内置一条）。原因留空归入「未分类」。</p>
       <div class="toolbar">
         <n-input v-model:value="excForm.ipRange" placeholder="如 198.18.5.10-20、198.18.5.0/24、*.*.*.1" style="width: 260px" />
-        <n-input v-model:value="excForm.reason" placeholder="原因（必填）" style="width: 240px" />
+        <n-input v-model:value="excForm.reason" placeholder="原因（可空，默认未分类）" style="width: 240px" />
         <n-button type="warning" @click="addExclude">加入免扫描</n-button>
         <n-button @click="openImport('exc')">批量导入</n-button>
+        <n-button @click="openExcGroup(null)">按原因整组录入</n-button>
       </div>
-      <n-data-table :columns="excColumns" :data="excludes" size="small" />
+      <n-data-table :columns="excColumns" :data="excludeGroups" size="small" />
     </n-card>
     <n-modal v-model:show="showPreview" preset="card" title="IP 解析预览" style="width: 960px">
       <div v-if="previewLoading" style="padding:24px;text-align:center;color:#6b7280">解析中…</div>
@@ -61,7 +62,7 @@
     </n-modal>
 
     <n-modal v-model:show="showEdit" preset="card"
-      :title="editType === 'seg' ? '编辑网段' : '编辑免扫描范围'" style="width: 520px">
+      :title="editType === 'seg' ? '编辑网段' : '编辑免扫描范围（按原因整组）'" style="width: 560px">
       <n-form label-placement="left" label-width="80">
         <template v-if="editType === 'seg'">
           <n-form-item label="机房名"><n-input v-model:value="editForm.name" placeholder="可留空，默认「未命名」" /></n-form-item>
@@ -69,8 +70,15 @@
           <n-form-item label="描述"><n-input v-model:value="editForm.description" /></n-form-item>
         </template>
         <template v-else>
-          <n-form-item label="IP 范围"><n-input v-model:value="editForm.ipRange" placeholder="198.18.5.10-20 或 198.18.5.0/24" /></n-form-item>
-          <n-form-item label="原因"><n-input v-model:value="editForm.reason" /></n-form-item>
+          <n-form-item label="原因">
+            <n-input v-model:value="editForm.reason" placeholder="可留空，默认「未分类」" />
+          </n-form-item>
+          <n-form-item label="IP 列表">
+            <n-input v-model:value="editForm.text" type="textarea" :rows="14"
+              placeholder="每行一个，也可用逗号分隔：&#10;198.18.5.10&#10;198.18.5.11&#10;198.18.6.0/24"
+              style="font-family:monospace" />
+          </n-form-item>
+          <p class="tip" style="margin:0">这里是该原因下的<b>全部</b>条目：删行即移除，加行即新增，保存后整组替换。</p>
         </template>
       </n-form>
       <template #footer>
@@ -105,7 +113,8 @@ import api from '../api'
 
 const message = useMessage()
 const segments = ref([])
-const excludes = ref([])
+const excludes = ref([])        // 扁平清单：只给「解析预览」拼排除项用
+const excludeGroups = ref([])   // 按原因折叠的清单：表格展示与编辑用
 const segForm = ref({ name: '', cidr: '', desc: '' })
 const excForm = ref({ ipRange: '', reason: '' })
 
@@ -153,11 +162,16 @@ async function saveEdit() {
       })
       loadSegments()
     } else {
-      if (!editForm.value.ipRange) return message.warning('IP 范围必填')
-      await api.put(`/excludes/${editForm.value.id}`, {
-        ipRange: editForm.value.ipRange,
-        reason: editForm.value.reason || ''
+      // 免扫描：按原因整组替换（文本框里就是该组的全部成员）
+      if (!String(editForm.value.text || '').trim()) return message.warning('IP 列表不能为空')
+      const r = await api.put('/excludes/group', {
+        oldReason: editForm.value.oldReason || '',
+        reason: editForm.value.reason || '',
+        text: editForm.value.text
       })
+      const pa = r.purgedAssets || 0, psv = r.purgedServices || 0
+      message.success(`已保存「${r.reason || '未分类'}」共 ${r.count || 0} 条`
+        + (pa || psv ? `，同时清掉 ${pa} 条资产、${psv} 条服务` : ''))
       loadExcludes()
     }
     message.success('已保存')
@@ -177,8 +191,8 @@ const importCount = computed(() =>
   importText.value.split('\n').map(l => l.trim()).filter(Boolean).length)
 
 const importHint = computed(() => importType.value === 'seg'
-  ? '每行一条：网段,描述 或 机房名,网段,描述；描述必填（每条都要写原因）'
-  : '每行一条：IP范围 或 IP范围,原因；原因可省略')
+  ? '每行一条：网段,描述 或 机房名,网段,描述'
+  : '每行一条：IP范围 或 IP范围,原因。不写原因的会归入「未分类」，可在列表里点该行「编辑」补原因。')
 
 const importPlaceholder = computed(() => importType.value === 'seg'
   ? '198.18.1.0/24\n198.18.2.0/24\n1号机房,198.18.3.0/24,核心区'
@@ -253,15 +267,30 @@ const segColumns = [
 ]
 
 const excColumns = [
-  { title: 'IP 范围', key: 'ipRange', width: 240, render: r => h(NTag, { size: 'small', type: 'warning' }, { default: () => r.ipRange }) },
-  { title: '原因', key: 'reason', render: r => r.reason || '-' },
-  { title: '添加时间', key: 'createdAt', width: 170, render: r => fmt(r.createdAt) },
+  {
+    title: '原因', key: 'reason', width: 240,
+    render: r => h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+      h('span', null, r.reason),
+      r.reason === '未分类'
+        ? h(NTag, { size: 'tiny', type: 'default' }, { default: () => '待补原因' })
+        : null
+    ])
+  },
+  { title: '条数', key: 'count', width: 76, render: r => `${r.count} 条` },
+  {
+    title: 'IP 范围', key: 'preview', ellipsis: { tooltip: true },
+    render: r => h('span', { style: 'font-family:monospace;font-size:12px' }, r.preview || '-')
+  },
+  { title: '添加时间', key: 'createdAt', width: 168, render: r => fmt(r.createdAt) },
   {
     title: '操作', key: 'actions', width: 130,
     render: row => h('div', { style: 'display:flex;gap:6px' }, [
-      h(NButton, { size: 'small', text: true, type: 'primary', onClick: () => openEdit('exc', row) }, { default: () => '编辑' }),
-      h(NPopconfirm, { onPositiveClick: () => delExclude(row.id) },
-        { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }), default: () => '确认删除？' })
+      h(NButton, { size: 'small', text: true, type: 'primary', onClick: () => openExcGroup(row) }, { default: () => '编辑' }),
+      h(NPopconfirm, { onPositiveClick: () => delExcludeGroup(row.reason) },
+        {
+          trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
+          default: () => `确认删除「${row.reason}」下的全部 ${row.count} 条？`
+        })
     ])
   }
 ]
@@ -269,7 +298,15 @@ const excColumns = [
 function fmt(t) { return t ? new Date(t).toLocaleString('zh-CN') : '-' }
 
 async function loadSegments() { segments.value = await api.get('/segments') }
-async function loadExcludes() { excludes.value = await api.get('/excludes') }
+async function loadExcludes() {
+  // 两个接口：扁平数组给预览拼排除项，分组给表格
+  const [flat, groups] = await Promise.all([
+    api.get('/excludes'),
+    api.get('/excludes/groups')
+  ])
+  excludes.value = flat || []
+  excludeGroups.value = groups || []
+}
 
 async function addSegment() {
   if (!segForm.value.cidr) { message.warning('网段必填'); return }
@@ -282,7 +319,7 @@ async function delSegment(id) { await api.delete(`/segments/${id}`); message.suc
 
 async function addExclude() {
   if (!excForm.value.ipRange) { message.warning('IP 范围必填'); return }
-  if (!excForm.value.reason) { message.warning('请填写原因'); return }
+  // 原因可空：后端统一归到「未分类」
   const r = await api.post('/excludes', { ipRange: excForm.value.ipRange, reason: excForm.value.reason })
   const pa = r.purgedAssets || 0, psv = r.purgedServices || 0
   message.success(pa || psv
@@ -291,7 +328,23 @@ async function addExclude() {
   excForm.value = { ipRange: '', reason: '' }
   loadExcludes()
 }
-async function delExclude(id) { await api.delete(`/excludes/${id}`); message.success('已删除'); loadExcludes() }
+
+// 打开「按原因整组」编辑框：row 为空 = 新增一组
+function openExcGroup(row) {
+  editType.value = 'exc'
+  editForm.value = {
+    oldReason: row ? row.reason : '',
+    reason: row ? row.reason : '',
+    text: row ? (row.ranges || []).join('\n') : ''
+  }
+  showEdit.value = true
+}
+
+async function delExcludeGroup(reason) {
+  const r = await api.delete('/excludes/group', { params: { reason } })
+  message.success(`已删除「${reason}」下 ${r.deleted || 0} 条`)
+  loadExcludes()
+}
 
 onMounted(() => {
   loadSegments()

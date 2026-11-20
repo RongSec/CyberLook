@@ -132,8 +132,8 @@ func BatchCreateExcludes(c *gin.Context) {
 			continue
 		}
 		if reason == "" {
-			results = append(results, result{Line: i + 1, Range: ipRange, OK: false, Error: "缺少原因（必须填写）"})
-			continue
+			// 不写原因不再拦：统一归到「未分类」，方便以后按原因排查
+			reason = service.NormalizeExcludeReason("")
 		}
 
 		ex := model.ExcludeRange{IPRange: ipRange, Reason: reason}

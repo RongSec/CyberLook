@@ -134,6 +134,8 @@ func CreateExclude(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "IP 范围必填"})
 		return
 	}
+	// 原因可空：空值统一归到「未分类」，不再拦人（之前强制填写，结果库里全是空原因）
+	req.Reason = service.NormalizeExcludeReason(req.Reason)
 	if err := service.CreateExcludeRange(req.IPRange, req.Reason); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -209,4 +211,57 @@ func UpdateExclude(c *gin.Context) {
 	}
 	a, sv := service.PurgeExcludedData([]string{req.IPRange})
 	c.JSON(http.StatusOK, gin.H{"message": "已更新", "purgedAssets": a, "purgedServices": sv})
+}
+
+// ListExcludeGroups 免扫描清单的「按原因折叠」视图（一行 = 一个原因）。
+// 前端列表用这个；agent 用的 /api/excludes 仍是扁平数组，两者互不影响。
+func ListExcludeGroups(c *gin.Context) {
+	c.JSON(http.StatusOK, service.ListExcludeGroups())
+}
+
+// ReplaceExcludeGroup 编辑某一个原因下的全部 IP：
+// 首次保存时把整个文本框按行/逗号拆开，整组替换（不需要前端做逐条 diff）。
+func ReplaceExcludeGroup(c *gin.Context) {
+	var req struct {
+		OldReason string `json:"oldReason"` // 编辑前的分组名（新增时为空）
+		Reason    string `json:"reason"`
+		Text      string `json:"text"` // 文本框原文，每行一个或逗号分隔
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	req.Reason = service.NormalizeExcludeReason(req.Reason)
+	if req.OldReason == "" {
+		req.OldReason = req.Reason
+	}
+	parts := strings.FieldsFunc(req.Text, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == '，' || r == ';' || r == '；' || r == '、' || r == ' ' || r == '\t'
+	})
+	added, err := service.ReplaceExcludeGroup(req.OldReason, req.Reason, parts)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// 这些范围都不该出现在资产里，保存后清一遍存量
+	a, sv := service.PurgeExcludedData(parts)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "已保存", "reason": req.Reason, "count": added,
+		"purgedAssets": a, "purgedServices": sv,
+	})
+}
+
+// DeleteExcludeGroup 按原因整组删除
+func DeleteExcludeGroup(c *gin.Context) {
+	reason := c.Query("reason")
+	if strings.TrimSpace(reason) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 reason"})
+		return
+	}
+	n, err := service.DeleteExcludeGroup(reason)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已删除", "deleted": n})
 }
