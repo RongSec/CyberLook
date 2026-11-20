@@ -105,6 +105,22 @@ func ShutdownBrowser() {
 	}
 }
 
+// ResetBrowser 强制销毁当前实例，下次调用重建。
+//
+// 用途：AI 识别 worker 的超时看门狗。实测批量补识别时整条队列停摆——
+// chromium 页面挂住后 CDP 调用迟迟不返回，3 个 worker 全被占死，
+// 重启服务才恢复。销毁实例会让所有在途调用立即报「连接中断」并退出，
+// 从而把 worker 还回来，代价只是这一条识别失败（下次还能重试）。
+func ResetBrowser() {
+	brMu.Lock()
+	b := brInst
+	brInst = nil
+	brMu.Unlock()
+	if b != nil {
+		b.close()
+	}
+}
+
 func dropBrowser(b *browserInst) {
 	brMu.Lock()
 	if brInst == b {

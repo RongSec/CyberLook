@@ -38,6 +38,10 @@ const (
 // 实测依据：62 分给出的「深信服 SSL VPN」渲染后是「深信服超融合平台 SANGFOR HCI」。
 const confidentEnough = 80
 
+// aiIdentifyTimeout 单条识别的硬上限。正常一条 5-15 秒，走渲染最多 30 秒；
+// 超过这个值基本可以认定 CDP 卡死，销毁浏览器实例收敛。
+const aiIdentifyTimeout = 90 * time.Second
+
 // aiIdentifyMaxPerTask 每个任务最多识别多少条服务。
 // 历史值 100 导致上万 web 端口只有前 100 条走识别，其余静默丢弃。
 // 现在默认 2000，可用环境变量 AI_IDENTIFY_MAX_PER_TASK 覆盖。
@@ -129,9 +133,34 @@ func startAIWorkers() {
 	for i := 0; i < aiIdentifyWorkers; i++ {
 		go func() {
 			for job := range aiQueue {
-				runAIIdentify(job)
+				runAIIdentifySafe(job)
 			}
 		}()
+	}
+}
+
+// runAIIdentifySafe 单条识别的兜底：panic 不杀 worker，超时强制收敛。
+//
+// 实测问题（2026-11-20）：批量补识别 200 条后整条队列停摆，ai_checked_at 不再更新，
+// 重启服务才恢复——chromium 页面挂住时 CDP 调用迟迟不返回，3 个 worker 被占死。
+// 现在给每条识别套一个看门狗：超过 aiIdentifyTimeout 就销毁浏览器实例，
+// 在途调用立即失败返回，worker 继续消费下一条。
+func runAIIdentifySafe(job aiIdentifyJob) {
+	start := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ai-ident] panic %s:%d: %v", job.IP, job.Port, r)
+		}
+	}()
+	timer := time.AfterFunc(aiIdentifyTimeout, func() {
+		log.Printf("[ai-ident] %s:%d 超过 %s 未完成，销毁浏览器实例强制收敛",
+			job.IP, job.Port, aiIdentifyTimeout)
+		scanner.ResetBrowser()
+	})
+	defer timer.Stop()
+	runAIIdentify(job)
+	if d := time.Since(start); d > 30*time.Second {
+		log.Printf("[ai-ident] %s:%d 识别耗时 %s（偏慢，多半是渲染等待）", job.IP, job.Port, d.Round(time.Second))
 	}
 }
 
@@ -380,6 +409,32 @@ func runAIIdentify(job aiIdentifyJob) {
 	recordIdentConversation(job.TaskID, svc, r, changed)
 }
 
+// IsUnidentified 模型结论是否是「没认出来」这种否定语义。
+//
+// 实测倒退案例：198.19.253.131:50306 原标题是「阿里云对象存储 OSS」，
+// 重识别后写成「对象存储访问拒绝页（未识别出业务系统）」，置信还>=60。
+// 这类结论本身没错，但它不包含身份信息，拿来覆盖已有有效标题就是净损失。
+func IsUnidentified(title string) bool {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return true
+	}
+	low := strings.ToLower(t)
+	for _, k := range []string{"未识别", "无法识别", "未知", "无法判断", "不确定", "未确定",
+		"unidentified", "unknown", "not identified", "n/a"} {
+		if strings.Contains(low, k) {
+			return true
+		}
+	}
+	// 「访问拒绝页」「登录页」这类纯页面形态描述，也不构成系统名
+	for _, k := range []string{"访问被拒绝", "访问拒绝页", "错误页", "默认页"} {
+		if strings.Contains(t, k) && !strings.Contains(t, "系统") {
+			return true
+		}
+	}
+	return false
+}
+
 // ApplyIdentResult 把识别结论写回服务记录，返回是否发生改动。
 //
 // 写回口径（批量识别与手动识别共用，避免两处漂移）：
@@ -390,6 +445,10 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	updates := map[string]interface{}{"ai_checked_at": time.Now(), "ai_need": false}
 	changed := false
 	usableTitle := TitleClear(r.Title) && !scanner.PlaceholderTitle(r.Title, "")
+	// 已有有效标题时，不允许用"未识别/未知"这类否定结论覆盖它
+	if usableTitle && IsUnidentified(r.Title) && !scanner.PlaceholderTitle(svc.Title, svc.StatusCode) {
+		usableTitle = false
+	}
 	if r.Confident && usableTitle && r.Title != svc.Title {
 		updates["title"] = truncateStr(r.Title, 300)
 		updates["title_source"] = "ai"
