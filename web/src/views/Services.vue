@@ -5,6 +5,9 @@
       <SearchBar :fields="splFieldsPlus" @search="onSplSearch" @reset="onSplReset" />
       <div class="filters" style="margin-top:12px">
         <n-tag round>{{ pagination.itemCount }} 条</n-tag>
+        <n-button secondary :loading="selectingAll" @click="toggleSelectAll">
+          {{ allSelected ? '取消全选' : '全选当前筛选' }}{{ checked.length ? ` (${checked.length})` : '' }}
+        </n-button>
         <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" :conds="splConds" />
         <n-button :loading="exporting" @click="exportUrls">导出 URL</n-button>
         <n-button :loading="aiBatch" @click="reidentifyBatch">AI 批量识别</n-button>
@@ -50,6 +53,7 @@ function fmtLen(n) {
 
 const loading = ref(false)
 const checked = ref([])
+const selectingAll = ref(false)
 const items = ref([])
 const page = ref(1)
 const pageSize = ref(20)
@@ -59,12 +63,14 @@ const splConds = ref([])
 function onSplSearch({ conditions }) {
   splConds.value = conditions || []
   page.value = 1
+  checked.value = [] // 筛选条件变了，之前的选中可能已不在结果里，清掉避免误删
   load()
 }
 function onSplReset() {
   splConds.value = []
   filters.value = { keyword: '', statusCodes: [], ip: '', port: '', service: '' }
   page.value = 1
+  checked.value = []
   load()
 }
 
@@ -176,16 +182,7 @@ async function del(row) {
 async function load() {
   loading.value = true
   try {
-    const res = await api.get('/services', {
-      params: {
-        page: page.value, size: pageSize.value, webOnly: 'true',
-        ...filters.value,
-        statusCodes: (filters.value.statusCodes || []).join(','),
-        confirmedOnly: 'true', // 应用服务只展示已确认资产
-        conds: JSON.stringify(splConds.value)
-
-      }
-    })
+    const res = await api.get('/services', { params: queryParams(page.value, pageSize.value) })
     items.value = res.items
     // 后端只返回 {total, items}，没有 page/size。之前取 res.page/res.size 恒为 undefined，
     // 分页器变成「非受控」：点查询后数据已回到第 1 页，页码却还停在第 2 页。
@@ -193,6 +190,53 @@ async function load() {
     pagination.value = { page: page.value, pageSize: pageSize.value, itemCount: res.total }
   } finally {
     loading.value = false
+  }
+}
+
+// 列表与「全选」共用同一套查询条件，避免全选选出与当前筛选不一致的数据
+function queryParams(p, s) {
+  return {
+    page: p, size: s, webOnly: 'true',
+    ...filters.value,
+    statusCodes: (filters.value.statusCodes || []).join(','),
+    confirmedOnly: 'true', // 应用服务只展示已确认资产
+    conds: JSON.stringify(splConds.value)
+  }
+}
+
+// 是否已把「当前筛选」全部选中（跨页计数，不是当前页）
+const allSelected = computed(() =>
+  pagination.value.itemCount > 0 && checked.value.length >= pagination.value.itemCount)
+
+// 全选当前筛选：本页是服务端分页，勾选只覆盖当前页 20 条，
+// 所以要按同样条件把结果集的 id 全部取回来再设为已选。
+async function toggleSelectAll() {
+  if (allSelected.value) {
+    checked.value = []
+    return
+  }
+  if (pagination.value.itemCount === 0) {
+    message.warning('当前筛选没有数据')
+    return
+  }
+  selectingAll.value = true
+  try {
+    const ids = []
+    const size = 1000
+    let p = 1
+    while (p <= 100) { // 兜底，最多 10 万条
+      const res = await api.get('/services', { params: queryParams(p, size) })
+      const list = res.items || []
+      ids.push(...list.map(x => x.id))
+      if (list.length < size || ids.length >= (res.total || 0)) break
+      p++
+    }
+    checked.value = ids
+    if (ids.length > 0) message.success(`已全选当前筛选的 ${ids.length} 条`)
+  } catch (e) {
+    message.error('全选失败：' + (e.response?.data?.error || e.message))
+  } finally {
+    selectingAll.value = false
   }
 }
 
@@ -344,6 +388,8 @@ function onPage(p) { page.value = p; load() }
 function onPageSize(sz) { pageSize.value = sz; page.value = 1; load() }
 function reset() {
   filters.value = { keyword: '', statusCodes: [], ip: '', port: '', service: '', protocol: '' }
+  page.value = 1
+  checked.value = []
   load()
 }
 
