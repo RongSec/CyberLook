@@ -262,16 +262,9 @@ func AIIdentifyService(c *gin.Context) {
 		return
 	}
 	r := service.IdentifyService(svc)
-	// 写回门槛就是模型自己的置信度（>=60），不再用标题正则判"清不清晰"
-	if r.Confident && r.Title != svc.Title {
-		upd := map[string]interface{}{"title": r.Title, "title_source": "ai", "ai_checked_at": time.Now(), "ai_need": false}
-		if svc.Title != "" {
-			upd["prev_title"] = svc.Title // 供前端显示「新变更」
-		}
-		if r.Product != "" && svc.Fingerprint == "" {
-			upd["fingerprint"] = r.Product
-		}
-		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(upd)
+	// 写回走与批量识别完全相同的口径（标题占位串不落库、指纹允许覆盖并留旧值）
+	changed := service.ApplyIdentResult(svc, r)
+	if changed {
 		svc.Title = r.Title
 	}
 	// 手动识别也归档到会话，AI 助手页才能看到这次分析的完整链路

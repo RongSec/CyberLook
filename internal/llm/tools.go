@@ -2,6 +2,8 @@ package llm
 
 import (
 	"encoding/json"
+	"math"
+	"net/netip"
 
 	"strings"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"asset-platform/internal/config"
 	"asset-platform/internal/fingerprint"
 	"asset-platform/internal/model"
+	"asset-platform/internal/scanner"
 )
 
 // Tool OpenAI Function Calling 工具定义
@@ -94,19 +97,20 @@ func Tools() []Tool {
 		t("list_nodes", "查询扫描节点列表：在线状态、版本、当前任务",
 			param(map[string]interface{}{})),
 
-		t("list_disposal", "查询待处置资产池（扫描发现但未确认归属的资产）",
+		t("list_disposal", "查询待处置池。分类口径与处置页一致：host_new=主机新出现，port_new=端口新出现，changed=新变更",
 			param(map[string]interface{}{
-				"tag":   str("标签：new=新发现，ledger=台账有，changed=页面变更"),
+				"tag":   str("分类：host_new / port_new / changed，留空返回三类各一部分"),
 				"limit": num("返回条数，默认 50"),
 			})),
 
 		t("get_dashboard_stats", "查询首页统计：资产总数、待处置数、今日新增、任务状态分布",
 			param(map[string]interface{}{})),
 
-		t("get_compliance", "查询合规检查结果（端口开放、弱口令等风险项）",
+		t("get_compliance", "查询合规检查结果。规则是按端口/协议定义的，没有严重级概念，只能按状态筛",
 			param(map[string]interface{}{
-				"level": str("风险等级：high/medium/low"),
-				"limit": num("返回条数，默认 50"),
+				"status": str("状态：violation=违规，suspected=疑似，fixed=已修复"),
+				"ip":     str("IP 关键字，可选"),
+				"limit":  num("返回条数，默认 50"),
 			})),
 
 		t("search_assets", "全局搜索：在资产、服务、任务中同时查找关键字",
@@ -378,7 +382,7 @@ func Execute(name string, argsJSON string) string {
 		return dashboardStats()
 
 	case "get_compliance":
-		return compliance(s("level"), limit)
+		return compliance(s("status"), s("ip"), limit)
 
 	case "search_assets":
 		return searchAssets(s("keyword"))
@@ -405,13 +409,7 @@ func Execute(name string, argsJSON string) string {
 		return batchUpdateAssets(s("ips"), s("department"), s("owner"))
 
 	case "identify_fingerprint":
-		r := fingerprint.Identify(s("protocol"), s("ip"), n("port", 0))
-		return jsonOut(map[string]interface{}{
-			"ip": s("ip"), "port": n("port", 0),
-			"title": r.Title, "fingerprint": r.Fingerprint,
-			"metaDesc": r.MetaDesc, "framework": r.Framework,
-			"server": r.Server, "layer": r.Layer, "confidence": r.Confidence,
-		})
+		return identifyFingerprint(s("protocol"), s("ip"), n("port", 0))
 
 	case "get_service_changes":
 		return getServiceChanges(s("ip"), args["onlyChanged"], limit)
@@ -521,6 +519,63 @@ func jsonOut(v interface{}) string {
 	return string(b)
 }
 
+// identifyFingerprint 对一个已入库的端口做一次指纹识别，并把结果写回服务记录。
+//
+// 旧实现只把结果打印出来不落库：模型说"已重新识别"，页面上却什么都没变。
+// 现在按 title_source=ai 的同一口径写回：标题是占位串（Redirection……/Login/HTTP）
+// 时不覆盖，避免把垃圾写进库。
+func identifyFingerprint(protocol, ip string, port int) string {
+	if ip == "" || port == 0 {
+		return jsonOut(map[string]string{"error": "需要 ip 和 port"})
+	}
+	if protocol == "" {
+		protocol = "http"
+	}
+	r := fingerprint.Identify(protocol, ip, port)
+
+	var svc model.Service
+	found := config.DB.Where("ip = ? AND port = ?", ip, port).First(&svc).Error == nil
+
+	out := map[string]interface{}{
+		"ip": ip, "port": port,
+		"title": r.Title, "fingerprint": r.Fingerprint,
+		"metaDesc": r.MetaDesc, "framework": r.Framework,
+		"server": r.Server, "layer": r.Layer, "confidence": r.Confidence,
+		"serviceFound": found, "written": false,
+	}
+	if !found {
+		out["note"] = "该端口未入库，仅返回识别结果（先扫描入库再写回）"
+		return jsonOut(out)
+	}
+	updates := map[string]interface{}{}
+	t := strings.TrimSpace(r.Title)
+	// 占位标题不写回：这是"识别不准"的主要污染源
+	if t != "" && !scanner.PlaceholderTitle(t, "") {
+		if t != svc.Title {
+			if svc.Title != "" {
+				updates["prev_title"] = svc.Title
+			}
+			updates["title"] = t
+			updates["title_source"] = "ai"
+		}
+	}
+	if fp := strings.TrimSpace(r.Fingerprint); fp != "" && fp != svc.Fingerprint {
+		updates["fingerprint"] = fp
+	}
+	if len(updates) > 0 {
+		updates["ai_checked_at"] = time.Now()
+		if err := config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates).Error; err != nil {
+			out["error"] = err.Error()
+			return jsonOut(out)
+		}
+		out["written"] = true
+		out["updates"] = updates
+	} else {
+		out["note"] = "识别结果与库内一致，或标题是占位串，未改动"
+	}
+	return jsonOut(out)
+}
+
 // ---- 实现 ----
 
 func listAssets(status, department, owner, keyword string, limit, offset int) string {
@@ -610,14 +665,68 @@ func listNodes() string {
 	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
 }
 
+// listDisposal 待处置池，按 v0.0.49 的分类口径返回（与处置页一致）：
+//
+//	host_new 主机新出现：该 IP 还没有任何已确认归属
+//	port_new 端口新出现：主机已确认，这个端口还没确认
+//	changed  新变更：端口确认过，但当前标题与确认基线不一致
+//
+// 旧实现用 assets.status=pending + tag=new/ledger/changed，和页面上的分类
+// 对不上，模型说"新出现 20 条"时和人工看到的数字不一致。
 func listDisposal(tag string, limit int) string {
-	q := config.DB.Model(&model.Asset{}).Where("status = ?", "pending")
-	if tag == "changed" {
-		q = q.Where("content_changed = true")
+	type row struct {
+		IP        string `json:"ip"`
+		Port      int    `json:"port"`
+		Protocol  string `json:"protocol"`
+		Title     string `json:"title"`
+		Status    string `json:"statusCode"`
+		Confirmed bool   `json:"confirmed"`
+		Category  string `json:"category"`
 	}
-	var items []model.Asset
-	q.Order("updated_at DESC").Limit(limit).Find(&items)
-	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+	pick := func(category string, n int) []row {
+		var out []row
+		base := config.DB.Model(&model.Service{}).
+			Where("protocol ILIKE 'http%' OR service ILIKE '%http%'").
+			Where("COALESCE(status_code,'') <> '' OR COALESCE(title,'') <> ''")
+		switch category {
+		case "host_new":
+			base = base.Where("confirmed = false").Where(
+				"ip NOT IN (SELECT ip FROM assets WHERE status = 'confirmed' AND (COALESCE(owner,'') <> '' OR COALESCE(system_name,'') <> ''))")
+		case "port_new":
+			base = base.Where("confirmed = false").Where(
+				"ip IN (SELECT ip FROM assets WHERE status = 'confirmed' AND (COALESCE(owner,'') <> '' OR COALESCE(system_name,'') <> ''))")
+		case "changed":
+			base = base.Where("confirmed = true").Where(
+				"COALESCE(confirmed_title,'') <> '' AND COALESCE(title,'') <> COALESCE(confirmed_title,'')")
+		}
+		var svcs []model.Service
+		base.Order("ip, port").Limit(n).Find(&svcs)
+		for _, s := range svcs {
+			out = append(out, row{IP: s.IP, Port: s.Port, Protocol: s.Protocol,
+				Title: s.Title, Status: s.StatusCode, Confirmed: s.Confirmed, Category: category})
+		}
+		return out
+	}
+
+	if tag != "" && tag != "all" {
+		items := pick(tag, limit)
+		return jsonOut(map[string]interface{}{"category": tag, "count": len(items), "items": items})
+	}
+	per := limit / 3
+	if per < 1 {
+		per = 1
+	}
+	host := pick("host_new", per)
+	port := pick("port_new", per)
+	changed := pick("changed", per)
+	items := append(append(host, port...), changed...)
+	return jsonOut(map[string]interface{}{
+		"count": len(items),
+		"counts": map[string]int{
+			"host_new": len(host), "port_new": len(port), "changed": len(changed),
+		},
+		"items": items,
+	})
 }
 
 func dashboardStats() string {
@@ -637,14 +746,19 @@ func dashboardStats() string {
 	})
 }
 
-func compliance(status string, limit int) string {
-	var items []model.ComplianceResult
+func compliance(status, ip string, limit int) string {
 	q := config.DB.Model(&model.ComplianceResult{})
 	if status != "" {
 		q = q.Where("status = ?", status)
 	}
+	if ip != "" {
+		q = q.Where("ip::text LIKE ?", "%"+ip+"%")
+	}
+	var total int64
+	q.Count(&total)
+	var items []model.ComplianceResult
 	q.Order("id DESC").Limit(limit).Find(&items)
-	return jsonOut(map[string]interface{}{"count": len(items), "items": items})
+	return jsonOut(map[string]interface{}{"total": total, "count": len(items), "items": items})
 }
 
 func searchAssets(keyword string) string {
@@ -819,6 +933,9 @@ func SystemPrompt() string {
 2. 人工填部门/负责人/系统名后 status=confirmed
 3. 台账导入的资产 source=ledger，扫描发现 source=scan
 4. 页面内容变化会标记 content_changed=true，需重新确认
+5. 待处置分三类，与页面一致：host_new（主机新出现，IP 还没确认归属）、
+   port_new（端口新出现，主机已确认但这个端口没确认）、changed（确认后标题又变了）
+6. 合规规则是按端口/协议定义的，没有 high/medium/low 严重级，别编造等级
 
 【回答要求】
 - 中文回答，简洁直接
@@ -1044,15 +1161,49 @@ func getAssetTrend(days int) string {
 	return jsonOut(map[string]interface{}{"days": days, "trend": rows})
 }
 
+// getScanCoverage 真实覆盖率：规划网段的总 IP 数 vs 实际扫到过的 IP 数。
+// 旧实现只数三张表的行数（42 个网段、3192 个资产），既不是覆盖率，
+// 也和工具描述「已扫IP/规划网段总IP」不符——模型据此会得出错误结论。
 func getScanCoverage() string {
-	var segmentCount, assetCount, serviceCount int64
-	config.DB.Model(&model.IPSegment{}).Count(&segmentCount)
+	var segments []model.IPSegment
+	config.DB.Find(&segments)
+	planned := int64(0)
+	bad := []string{}
+	for _, s := range segments {
+		p, err := netip.ParsePrefix(strings.TrimSpace(s.CIDR))
+		if err != nil {
+			bad = append(bad, s.CIDR)
+			continue
+		}
+		bits := 32
+		if p.Addr().Is6() {
+			bits = 128
+		}
+		n := int64(1) << (bits - p.Bits())
+		planned += n
+	}
+	var scanned, alive int64
+	config.DB.Raw("SELECT COUNT(DISTINCT host(ip)) FROM scan_snapshots").Scan(&scanned)
+	config.DB.Raw("SELECT COUNT(DISTINCT host(ip)) FROM scan_snapshots WHERE is_alive").Scan(&alive)
+
+	var assetCount, serviceCount int64
 	config.DB.Model(&model.Asset{}).Count(&assetCount)
 	config.DB.Model(&model.Service{}).Count(&serviceCount)
+
+	rate := 0.0
+	if planned > 0 {
+		rate = float64(scanned) / float64(planned) * 100
+	}
 	return jsonOut(map[string]interface{}{
-		"segments":     segmentCount,
-		"assets":       assetCount,
-		"services":     serviceCount,
+		"segments":       len(segments),
+		"plannedIps":     planned,
+		"scannedIps":     scanned,
+		"aliveIps":       alive,
+		"coveragePct":    math.Round(rate*10) / 10,
+		"assets":         assetCount,
+		"services":       serviceCount,
+		"invalidCidrs":   bad,
+		"note":           "覆盖率 = 已扫 IP 数 / 规划网段总 IP 数；未扣减免扫描清单",
 	})
 }
 

@@ -438,14 +438,41 @@ func withPage(ctx context.Context, url string, wait time.Duration, fn func(sessi
 	lctx, cancel := context.WithTimeout(ctx, wait)
 	c.waitEvent(lctx, "Page.loadEventFired", sid)
 	cancel()
-	// SPA 在 load 之后还有一次异步渲染，给一个短窗口
-	settle := 600 * time.Millisecond
-	if wait < 2*time.Second {
-		settle = 300 * time.Millisecond
-	}
-	select {
-	case <-time.After(settle):
-	case <-ctx.Done():
+
+	// 自适应等 SPA 渲染完。
+	//
+	// 原来固定 sleep 600ms：对 Vue/React 的登录页远远不够——实测
+	// 198.18.8.65（深信服超融合）在 600ms 时 body.innerText 还是空的，
+	// 于是「渲染结果：正文摘要（空）」喂给模型，模型只能回「未知」，
+	// 而页面 7 秒后其实写着「深信服超融合平台 / SANGFOR HCI」。
+	//
+	// 改成轮询可见文字长度：有内容且连续两次长度不变就立刻返回，
+	// 既不会白等满 8 秒，也不会在页面还没渲染时就取样。
+	deadline := time.Now().Add(wait)
+	lastLen := -1
+	stable := 0
+	for time.Now().Before(deadline) {
+		s, err := c.evalString(ctx, sid, "String(document.body ? document.body.innerText.length : 0)")
+		if err == nil {
+			if n, perr := strconv.Atoi(strings.TrimSpace(s)); perr == nil {
+				if n > 50 {
+					if n == lastLen {
+						stable++
+						if stable >= 2 {
+							break
+						}
+					} else {
+						stable = 0
+					}
+				}
+				lastLen = n
+			}
+		}
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	if err := fn(sid, c); err != nil {

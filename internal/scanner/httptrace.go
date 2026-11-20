@@ -8,8 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,20 +32,49 @@ type Hop struct {
 // 3000 字截断后 AI 只能看到 <head>，识别自然虚。32KB 能覆盖绝大多数登录页/首页。
 const ReadBodyMax = 32 * 1024
 
+// legacyTLSConfig 内网设备兼容的 TLS 配置。
+//
+// 实测（198.18.8.65:443，深信服超融合）：该设备只接受**静态 RSA 密钥交换**
+// 套件（TLS_RSA_WITH_AES_128_GCM_SHA256），而 Go 1.22 起默认已不再提供这类
+// 套件（只给 ECDHE），导致握手直接失败：
+//
+//	remote error: tls: handshake failure
+//
+// 结果是整条识别链路拿不到 https 页面，只能停在 http 侧的跳转壳页上。
+// 内网这类老设备（超融合、老 VPN、打印服务器、旧版管理台）数量不少，
+// 这里显式把 RSA 套件和 TLS1.0 加回来，只用于资产探测，不承载业务数据。
+func legacyTLSConfig() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true, // 内网自签证书是常态，验证会直接掐断识别
+		MinVersion:         tls.VersionTLS10,
+		NextProtos:         []string{"http/1.1"}, // 不给 h2，避免部分设备 ALPN 协商异常
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		},
+	}
+}
+
 // HTTPTrace 主动请求目标，抓取完整请求/响应包，最多 maxHops 跳（默认 4：
 // 覆盖 1 请求 1 响应、302 一跳、以及极少见的二次跳转）。
 // 用途：只靠 banner（UnKnown/websocket-sharp 之类）根本判断不出业务系统，
 // 必须让 AI 看到真实的请求行、响应头、页面内容。
 func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
-	if maxHops <= 0 || maxHops > 4 {
-		maxHops = 4
+	if maxHops <= 0 || maxHops > 8 {
+		maxHops = 6
 	}
 	if scheme == "" {
 		scheme = "http"
 	}
 	scheme = strings.ToLower(scheme)
 	tr := &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:     legacyTLSConfig(),
 		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: 5 * time.Second,
 		DialContext:         (&net.Dialer{Timeout: 4 * time.Second}).DialContext,
@@ -86,46 +116,138 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 			BodyNote:        note,
 		}
 		resp.Body.Close()
-		cancel()
-		hops = append(hops, hop)
 
+		cur := *req.URL
+		next := ""
+		// ① 标准 3xx：看 Location
 		loc := strings.TrimSpace(resp.Header.Get("Location"))
-		if loc == "" || resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			break
-		}
-		// 自己拼下一跳，而不是 next.String()：设备/反代的 Location 常写成
-		// "https://<ip>:80/" 或干脆缺端口，直接用会把 host:port 拼成 ":80:443" 这类畸形串，
-		// 抓包整条链路失败 → 白掉一次 AI 判定（实测 198.18.12.151:80）。
-		// 规则：主机固定为目标 IP，端口取 Location 里的（缺省按 scheme 补），只允许 http/https。
-		nu, perr := url.Parse(loc)
-		if perr != nil {
-			break
-		}
-		nextScheme := strings.ToLower(nu.Scheme)
-		if nextScheme == "" {
-			nextScheme = req.URL.Scheme
-		}
-		if nextScheme != "http" && nextScheme != "https" {
-			break
-		}
-		nextPort := nu.Port()
-		if nextPort == "" {
-			if nextScheme == "https" {
-				nextPort = "443"
-			} else {
-				nextPort = "80"
+		if loc != "" && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			if u, ok := resolveNext(&cur, loc, ip); ok {
+				next = u
 			}
 		}
-		if nu.Host != "" && !strings.EqualFold(nu.Hostname(), ip) {
-			break // 跨主机不跟，避免把别的资产拉进这次识别
+		// ② 客户端跳转：状态码 200，但页面用 JS / meta refresh 把自己送走。
+		//    深信服超融合的 http:80 就是这种：<title>Redirection……</title> +
+		//    location.replace('https:' + location.href...)。
+		//    旧实现只认 3xx，于是这条链路永远停在壳页上，AI 只能看到 "Redirection……"。
+		clientJump := ""
+		if next == "" {
+			if v := clientRedirect(&cur, body); v != "" {
+				if u, ok := resolveNext(&cur, v, ip); ok {
+					next = u
+					clientJump = v
+				}
+			}
 		}
-		pathQ := nu.RequestURI()
-		if pathQ == "" || pathQ == "/" {
-			pathQ = "/"
+		if clientJump != "" {
+			note = strings.TrimSpace(note + fmt.Sprintf("（页面内跳转 → %s）", clientJump))
+			hop.BodyNote = note
 		}
-		target = nextScheme + "://" + net.JoinHostPort(ip, nextPort) + pathQ
+		hops = append(hops, hop)
+		cancel()
+
+		if next == "" || next == target {
+			break
+		}
+		target = next
 	}
 	return hops, nil
+}
+
+var (
+	// location.replace("...") / location.assign("...")
+	reLocCall = regexp.MustCompile(`(?i)location\s*\.\s*(?:replace|assign)\s*\(\s*["']([^"']+)["']`)
+	// <meta http-equiv="refresh" content="0;url=/x">
+	reMetaRefresh = regexp.MustCompile(`(?i)<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*?url\s*=\s*([^"';>\s]+)`)
+	// location.href = "..." / window.location = "..."
+	reLocHref = regexp.MustCompile(`(?i)(?:window\s*\.\s*)?location\s*(?:\.\s*href)?\s*=\s*["']([^"']+)["']`)
+)
+
+// clientRedirect 从响应体里提取「客户端跳转」目标。
+//
+// 只做跳转发现的活，不判断页面是不是默认页——那是模型的事。
+// 返回空串表示没有可用的跳转目标。
+func clientRedirect(cur *url.URL, body string) string {
+	if body == "" {
+		return ""
+	}
+	if len(body) > 64*1024 {
+		body = body[:64*1024]
+	}
+	for _, re := range []*regexp.Regexp{reLocCall, reMetaRefresh, reLocHref} {
+		m := re.FindStringSubmatch(body)
+		if m == nil {
+			continue
+		}
+		v := strings.TrimSpace(m[1])
+		if v == "" {
+			continue
+		}
+		// 纯协议改写写法：'https:' + location.href.substring(p.length)
+		// 目标只有 scheme，路径沿用当前路径。
+		if v == "https:" || v == "http:" || v == "https" || v == "http" {
+			return schemeSwap(cur, strings.TrimSuffix(v, ":"))
+		}
+		return v
+	}
+	// 变量式跳转：location.replace(d)，d 由 location.protocol 判断拼出
+	low := strings.ToLower(body)
+	if strings.Contains(low, "location.protocol") && strings.Contains(low, "https:") &&
+		(strings.Contains(low, "location.replace") || strings.Contains(low, "location.href")) {
+		return schemeSwap(cur, "https")
+	}
+	return ""
+}
+
+// schemeSwap 保持 host/路径不变，只换协议；标准端口按协议换算，
+// 非标端口原样保留（设备常在 8080/8110 上 http/https 同端口）。
+func schemeSwap(cur *url.URL, scheme string) string {
+	port := cur.Port()
+	u := *cur
+	u.Scheme = scheme
+	if port == "80" || port == "443" {
+		u.Host = cur.Hostname() // 去掉端口，交给新协议的默认端口
+	}
+	return u.String()
+}
+
+// resolveNext 把 Location / 客户端跳转目标解析成下一跳绝对地址。
+//
+// 三条硬规则（都踩过坑）：
+//  1. 相对地址必须按「当前 URL」解析。`Location: ./login` 直接拼 host 会得到
+//     `https://ip:443./login` 这种畸形串，第二跳必挂。
+//  2. 主机固定为目标 IP，跨主机不跟，避免把别人的资产拉进这次识别。
+//  3. 端口缺省时沿用当前端口。旧实现按 scheme 硬补 80/443，把
+//     `https://ip:8110/ → Location: ./login` 打到 443 上，直接失败。
+func resolveNext(cur *url.URL, loc, ip string) (string, bool) {
+	ref, err := url.Parse(strings.TrimSpace(loc))
+	if err != nil {
+		return "", false
+	}
+	abs := cur.ResolveReference(ref)
+	if abs.Host != "" && !strings.EqualFold(abs.Hostname(), ip) {
+		return "", false // 跨主机不跟
+	}
+	scheme := strings.ToLower(abs.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	port := abs.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	p := abs.RequestURI()
+	if p == "" || p == "/" {
+		p = "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return scheme + "://" + net.JoinHostPort(ip, port) + p, true
 }
 
 // readBodySnippet 读响应体（文本类），保留完整报文供 AI 判读。

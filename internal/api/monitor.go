@@ -3,9 +3,11 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/scanner"
 	"asset-platform/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -174,28 +176,60 @@ func RestoreBackup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已恢复。恢复前已自动备份当前数据：" + safety, "safetyBackup": safety})
 }
 
-// ReidentifyServices 批量重新识别历史上"标题不清晰"的 web 服务。
-// AI 识别只在服务入库时触发，老数据没有人去覆盖，这个接口用来补历史。
-// POST /api/services/reidentify?limit=100
+// ReidentifyServices 批量重新识别 web 服务，用来补历史漏识别。
+//
+// 背景：AI 识别原来只在"引擎说 needAi"时触发，实测 2848 条 HTTP 服务里
+// 有 2186 条从未识别，标题停在 `Redirection……`/`HTTP`/空 这类占位值。
+//
+// POST /api/services/reidentify?scope=placeholder&limit=200&ip=198.18.8.
+//
+//	scope=placeholder（默认）只挑占位标题；scope=unchecked 挑从未识别过的；
+//	scope=all 全部 HTTP 服务（谨慎，逐条要抓包 + 可能渲染）
 func ReidentifyServices(c *gin.Context) {
 	limit := 100
-	if v, err := strconv.Atoi(c.DefaultQuery("limit", "100")); err == nil && v > 0 && v <= 1000 {
+	if v, err := strconv.Atoi(c.DefaultQuery("limit", "100")); err == nil && v > 0 && v <= 2000 {
 		limit = v
 	}
+	scope := c.DefaultQuery("scope", "placeholder")
+	ipFilter := strings.TrimSpace(c.Query("ip"))
+
+	q := config.DB.Model(&model.Service{}).Where("protocol ILIKE 'http%'")
+	switch scope {
+	case "unchecked":
+		q = q.Where("ai_checked_at IS NULL")
+	case "all":
+		// 不加条件
+	}
+	// 不再用 SQL 拼"占位标题"的匹配条件：中文「重定向中...」这类变体
+	// 一改就得改 SQL，永远追不上。SQL 只负责粗筛，判定交给 PlaceholderTitle。
+	if ipFilter != "" {
+		q = q.Where("ip::text LIKE ?", ipFilter+"%")
+	}
 	var svcs []model.Service
-	config.DB.Where("protocol ILIKE 'http%'").Order("last_seen desc").Limit(5000).Find(&svcs)
+	q.Order("last_seen DESC NULLS LAST").Limit(3000).Find(&svcs)
+
 	queued := 0
 	for _, s := range svcs {
-		if service.TitleClear(s.Title) {
-			continue
-		}
-		service.EnqueueAIIdentify(s.LastTaskID, s.IP, s.Port)
-		queued++
 		if queued >= limit {
 			break
 		}
+		switch scope {
+		case "all":
+			// 全量：不筛标题
+		case "unchecked":
+			if s.AiCheckedAt != nil {
+				continue
+			}
+		default: // placeholder
+			if !scanner.PlaceholderTitle(s.Title, s.StatusCode) {
+				continue
+			}
+		}
+		service.EnqueueAIIdentify(s.LastTaskID, s.IP, s.Port)
+		queued++
 	}
-	c.JSON(http.StatusOK, gin.H{"queued": queued, "scanned": len(svcs), "message": "已入队，后台识别中（结果会写回并记 prev_title）"})
+	c.JSON(http.StatusOK, gin.H{
+		"queued": queued, "candidates": len(svcs), "scope": scope,
+		"message": "已入队，后台识别中（结果写回 title 并记 prev_title）",
+	})
 }
-
-// ReidentifyServices 批量重新识别历史上"标题不清晰"的 web 服务。

@@ -546,13 +546,23 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	p.Title = mergedTitle
 	fpStr = mergedFP
 
+	// 是否需要 AI 复核：引擎的 needAi 只按"证据来源"标记，实测漏掉大量壳页
+	// （title=`Redirection……` / `307 TEMPORARY REDIRECT` / `HTTP` / 空），
+	// 这些条目标题看着存在、实际不含任何身份信息，AI 却从未被唤起。
+	// 所以在引擎标记之外，补一条结构性判定：标题是占位就强制走识别。
+	needAI := p.NeedAI
+	if !needAI && strings.HasPrefix(strings.ToLower(p.Protocol), "http") &&
+		scanner.PlaceholderTitle(p.Title, p.StatusCode) {
+		needAI = true
+	}
+
 	if err == gorm.ErrRecordNotFound {
 		config.DB.Create(&model.Service{
 			AssetID: &asset.ID, IP: ip, Port: p.Port, Protocol: p.Protocol,
 			Service: p.Service, Banner: p.Banner, Title: p.Title, Fingerprint: fpStr,
 			StatusCode: p.StatusCode, ContentLength: p.ContentLength, PageSimhash: fp,
 			PrevTitle: svc.PrevTitle, PrevFingerprint: svc.PrevFingerprint, TitleSource: titleSrc,
-			AiNeed: p.NeedAI,
+			AiNeed: needAI,
 			FirstSeen: &now, LastSeen: &now,
 			TaskID: taskID, LastTaskID: taskID, // 首次发现归本任务
 		})
@@ -571,7 +581,7 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 			"content_length": p.ContentLength, "page_simhash": fp,
 			"last_seen": now, "asset_id": asset.ID, "miss_count": 0,
 			"last_task_id": taskID, // 只更新「最近扫到」，不动首次归属
-			"ai_need": p.NeedAI,
+			"ai_need": needAI,
 		})
 	}
 
@@ -593,7 +603,7 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	// 送不送 AI，由引擎按证据来源给的标记决定（产品名缺失 / 只来自协议名、证书、HTTP 头、标题）。
 	// 这里不再用"标题正则判清晰度"做闸门——那既会漏（标题像样但其实是默认页），
 	// 也会误伤（合法产品名被当成垃圾）。
-	if p.NeedAI {
+	if needAI {
 		EnqueueAIIdentify(taskID, ip, p.Port)
 	}
 }

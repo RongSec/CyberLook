@@ -10,7 +10,9 @@
         </n-button>
         <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" :conds="splConds" />
         <n-button :loading="exporting" @click="exportUrls">导出 URL</n-button>
-        <n-button :loading="aiBatch" @click="reidentifyBatch">AI 批量识别</n-button>
+        <n-dropdown :options="aiScopeOptions" @select="reidentifyBatch">
+          <n-button :loading="aiBatch">AI 批量识别</n-button>
+        </n-dropdown>
         <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
           <template #trigger>
             <n-button type="error" :disabled="checked.length === 0">
@@ -242,12 +244,21 @@ async function toggleSelectAll() {
 
 const aiBatch = ref(false)
 
-// 历史「不清晰」标题批量重识别：AI 只在入库时触发，存量的靠这个补
-async function reidentifyBatch() {
+// 三种补识别范围：占位标题最省 token；未识别过的最彻底；全量最慢
+const aiScopeOptions = [
+  { label: '补识别：占位标题（Redirection…… / HTTP / 空）', key: 'placeholder' },
+  { label: '补识别：从未识别过的（含占位）', key: 'unchecked' },
+  { label: '补识别：全部 HTTP 服务（慢，慎用）', key: 'all' }
+]
+
+// 历史「不清晰」标题批量重识别：AI 只在入库时触发，存量的靠这个补。
+// scope=placeholder 只挑占位标题（Redirection……/HTTP/空/状态文本），
+// scope=unchecked 连从未识别过的也一起挑，scope=all 全量（慢，慎用）。
+async function reidentifyBatch(scope = 'placeholder', limit = 200) {
   aiBatch.value = true
   try {
-    const r = await api.post('/services/reidentify?limit=100')
-    message.success(`已入队 ${r.queued} 条（候选 ${r.scanned} 条），后台识别中，稍后刷新即可看到更准确的标题与新变更标记`)
+    const r = await api.post(`/services/reidentify?scope=${scope}&limit=${limit}`)
+    message.success(`已入队 ${r.queued} 条（候选 ${r.candidates} 条），后台识别中，稍后刷新即可看到更准确的标题与新变更标记`)
   } catch (e) {
     message.error(e.response?.data?.error || '提交失败')
   } finally {

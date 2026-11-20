@@ -33,6 +33,11 @@ const (
 	aiIdentifyQueueSize = 2000
 )
 
+// confidentEnough 第一轮（只看请求响应包）要多少分才直接收工。
+// 低于这个分数说明只判到了厂商/类别一级，继续走浏览器渲染拿页面文字。
+// 实测依据：62 分给出的「深信服 SSL VPN」渲染后是「深信服超融合平台 SANGFOR HCI」。
+const confidentEnough = 80
+
 // aiIdentifyMaxPerTask 每个任务最多识别多少条服务。
 // 历史值 100 导致上万 web 端口只有前 100 条走识别，其余静默丢弃。
 // 现在默认 2000，可用环境变量 AI_IDENTIFY_MAX_PER_TASK 覆盖。
@@ -182,16 +187,38 @@ func IdentifyService(svc model.Service) IdentResult {
 			Stage: "AI·请求响应包", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
 			Output: orNone(verdict.Raw), OK: verdict.dotConfident(),
 		})
-		if verdict.dotConfident() {
+		if verdict.dotConfident() && verdict.Confidence >= confidentEnough {
 			res.apply(verdict)
 			res.Stages, res.Hops = stages, hops
 			return res
 		}
-		// 模型明确说"信息已经够、只是给不出确切名字"→ 再渲染也没用
-		if verdict.Sufficient {
+		// 置信 60-79 属于「特征对上了，但只到厂商/类别一级」。
+		// 实测 198.18.8.65:80：模型凭 window.VMP + RSAModulus 判成
+		// 「深信服 SSL VPN/安全网关」置信 62 就收工，而渲染后的页面里
+		// 明明写着「深信服超融合平台 / SANGFOR HCI」——厂商对了、产品线错了。
+		// 这类结论不写回、继续渲染，让页面文字自己说话。
+		if verdict.dotConfident() {
+			stages = append(stages, IdentStage{
+				Stage:  "复核·结论粒度",
+				Input:  fmt.Sprintf("置信 %d", verdict.Confidence),
+				Output: fmt.Sprintf("只到厂商/类别一级（< %d），继续渲染复核产品线", confidentEnough),
+			})
+		}
+		// 模型明确说"信息已经够、只是给不出确切名字"→ 再渲染也没用。
+		// 但前提是它看到的确实是"完整证据"：如果抓到的全是壳页/跳转页/错误页
+		// （visibleText < 200 字），那句 sufficient 是被烂证据骗出来的，
+		// 必须继续渲染——浏览器会执行 JS 跳转，这是唯一能看到真实登录页的途径。
+		if verdict.Sufficient && !scanner.TraceWeak(hops) {
 			res.Sufficient, res.Reason = true, verdict.Reason
 			res.Stages, res.Hops = stages, hops
 			return res
+		}
+		if verdict.Sufficient {
+			stages = append(stages, IdentStage{
+				Stage:  "复核·证据强度",
+				Input:  fmt.Sprintf("%d 跳", len(hops)),
+				Output: "抓到的是壳页/跳转页（可见文字不足 200 字），模型判 sufficient 不可信，继续渲染",
+			})
 		}
 	}
 
@@ -215,8 +242,11 @@ func IdentifyService(svc model.Service) IdentResult {
 	stages = append(stages, IdentStage{Stage: "AI·渲染结果", Input: rendered, Output: orNone(verdict2.Raw), OK: verdict2.dotConfident()})
 	if verdict2.dotConfident() {
 		res.apply(verdict2)
-	} else if strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) {
-		// 模型没给出高置信名字，但渲染后的标题本身是明确文字：作为低置信候选带上
+	} else if strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) &&
+		!scanner.PlaceholderTitle(pageTitle, "") {
+		// 模型没给出高置信名字，但渲染后的标题本身是明确文字：作为低置信候选带上。
+		// 注意排除 `Login` / `Redirection……` 这类占位标题——浏览器的 <title>
+		// 经常就是 "Login"，直接拿来用等于把壳页标题又写回一遍。
 		res.Title = strings.TrimSpace(pageTitle)
 		res.Reason = "渲染标题（未经模型确认）"
 	}
@@ -284,7 +314,23 @@ const aiIdentSystem = `你是内网资产识别专家。用户给你一个 HTTP 
 5. sufficient=false 表示"证据不足，需要看渲染后的完整页面"。
    典型：标题为空或只有 Login/Welcome、正文几乎没有文字、页面是空壳 SPA。
 6. 如果现有证据里明明有产品名（哪怕长得怪，例如 "SAP Message Server,release 722 (SP8)"），
-   confidence 要给高——不要因为名字不符合常见格式就否定它。`
+   confidence 要给高——不要因为名字不符合常见格式就否定它。
+7. 证据可能是**多跳**：前几跳常常是跳转壳页（200 + <title>Redirection……</title> +
+   location.replace）。一律以**最后一跳**的页面内容为准，不要把中间跳转页的标题、
+   状态文本当成系统名。
+8. 下列内容**一律不是系统名**，禁止作为 title 输出：Redirection……、307 TEMPORARY REDIRECT、
+   Login、Welcome、HTTP、Index of /、Error 404、以及 Apache/nginx/IIS 这类服务器名。
+   只看到这些就说明证据不足，sufficient 要给 false，让流程继续去看渲染后的页面。
+9. 页面里的厂商特有对象/变量也可以作为依据（例如 window.VMP + RSAModulus +
+   ukey_service_version 是深信服系产品的登录页特征；Sangfor / H3C / Huawei 版权行同理），
+   但必须在 reason 里点明你依据的是哪个特征。
+10. 站点图标、公共资源路径（/common/resources/icon/enterprise_custom/）这类线索
+   只能辅助判断，单独出现不足以定名。
+11. **严格区分「厂商」和「产品线」**。同一厂商的多个产品常共用同一套登录框架：
+   例如深信服的 aTrust、SSL VPN、超融合 HCI、EDR 都用 window.VMP + RSAModulus 这套前端。
+   如果证据里只有厂商特征、没有产品线文字（HCI / 超融合 / aTrust / SSL VPN / EDR 等），
+   confidence 不得超过 55，sufficient 要给 false —— 页面渲染后通常能直接看到产品名。
+   把厂商名当成产品名输出，比不给名字更糟。`
 
 // askAI 让模型判断这是什么系统
 func askAI(source, info string, rendered bool) aiVerdict {
@@ -330,9 +376,21 @@ func runAIIdentify(job aiIdentifyJob) {
 	}
 
 	r := IdentifyService(svc)
+	changed := ApplyIdentResult(svc, r)
+	recordIdentConversation(job.TaskID, svc, r, changed)
+}
+
+// ApplyIdentResult 把识别结论写回服务记录，返回是否发生改动。
+//
+// 写回口径（批量识别与手动识别共用，避免两处漂移）：
+//   - title：置信 >=60 且不是占位串（`Redirection……` / `Login` / `HTTP` / 状态文本）
+//   - fingerprint：置信 >=60 且非空，允许覆盖旧值，旧值留在 prev_fingerprint
+//   - 无论是否改动，都记 ai_checked_at 并把 ai_need 清掉，避免重复排队
+func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	updates := map[string]interface{}{"ai_checked_at": time.Now(), "ai_need": false}
 	changed := false
-	if r.Confident && TitleClear(r.Title) && r.Title != svc.Title {
+	usableTitle := TitleClear(r.Title) && !scanner.PlaceholderTitle(r.Title, "")
+	if r.Confident && usableTitle && r.Title != svc.Title {
 		updates["title"] = truncateStr(r.Title, 300)
 		updates["title_source"] = "ai"
 		if strings.TrimSpace(svc.Title) != "" {
@@ -342,10 +400,13 @@ func runAIIdentify(job aiIdentifyJob) {
 	}
 	if r.Confident && strings.TrimSpace(r.Product) != "" && r.Product != svc.Fingerprint {
 		updates["fingerprint"] = truncateStr(r.Product, 300)
+		if strings.TrimSpace(svc.Fingerprint) != "" {
+			updates["prev_fingerprint"] = svc.Fingerprint
+		}
 		changed = true
 	}
 	config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates)
-	recordIdentConversation(job.TaskID, svc, r, changed)
+	return changed
 }
 
 // recordIdentConversation 一次识别 = 一条会话（v0.0.47 起）。
