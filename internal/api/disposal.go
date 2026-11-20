@@ -476,6 +476,21 @@ func upsertOwnerAsset(ip, systemName, owner, department string) (*model.Asset, e
 			Update("status", "confirmed")
 		return &asset, nil
 	}
+	// 没有完全相同的归属：先复用该 IP 已存在的「空归属」行（扫描自动建的那种）。
+	// 不复用的话，确认一次就会留下一条 owner/系统名全空的 pending 行，
+	// 资产总览上同一个 IP 出现两行（一行空、一行有归属），纯噪音，
+	// 也会让「多归属」标签误报。
+	var blank model.Asset
+	if err := config.DB.Where(
+		"ip = ? AND COALESCE(system_name,'') = '' AND COALESCE(owner,'') = '' AND COALESCE(department,'') = ''",
+		ip).Order("id").First(&blank).Error; err == nil {
+		config.DB.Model(&model.Asset{}).Where("id = ?", blank.ID).Updates(map[string]interface{}{
+			"system_name": systemName, "owner": owner, "department": department,
+			"status": "confirmed",
+		})
+		blank.SystemName, blank.Owner, blank.Department, blank.Status = systemName, owner, department, "confirmed"
+		return &blank, nil
+	}
 	asset = model.Asset{
 		IP: ip, Source: "scan", Status: "confirmed",
 		SystemName: systemName, Owner: owner, Department: department,

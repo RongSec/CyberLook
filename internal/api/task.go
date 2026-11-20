@@ -340,7 +340,15 @@ func RunTask(c *gin.Context) {
 	// 尝试分发到节点。nodeIds 为空时 DispatchTask 会自动指派给本机节点 node-docker-1，
 	// 所以要调用之后再看 task.NodeIDs 是否被填充
 	if err := service.DispatchTask(&task); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配失败：" + err.Error()})
+		// 目标是空 / 全被免扫描清单排除，属于用户配置问题，不是服务端故障，
+		// 返回 400 让调用方（前端、AI 助手）能区分「参数要改」和「服务挂了」。
+		msg := err.Error()
+		code := http.StatusInternalServerError
+		if strings.Contains(msg, "免扫描") || strings.Contains(msg, "没有可扫描") ||
+			strings.Contains(msg, "目标") && strings.Contains(msg, "空") {
+			code = http.StatusBadRequest
+		}
+		c.JSON(code, gin.H{"error": "分配失败：" + msg})
 		return
 	}
 	if task.NodeIDs != "" {

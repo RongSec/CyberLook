@@ -20,7 +20,7 @@
       <div class="toolbar" style="flex-wrap:wrap">
         <n-tooltip trigger="hover" placement="bottom">
           <template #trigger>
-            <n-button type="success" :disabled="checked.length === 0" @click="batchConfirmLedger">
+            <n-button type="success" :disabled="ledgerChecked.length === 0" @click="batchConfirmLedger">
               按台账确认{{ ledgerChecked.length ? `(${ledgerChecked.length})` : '' }}
             </n-button>
           </template>
@@ -466,7 +466,21 @@ function twoLine(prev, cur) {
 
 
 // 选中的端口 key —— 精确到端口，不再按 IP 传
-const ledgerChecked = computed(() => checked.value.slice())
+// 「按台账确认」只能确认台账里有信息的行。
+//
+// 主机新出现（host_new）= 台账里根本没有这个 IP，没有可用信息，
+// 纳入确认只会得到「已确认 0 个」。之前这里直接取 checked，
+// 于是全勾新出现时按钮仍显示 (1) 且可点，点完弹一句「都不在台账中」——纯误导。
+//
+// 按 IP 而非 ip:port 匹配：一个 IP 在列表里只占一行（webPort 是主端口），
+// 但勾选精确到端口，用 ip:port 会漏掉同 IP 的副端口。
+const ledgerChecked = computed(() => {
+  const byIp = new Map(items.value.map(i => [i.ip, i]))
+  return checked.value.filter(k => {
+    const it = byIp.get(String(k).split(':')[0])
+    return !!it && it.category !== 'host_new'
+  })
+})
 // 选中里有多少是「新变更」：确认前需要二次确认，避免静默接受页面变化
 const changedChecked = computed(() => {
   const byKey = new Map(items.value.map(i => [i.ip + ':' + i.webPort, i]))

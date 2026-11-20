@@ -111,9 +111,12 @@
         <div v-for="(m, i) in messages" :key="m.id || i" :data-mid="m.id || null"
              :class="['msg', m.role, { 'msg-hit': hitActive && m.id === hitActive }]">
           <div class="bubble">
+            <!-- 显示这次回答调用了哪些工具。加「调用」前缀，
+                 否则裸工具名（get_dashboard_stats）贴在正文上面，
+                 会被读成模型回答的一部分（用户问"只回数字"时尤其明显）。 -->
             <div v-if="m.toolCalls && m.toolCalls.length" class="tools">
               <n-tag v-for="(t, j) in m.toolCalls" :key="j" size="tiny" type="info" round>
-                {{ t.tool }}
+                调用 {{ t.tool }}
               </n-tag>
             </div>
             <div v-if="traceOf(m)" style="margin-bottom:6px">

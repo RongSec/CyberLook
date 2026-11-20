@@ -55,12 +55,18 @@ func TestToolSmoke(t *testing.T) {
 	}
 	for _, c := range cases {
 		out := Execute(c.name, c.args)
-		bad := strings.Contains(out, `"error"`) || strings.TrimSpace(out) == "" || strings.TrimSpace(out) == "null"
 		// 结构检查：必须是合法 JSON 对象
 		var probe map[string]interface{}
 		if err := json.Unmarshal([]byte(out), &probe); err != nil {
 			t.Logf("[FAIL] %-24s 输出不是 JSON: %.120s", c.name, out)
 			continue
+		}
+		// 错误判定要看「error 字段非空」，不能靠字符串包含：
+		// list_tasks 返回的任务对象里本来就有 "error":"" 这个字段，
+		// 用 Contains(out, `"error"`) 会把正常结果误判成失败。
+		bad := strings.TrimSpace(out) == "" || strings.TrimSpace(out) == "null"
+		if msg, ok := probe["error"].(string); ok && strings.TrimSpace(msg) != "" {
+			bad = true
 		}
 		status := "OK  "
 		if bad {

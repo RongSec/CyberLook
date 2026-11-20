@@ -66,13 +66,21 @@ func legacyTLSConfig() *tls.Config {
 // 用途：只靠 banner（UnKnown/websocket-sharp 之类）根本判断不出业务系统，
 // 必须让 AI 看到真实的请求行、响应头、页面内容。
 func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
-	if maxHops <= 0 || maxHops > 8 {
-		maxHops = 6
-	}
 	if scheme == "" {
 		scheme = "http"
 	}
 	scheme = strings.ToLower(scheme)
+	return HTTPTracePath(ip, port, fmt.Sprintf("%s://%s:%d/", scheme, ip, port), maxHops)
+}
+
+// HTTPTracePath 从指定 URL 开始抓取。
+//
+// 与 HTTPTrace 的差别只是起点：识别流程总是从站点根开始，而测试需要
+// 从任意路径出发（例如 /sub/dir 才能验证相对 Location 的解析）。
+func HTTPTracePath(ip string, port int, startURL string, maxHops int) ([]Hop, error) {
+	if maxHops <= 0 || maxHops > 8 {
+		maxHops = 6
+	}
 	tr := &http.Transport{
 		TLSClientConfig:     legacyTLSConfig(),
 		DisableKeepAlives:   true,
@@ -84,7 +92,7 @@ func HTTPTrace(ip string, port int, scheme string, maxHops int) ([]Hop, error) {
 	// （实测 198.18.12.151:80 回 `Location: https://198.18.12.151:80:443/`）
 	// 就直接报 "failed to parse Location header"，整条链路作废、白掉一次 AI 判定。
 	// 用 Transport.RoundTrip 只发一次请求，跳转由我们自己处理，畸形头也能记下来当证据。
-	target := fmt.Sprintf("%s://%s:%d/", scheme, ip, port)
+	target := startURL
 	var hops []Hop
 	for i := 0; i < maxHops; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)

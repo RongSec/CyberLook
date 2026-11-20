@@ -19,6 +19,13 @@ import (
 // 判定刻意保持"结构性"：只看形态，不做白名单灰度，避免又变成调不完的正则。
 var reStatusText = regexp.MustCompile(`^\d{3}\s+[A-Z][A-Z0-9 \-/]*$`)
 
+// 状态文本的常规大小写写法：`404 Not Found`、`403 Forbidden`。
+// 上面那条只认全大写（`307 TEMPORARY REDIRECT`），漏掉了 IIS/nginx 常见的
+// `HTTP Status 404 – Not Found`、`404 Not Found` 这类混排，这里补一条短语表。
+var reStatusPhrase = regexp.MustCompile(`(?i)^\d{3}\s+(not found|forbidden|unauthorized|internal server error|` +
+	`temporary redirect|permanent redirect|moved permanently|moved temporarily|found|bad request|` +
+	`service unavailable|bad gateway|gateway timeout|not acceptable|request timeout)\b`)
+
 // PlaceholderTitle 标题是否为结构性占位（不含身份信息）。
 func PlaceholderTitle(title, statusCode string) bool {
 	t := strings.TrimSpace(title)
@@ -28,7 +35,7 @@ func PlaceholderTitle(title, statusCode string) bool {
 	low := strings.ToLower(t)
 
 	// 1) HTTP 状态文本被当标题：`307 TEMPORARY REDIRECT`、`404 Not Found`
-	if reStatusText.MatchString(t) {
+	if reStatusText.MatchString(t) || reStatusPhrase.MatchString(t) {
 		return true
 	}
 
