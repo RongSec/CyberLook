@@ -737,6 +737,12 @@ func DispatchQueueTask(task *model.ScanTask) (localFallback bool, err error) {
 
 	// 开启存活探测时，先把目标探一遍再入队（异步，避免请求堵住几分钟）。
 	if task.AliveProbe {
+		// 先单独判「目标展开后是不是空的」：最常见的成因是整段被免扫描清单排除
+		//（例如默认的 *.*.*.1 会排除所有网段的 .1），直接报"存活探测启动失败"
+		// 会让人以为是探测组件坏了，排查方向完全错。
+		if len(target.Resolve(parseTargets(task.IPRanges), ExcludeRangeStrings())) == 0 {
+			return false, fmt.Errorf("目标 IP 全部被免扫描清单排除（检查「IP 规划 → 免扫描清单」，如 *.*.*.1 会排除所有以 .1 结尾的地址）")
+		}
 		if !startQueueAfterAliveProbe(*task, pc) {
 			return false, fmt.Errorf("存活探测启动失败")
 		}

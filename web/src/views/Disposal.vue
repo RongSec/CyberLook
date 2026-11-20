@@ -612,9 +612,12 @@ function openConfirm(row) {
 }
 
 // 批量处置：选中则填 IP，未选中则空白
+// 注意 checked 里存的是 "ip:port"（端口级选择用），后端 /disposal/confirm 的 ips 只认纯 IP，
+// 直接 join 会提交成 "10.1.1.1:8080" → 一条都匹配不上（表现为「已确认 0 个，跳过 N」）。
+// 所以这里去掉端口并按 IP 去重（同一 IP 多端口只提交一次）。
 function openBatchConfirm() {
   batchMode.value = true
-  const ips = checked.value.length > 0 ? checked.value.slice() : []
+  const ips = [...new Set(checked.value.map(k => String(k).split(':')[0]).filter(Boolean))]
   form.value = { id: 0, ip: ips.join('\n'), title: '', fingerprint: '', department: null, owner: null, systemName: '' }
   showConfirm.value = true
 }

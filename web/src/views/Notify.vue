@@ -143,6 +143,8 @@ import api from '../api'
 const message = useMessage()
 const saving = ref(false)
 const testing = ref(false)
+// testingCh 记录「正在测哪个渠道」，用于单渠道按钮的 loading 态（模板里已引用，缺定义会整体报错）
+const testingCh = ref('')
 const testResult = ref('')
 const testResultsMap = ref({})
 
@@ -185,6 +187,25 @@ async function test() {
     message.error(e.response?.data?.error || '测试失败')
   } finally {
     testing.value = false
+  }
+}
+
+// 单渠道测试：模板里 5 个「测试」按钮都绑到 testOne，之前只有 test()，
+// 一点就抛 "testOne is not a function"，按钮全废。这里补上，并只发该渠道。
+async function testOne(ch) {
+  testingCh.value = ch
+  try {
+    const res = await api.post(`/notify/test?channel=${encodeURIComponent(ch)}`, {})
+    const one = res.results || {}
+    testResultsMap.value = { ...testResultsMap.value, ...one }
+    const txt = Object.entries(one).map(([k, v]) => `${k}：${v}`).join('｜')
+    if (txt.includes('✗') || one.error) message.warning(txt || one.error || '未发送')
+    else message.success(txt || '已发送')
+    testResult.value = JSON.stringify(testResultsMap.value)
+  } catch (e) {
+    message.error(e.response?.data?.error || '测试失败')
+  } finally {
+    testingCh.value = ''
   }
 }
 
