@@ -10,6 +10,9 @@
         </n-button>
         <ExportButton type="services" title="应用服务" :columns="exportCols" :filters="filters" :conds="splConds" />
         <n-button :loading="exporting" @click="exportUrls">导出 URL</n-button>
+        <n-button type="info" :disabled="checked.length === 0" @click="copyCheckedUrls">
+          复制 URL{{ checked.length ? `(${checked.length})` : '' }}
+        </n-button>
         <n-dropdown :options="aiScopeOptions" @select="reidentifyBatch">
           <n-button :loading="aiBatch">AI 批量识别</n-button>
         </n-dropdown>
@@ -88,22 +91,33 @@ const statusCodeOptions = [
 const columns = [
   { type: 'selection', width: 44, fixed: 'left' },
   { title: 'IP', key: 'ip', width: 140 },
-  { title: '端口', key: 'port', width: 80 },
-  { title: '协议', key: 'protocol', width: 80 },
+  // 端口 / 协议 / 响应码 / 响应长度 合并为一列：上行端口+协议，下行状态码+长度
   {
-    title: '响应码', key: 'statusCode', width: 90,
-    render: r => {
-      const code = r.statusCode || ''
-      if (!code) return '-'
+    title: '端口 / 协议', key: 'endpoint', width: 150,
+    render: row => {
+      const proto = (row.protocol || '').toLowerCase()
+      const code = row.statusCode || ''
       const n = parseInt(code)
-      const type = n >= 200 && n < 300 ? 'success' : n >= 300 && n < 400 ? 'info' : n >= 400 ? 'error' : 'default'
-      return h(NTag, { size: 'small', type }, { default: () => code })
+      const codeColor = !code ? '#9ca3af' : n >= 200 && n < 300 ? '#15803d'
+        : n >= 300 && n < 400 ? '#2563eb' : n >= 400 ? '#dc2626' : '#6b7280'
+      const line2 = [
+        code ? h('span', { style: `color:${codeColor}` }, code) : null,
+        h('span', { style: 'color:#6b7280' }, fmtLen(row.contentLength))
+      ].filter(Boolean)
+      return h('div', { style: 'font-size:12px;line-height:1.5' }, [
+        h('div', { style: 'color:#111827;font-weight:600' },
+          `${row.port || '-'}${proto ? ' · ' + proto : ''}`),
+        h('div', { style: 'font-size:11px;display:flex;gap:6px' }, line2)
+      ])
     }
   },
-  { title: '响应长度', key: 'contentLength', width: 100, render: r => fmtLen(r.contentLength) },
   { title: '网站标题', key: 'title', ellipsis: { tooltip: true }, render: r => r.title || '-' },
-  { title: '指纹', key: 'fingerprint', width: 150, ellipsis: { tooltip: true }, render: r => r.fingerprint || '-' },
-  { title: 'Banner', key: 'banner', ellipsis: { tooltip: true } },
+  // 指纹与 Banner 同源（Banner 是原始响应头，指纹是从中提取的产品名），合并为一列：
+  // 有指纹用指纹，提取失败时回退显示原始 Banner，信息不丢
+  {
+    title: '指纹', key: 'fingerprint', ellipsis: { tooltip: true },
+    render: r => r.fingerprint || r.banner || '-'
+  },
   { title: '台账登记', key: 'ledger', width: 200,
     render: r => h('div', { style: 'font-size:12px;line-height:1.5' }, [
       h('div', { style: r.systemName ? 'color:#15803d' : 'color:#c0c4cc' }, r.systemName || '—'),
@@ -115,16 +129,7 @@ const columns = [
     render: r => h(NTag, { size: 'small', type: r.activity === 'sleeping' ? 'default' : 'success', bordered: false },
       { default: () => r.activity === 'sleeping' ? '睡眠' : '活跃' })
   },
-  { title: '最近发现', key: 'lastSeen', width: 160, render: r => fmt(r.lastSeen) },
-  {
-    title: '操作', key: 'actions', width: 170,
-    render: row => h('div', { style: 'display:flex;gap:6px' }, [
-      h(NButton, { size: 'small', text: true, type: 'primary', onClick: () => copyUrl(row) }, { default: () => '复制URL' }),
-      h(NPopconfirm, { onPositiveClick: () => del(row) },
-        { trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, { default: () => '删除' }),
-          default: () => `确认删除 ${row.ip}:${row.port} ？` })
-    ])
-  }
+  { title: '最近发现', key: 'lastSeen', width: 160, render: r => fmt(r.lastSeen) }
 ]
 
 // 检索字段 = 表格所有列（排除操作列），新增列时自动多一项
@@ -144,16 +149,30 @@ const SPL_FIXED_OPTIONS = {
   }
 }
 
-// 导出列 = 表格所有列（排除操作列），与页面显示保持一致
-const exportCols = computed(() =>
-  columns
-    .filter(c => c.key && !['actions', 'op'].includes(c.key))
-    .map(c => ({ key: c.key, label: c.title }))
-)
+// 导出列 = 表格所有列（排除勾选列）；合并列导出时拆回原始字段
+const exportCols = computed(() => {
+  const out = []
+  for (const c of columns) {
+    if (!c.key || ['actions', 'op'].includes(c.key)) continue
+    if (c.key === 'endpoint') {
+      out.push({ key: 'port', label: '端口' })
+      out.push({ key: 'protocol', label: '协议' })
+      out.push({ key: 'statusCode', label: '响应码' })
+      out.push({ key: 'contentLength', label: '响应长度' })
+      continue
+    }
+    out.push({ key: c.key, label: c.title })
+  }
+  return out
+})
 
+// 检索字段：合并列拆回原始字段，台账登记列拆成三个独立条件
 const splFieldsPlus = computed(() => [
-  // 台账登记是聚合列，不能整体筛；拆成三个独立条件给后端
-  ...splFields.value.filter(f => f.key !== 'ledger' && f.key !== 'systemName' && f.key !== 'owner' && f.key !== 'department'),
+  { key: 'port', label: '端口' },
+  { key: 'protocol', label: '协议', options: SPL_FIXED_OPTIONS.protocol },
+  { key: 'statusCode', label: '响应码', options: SPL_FIXED_OPTIONS.statusCode.options, multiple: true, filterable: true },
+  { key: 'contentLength', label: '响应长度' },
+  ...splFields.value.filter(f => !['ledger', 'systemName', 'owner', 'department', 'endpoint'].includes(f.key)),
   { key: 'systemName', label: '系统名' },
   { key: 'owner', label: '负责人' },
   { key: 'department', label: '部门' },
@@ -172,14 +191,6 @@ const splFields = computed(() =>
 )
 
 function fmt(t) { return t ? new Date(t).toLocaleString('zh-CN') : '-' }
-
-async function del(row) {
-  try {
-    await api.delete(`/services/${row.id}`)
-    message.success('已删除')
-    load()
-  } catch (e) { message.error(e.response?.data?.error || '删除失败') }
-}
 
 async function load() {
   loading.value = true
@@ -273,21 +284,20 @@ function buildUrl(row) {
   return proto + '://' + row.ip + (row.port && row.port !== 80 && row.port !== 443 ? ':' + row.port : '')
 }
 
-function copyUrl(row) {
-  const url = buildUrl(row)
+function copyText(text) {
   // 内网多为 http 访问，navigator.clipboard 只在安全上下文（https/localhost）可用，
-  // 之前直接调用会抛错导致按钮"失效"。这里先试 Clipboard API，失败回退 textarea + execCommand。
+  // 之前直接调用会抛错导致按钮"失效"。这里先试 textarea + execCommand，失败再回退 Clipboard API。
   const fallback = () => {
     try {
       const ta = document.createElement('textarea')
-      ta.value = url
+      ta.value = text
       ta.style.position = 'fixed'
       ta.style.opacity = '0'
       document.body.appendChild(ta)
       ta.select()
       const ok = document.execCommand('copy')
       document.body.removeChild(ta)
-      if (ok) message.success('已复制：' + url)
+      if (ok) message.success('已复制到剪贴板')
       return ok
     } catch (e) {
       return false
@@ -296,8 +306,21 @@ function copyUrl(row) {
   // 直接走 execCommand（http 环境也能用）；Clipboard API 仅作为备选，不做安全上下文限制
   if (!fallback()) {
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(url).then(() => message.success('已复制：' + url), () => message.warning('复制失败，请手动复制：' + url))
+      navigator.clipboard.writeText(text).then(() => message.success('已复制到剪贴板'), () => message.warning('复制失败，请手动复制：' + text))
     }
+  }
+}
+
+// 复制选中行的 URL（操作列已移除，统一走工具栏）
+function copyCheckedUrls() {
+  const rows = items.value.filter(r => checked.value.includes(r.id))
+  if (rows.length === 0) {
+    message.warning('当前页没有选中行；跨页全选请用「导出 URL」')
+    return
+  }
+  copyText(rows.map(buildUrl).join('\n'))
+  if (rows.length < checked.value.length) {
+    message.warning(`已复制当前页 ${rows.length} 条（共选 ${checked.value.length} 条），跨页请用「导出 URL」`)
   }
 }
 

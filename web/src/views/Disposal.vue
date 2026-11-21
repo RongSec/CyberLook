@@ -15,6 +15,9 @@
           :secondary="filters.category !== c.value" @click="toggleCategory(c.value)">
           {{ c.label }} {{ catCounts[c.value] }}
         </n-button>
+        <!-- 台账登记筛选：台账有系统/负责人/部门任一即算「已登记」 -->
+        <n-select v-model:value="filters.ledger" :options="ledgerOptions" size="small"
+          style="width:168px;margin-left:auto" />
       </div>
 
       <div class="toolbar" style="flex-wrap:wrap">
@@ -208,9 +211,16 @@ function matchCond(it, c) {
 }
 function onSplReset() {
   splConds.value = []
+  filters.value.ledger = 'all'
 }
 
-const filters = ref({ ip: '', category: null, title: '', port: '', statusCodes: [] })
+const filters = ref({ ip: '', category: null, title: '', port: '', statusCodes: [], ledger: 'all' })
+// 台账登记（三个属性任一非空即视为已登记）：全部 / 空 / 不为空
+const ledgerOptions = [
+  { label: '台账登记：全部', value: 'all' },
+  { label: '台账登记：空', value: 'empty' },
+  { label: '台账登记：不为空', value: 'nonempty' }
+]
 const statusCodeOptions = [
   { label: '200 正常', value: '200' }, { label: '301 永久跳转', value: '301' },
   { label: '302 临时跳转', value: '302' }, { label: '401 未授权', value: '401' },
@@ -243,6 +253,13 @@ function matchItem(i, f, skipCategory) {
   }
   if (f.statusCodes && f.statusCodes.length > 0) {
     if (!f.statusCodes.includes(String(i.statusCode || ''))) return false
+  }
+  if (f.ledger && f.ledger !== 'all') {
+    // 台账登记 = 系统名 / 负责人 / 部门，任一非空即「已登记」
+    const has = !!(String(i.ledgerSystem || '').trim() ||
+      String(i.ledgerOwner || '').trim() ||
+      String(i.ledgerDept || '').trim())
+    if (f.ledger === 'empty' ? has : !has) return false
   }
   return true
 }
@@ -287,7 +304,7 @@ const pager = computed(() => ({
 
 function search() { page.value = 1 }
 function resetFilters() {
-  filters.value = { ip: '', category: null, title: '', port: '', statusCodes: [] }
+  filters.value = { ip: '', category: null, title: '', port: '', statusCodes: [], ledger: 'all' }
   page.value = 1
 }
 const departments = ref([])

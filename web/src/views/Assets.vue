@@ -175,13 +175,6 @@ import ExportButton from '../components/ExportButton.vue'
 
 const message = useMessage()
 
-// 责任人可能多个（逗号分隔），渲染成多个小标签
-function renderOwners(raw) {
-  const list = String(raw || '').split(',').map(x => x.trim()).filter(Boolean)
-  if (list.length === 0) return '—'
-  return h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px' },
-    list.map(n => h(NTag, { size: 'small', bordered: false, round: true }, { default: () => n })))
-}
 const loading = ref(false)
 const importing = ref(false)
 const importProgress = ref(0)
@@ -351,9 +344,19 @@ const columns = [
     render: row => h(NTag, { size: 'small', type: row.activity === 'sleeping' ? 'default' : 'success', bordered: false },
       { default: () => row.activity === 'sleeping' ? '睡眠' : '活跃' })
   },
-  { title: '关联业务', key: 'systemName' },
-  { title: '负责人', key: 'owner', width: 150, render: r => renderOwners(r.owner) },
-  { title: '隶属部门', key: 'department', width: 130 },
+  // 系统 / 负责人 / 部门 合并为一列，版式与「资产处置」的台账登记列一致
+  {
+    title: '归属信息', key: 'belong', width: 240,
+    render: row => {
+      const sys = (row.systemName || '').trim()
+      const rest = [row.owner, row.department].map(x => (x || '').trim()).filter(Boolean).join(' · ')
+      if (!sys && !rest) return h('span', { style: 'color:#c0c4cc;font-size:12px' }, '—')
+      return h('div', { style: 'font-size:12px;line-height:1.5' }, [
+        sys ? h('div', { style: 'color:#15803d' }, sys) : null,
+        rest ? h('div', { style: 'color:#6b7280;font-size:11px' }, rest) : null
+      ])
+    }
+  },
   {
     title: '来源', key: 'source', width: 90,
     render: row => h(NTag, { type: row.source === 'ledger' ? 'info' : 'warning', size: 'small' },
@@ -391,16 +394,25 @@ const SPL_FIXED_OPTIONS = {
   activity: [{ label: '活跃', value: 'active' }, { label: '睡眠', value: 'sleeping' }]
 }
 
-// 导出列 = 表格所有列（排除操作列），与页面显示保持一致
-const exportCols = computed(() =>
-  columns
-    .filter(c => c.key && !['actions', 'op'].includes(c.key))
-    .map(c => ({ key: c.key, label: c.title }))
-)
+// 导出列 = 表格所有列（排除操作列）；「归属信息」合并列导出时拆回三列
+const exportCols = computed(() => {
+  const out = []
+  for (const c of columns) {
+    if (!c.key || ['actions', 'op'].includes(c.key)) continue
+    if (c.key === 'belong') {
+      out.push({ key: 'systemName', label: '系统' })
+      out.push({ key: 'owner', label: '负责人' })
+      out.push({ key: 'department', label: '部门' })
+      continue
+    }
+    out.push({ key: c.key, label: c.title })
+  }
+  return out
+})
 
-const splFields = computed(() =>
-  columns
-    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+const splFields = computed(() => {
+  const out = columns
+    .filter(c => c.key && !['actions', 'op', 'belong'].includes(c.key))
     .map(c => {
       const f = SPL_FIXED_OPTIONS[c.key]
       if (!f) return { key: c.key, label: c.title }
@@ -408,7 +420,12 @@ const splFields = computed(() =>
       if (Array.isArray(f)) return { key: c.key, label: c.title, options: f }
       return { key: c.key, label: c.title, options: f.options, multiple: !!f.multiple, filterable: !!f.filterable }
     })
-)
+  // 合并列拆成三个可筛字段（后端按这三列查询）
+  out.push({ key: 'systemName', label: '系统' })
+  out.push({ key: 'owner', label: '负责人' })
+  out.push({ key: 'department', label: '部门' })
+  return out
+})
 
 const portColumns = [
   { title: '端口', key: 'port', width: 80 },

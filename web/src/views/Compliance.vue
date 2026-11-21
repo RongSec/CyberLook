@@ -155,9 +155,19 @@ const resultColumns = [
   { title: 'IP', key: 'ip', width: 130 },
   { title: '端口', key: 'port', width: 70 },
   { title: '规则', key: 'ruleName', width: 130, ellipsis: { tooltip: true }, render: r => r.ruleName || '-' },
-  { title: '部门', key: 'department', width: 130, ellipsis: { tooltip: true }, render: r => r.department || '-' },
-  { title: '负责人', key: 'owner', width: 110, ellipsis: { tooltip: true }, render: r => r.owner || '-' },
-  { title: '系统', key: 'systemName', width: 160, ellipsis: { tooltip: true }, render: r => r.systemName || '-' },
+  // 部门 / 负责人 / 系统 合并为一列，版式与「资产处置」的台账登记列一致
+  {
+    title: '归属信息', key: 'belong', width: 200,
+    render: r => {
+      const sys = (r.systemName || '').trim()
+      const rest = [r.owner, r.department].map(x => (x || '').trim()).filter(Boolean).join(' · ')
+      if (!sys && !rest) return h('span', { style: 'color:#c0c4cc;font-size:12px' }, '—')
+      return h('div', { style: 'font-size:12px;line-height:1.5' }, [
+        sys ? h('div', { style: 'color:#15803d' }, sys) : null,
+        rest ? h('div', { style: 'color:#6b7280;font-size:11px' }, rest) : null
+      ])
+    }
+  },
   { title: '服务', key: 'service', width: 110, ellipsis: { tooltip: true }, render: r => r.service || '-' },
   {
     title: '状态', key: 'status', width: 96,
@@ -195,21 +205,35 @@ const SPL_FIXED_OPTIONS = {
     { label: '已整改', value: 'fixed' }
   ]
 }
-const splFields = computed(() =>
-  resultColumns
-    .filter(c => c.key && !['actions', 'op'].includes(c.key))
+const splFields = computed(() => {
+  const out = resultColumns
+    .filter(c => c.key && !['actions', 'op', 'belong'].includes(c.key))
     .map(c => {
       const f = SPL_FIXED_OPTIONS[c.key]
       return f ? { key: c.key, label: c.title, options: f } : { key: c.key, label: c.title }
     })
-)
+  // 合并列拆成三个可筛字段
+  out.push({ key: 'systemName', label: '系统' })
+  out.push({ key: 'owner', label: '负责人' })
+  out.push({ key: 'department', label: '部门' })
+  return out
+})
 
-// 导出列 = 表格所有列（排除操作/勾选列）
-const exportCols = computed(() =>
-  resultColumns
-    .filter(c => c.key && !['actions', 'op', 'a'].includes(c.key))
-    .map(c => ({ key: c.key, label: c.title }))
-)
+// 导出列 = 表格所有列（排除操作/勾选列）；合并列导出时拆回三列
+const exportCols = computed(() => {
+  const out = []
+  for (const c of resultColumns) {
+    if (!c.key || ['actions', 'op', 'a'].includes(c.key)) continue
+    if (c.key === 'belong') {
+      out.push({ key: 'systemName', label: '系统' })
+      out.push({ key: 'owner', label: '负责人' })
+      out.push({ key: 'department', label: '部门' })
+      continue
+    }
+    out.push({ key: c.key, label: c.title })
+  }
+  return out
+})
 
 const historyColumns = [
   { title: '扫描时间', key: 'scannedAt', render: r => fmt(r.scannedAt) },
