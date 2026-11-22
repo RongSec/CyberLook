@@ -450,8 +450,15 @@ func withPage(ctx context.Context, url string, wait time.Duration, fn func(sessi
 	if _, err := c.call(ctx, "Page.navigate", map[string]any{"url": url}, sid); err != nil {
 		return err
 	}
-	// 等 load 事件；目标站点挂住也不死等，到点直接读 DOM（能读到多少算多少）
-	lctx, cancel := context.WithTimeout(ctx, wait)
+	// 等 load 事件；目标站点挂住也不死等，到点直接读 DOM（能读到多少算多少）。
+	// v0.0.51：load 等待上限压到 4s。实测 502/403 这类页面根本不发 load 事件，
+	// 旧的上限=wait(8s) 会让每条错误页白等满 8 秒；真正的 SPA 慢页由下面的
+	// 稳定性轮询兜住（deadline 仍是 wait，页面在 7s 出内容照样能取到）。
+	loadWait := wait
+	if loadWait > 4*time.Second {
+		loadWait = 4 * time.Second
+	}
+	lctx, cancel := context.WithTimeout(ctx, loadWait)
 	c.waitEvent(lctx, "Page.loadEventFired", sid)
 	cancel()
 
@@ -471,7 +478,7 @@ func withPage(ctx context.Context, url string, wait time.Duration, fn func(sessi
 		s, err := c.evalString(ctx, sid, "String(document.body ? document.body.innerText.length : 0)")
 		if err == nil {
 			if n, perr := strconv.Atoi(strings.TrimSpace(s)); perr == nil {
-				if n > 50 {
+				if n > 10 {
 					if n == lastLen {
 						stable++
 						if stable >= 2 {

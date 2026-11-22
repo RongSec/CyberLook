@@ -167,6 +167,7 @@ func RegisterRoutes(r *gin.Engine) {
 		// AI 识别（手动触发单个服务，用于验证识别链路）
 		auth.POST("/services/ai-identify", AIIdentifyService)
 		auth.POST("/services/reidentify", ReidentifyServices)
+		auth.GET("/services/ai-stats", AIIdentifyStats)
 		// 扫描监控 / AI 开关 / 备份恢复
 		auth.POST("/agent-tasks/:id/ai-diagnose", AIDiagnoseShard)
 		auth.GET("/agent-tasks/:id/diagnose-log", ShardDiagnoseLog)

@@ -233,3 +233,12 @@ func ReidentifyServices(c *gin.Context) {
 		"message": "已入队，后台识别中（结果写回 title 并记 prev_title）",
 	})
 }
+
+// AIIdentifyStats 识别队列与吞吐快照（GET /api/services/ai-stats）
+//
+// 为什么需要这个接口：积压对用户完全不可见，只能靠"服务没名字"去猜。
+// 这里直接把队列长度、库里待识别条数、最近一小时吞吐、四步平均耗时、
+// 渲染采用率一次给全，前端可以据此显示"识别中 3,214 条 · 约 6 小时"。
+func AIIdentifyStats(c *gin.Context) {
+	c.JSON(http.StatusOK, service.AIQueueStats())
+}

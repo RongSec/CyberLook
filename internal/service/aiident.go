@@ -45,8 +45,10 @@ func aiIdentifyWorkers() int {
 			return n
 		}
 	}
-	// 每 2 核 1 路，且至少空出一个核给 web/DB：4 核 → 1 路，8 核 → 3 路。
-	n := (runtime.NumCPU() - 1) / 2
+	// 每 2 核 1 路（上限 3）：4 核 → 2 路。渲染闸门上线后单条只需 1~3 秒，
+	// 2 路的 CPU 由 identCPUGate 兜住，比"为了省 CPU 只跑 1 路"更合理——
+	// 积压是真问题，空转也是真浪费。
+	n := runtime.NumCPU() / 2
 	if n < 1 {
 		n = 1
 	}
@@ -146,7 +148,9 @@ func EnqueueAIIdentify(taskID uint, ip string, port int) {
 	aiQueueOnce.Do(startAIWorkers)
 	select {
 	case aiQueue <- aiIdentifyJob{TaskID: taskID, IP: ip, Port: port}:
+		aiMetricEnqueued()
 	default:
+		aiMetricDropped()
 		log.Printf("[ai-ident] 任务 #%d 识别队列已满（%d），丢弃 %s:%d", taskID, aiIdentifyQueueSize, ip, port)
 	}
 }
@@ -203,6 +207,66 @@ type IdentResult struct {
 	Reason     string // 模型给的依据（20 字以内）
 	Stages     []IdentStage
 	Hops       []scanner.Hop
+	// Timing 分阶段耗时（毫秒）：trace / llm1 / render / llm2。
+	// 没有这一步就只能看到"总共 43 秒"，看不出是渲染慢还是模型慢。
+	Timing map[string]int64
+}
+
+// hopStatus 从 "HTTP/1.1 502 Bad Gateway" 里取状态码；取不到返回 0。
+func hopStatus(respLine string) int {
+	f := strings.Fields(respLine)
+	for _, x := range f {
+		if n, err := strconv.Atoi(x); err == nil && n >= 100 && n <= 599 {
+			return n
+		}
+	}
+	return 0
+}
+
+// renderWorthwhile 判断「这一步渲染值不值得」——这是识别里最贵的一步（实测 8.4~28s，
+// 占单条总耗时 77%~85%），不能对必然拿不到答案的响应无脑渲染。
+//
+// 实测（2026-11-22，30 条占位样本）：13 条全部进渲染，平均 9.8s；渲染后能给出结论的
+// 比例是 **0%**——证据全是 502/403/404/302 这类错误页或跳转页，浏览器打开它们只是把
+// 同一段错误文本再读一遍。这就是「前置阶段没处理就丢给浏览器」的具体表现。
+//
+// 规则：
+//   - 非 HTML（JSON/纯文本/二进制）→ 不渲染，渲染也只会拿到 JSON 字符串；
+//   - 最后一跳 404/405/5xx → 不渲染，错误页没有身份信息；
+//   - 401/403 且正文很小（<1500 字节）→ 不渲染，那只是一个 "403 Forbidden" 文本；
+//   - 其它 → 渲染（含 JS 加密登录页、SPA 空壳，这些只有浏览器能出内容）。
+func renderWorthwhile(hops []scanner.Hop) (bool, string) {
+	if len(hops) == 0 {
+		return false, "无响应"
+	}
+	last := hops[len(hops)-1]
+	hdr := strings.ToLower(last.ResponseHeaders)
+	bodyLow := strings.ToLower(last.Body)
+	looksHTML := strings.Contains(hdr, "text/html") ||
+		strings.Contains(bodyLow, "<html") || strings.Contains(bodyLow, "<!doctype html")
+	if !looksHTML {
+		ct := ""
+		for _, ln := range strings.Split(last.ResponseHeaders, "\n") {
+			if strings.HasPrefix(strings.ToLower(ln), "content-type:") {
+				ct = strings.TrimSpace(ln[len("content-type:"):])
+				break
+			}
+		}
+		if ct == "" {
+			ct = "非 HTML"
+		}
+		return false, "非 HTML 响应（" + truncateStr(ct, 40) + "），浏览器也只拿到同样的字节"
+	}
+	st := hopStatus(last.ResponseLine)
+	switch {
+	case st == 401 || st == 403:
+		if len(strings.TrimSpace(last.Body)) < 1500 {
+			return false, fmt.Sprintf("%d 拒绝页且正文仅 %d 字节，渲染拿不到系统名", st, len(last.Body))
+		}
+	case st >= 400:
+		return false, fmt.Sprintf("最后一跳是 %d 错误页，错误页里没有身份信息", st)
+	}
+	return true, ""
 }
 
 // IdentifyService 跑完整识别链路：请求响应包 → AI →（AI 说不够）→ 浏览器渲染 → AI。
@@ -210,8 +274,10 @@ type IdentResult struct {
 // 这里不设"标题正则判清晰就跳过"的前置闸门——那会把"标题恰好像样、其实是默认页"
 // 的情况漏掉，也会把合法产品名当垃圾。是否足够判断，由模型自己说（Sufficient）。
 func IdentifyService(svc model.Service) IdentResult {
-	res := IdentResult{Title: strings.TrimSpace(svc.Title), Product: strings.TrimSpace(svc.Fingerprint)}
+	res := IdentResult{Title: strings.TrimSpace(svc.Title), Product: strings.TrimSpace(svc.Fingerprint),
+		Timing: map[string]int64{}}
 	stages := []IdentStage{}
+	mark := func(stage string, t0 time.Time) { res.Timing[stage] = time.Since(t0).Milliseconds() }
 	baseURL := buildURL(svc)
 	var hops []scanner.Hop
 
@@ -227,7 +293,9 @@ func IdentifyService(svc model.Service) IdentResult {
 		scheme = "https"
 	}
 	var trErr error
+	tTrace := time.Now()
 	hops, trErr = scanner.HTTPTrace(svc.IP, svc.Port, scheme, 4)
+	mark("trace", tTrace)
 	switch {
 	case trErr != nil:
 		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: baseURL, Output: "抓取失败：" + trErr.Error()})
@@ -241,7 +309,9 @@ func IdentifyService(svc model.Service) IdentResult {
 			Output: hops[0].ResponseLine + " / " + orNone(shortHeader(hops[0].ResponseHeaders)),
 			OK:     true,
 		})
+		tLLM1 := time.Now()
 		verdict := askAI("请求响应包", digest, false)
+		mark("llm1", tLLM1)
 		stages = append(stages, IdentStage{
 			Stage: "AI·请求响应包", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
 			Output: orNone(verdict.Raw), OK: verdict.dotConfident(),
@@ -281,13 +351,21 @@ func IdentifyService(svc model.Service) IdentResult {
 		}
 	}
 
-	// 第 2 级：浏览器真渲染
+	// 第 2 级：浏览器真渲染（先判断值不值得——这是最贵的一步）
+	if ok, why := renderWorthwhile(hops); !ok {
+		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + why})
+		aiMetricRenderSkipped()
+		res.Stages, res.Hops = stages, hops
+		return res
+	}
 	if !scanner.ChromeAvailable() {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "容器内无 chromium，跳过"})
 		res.Stages, res.Hops = stages, hops
 		return res
 	}
+	tRender := time.Now()
 	pageTitle, pageDesc, pageText, rerr := scanner.RenderPage(baseURL, 8*time.Second)
+	mark("render", tRender)
 	if rerr != nil {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "渲染失败：" + rerr.Error()})
 		res.Stages, res.Hops = stages, hops
@@ -297,7 +375,9 @@ func IdentifyService(svc model.Service) IdentResult {
 	stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: rendered, OK: strings.TrimSpace(pageTitle) != ""})
 
 	// 第 3 级：AI 用渲染结果再判（渲染标题本身不当结论，仍由模型判断）
+	tLLM2 := time.Now()
 	verdict2 := askAI("渲染结果", rendered, true)
+	mark("llm2", tLLM2)
 	stages = append(stages, IdentStage{Stage: "AI·渲染结果", Input: rendered, Output: orNone(verdict2.Raw), OK: verdict2.dotConfident()})
 	if verdict2.dotConfident() {
 		res.apply(verdict2)
@@ -410,6 +490,7 @@ func askAI(source, info string, rendered bool) aiVerdict {
 	res, err := llm.ChatWithFailover(req, 0)
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil {
+			aiMetricLLMFail()
 			log.Printf("[ai-ident] 调用失败: %v", err)
 		}
 		return aiVerdict{Sufficient: true, Raw: "模型调用失败"}
@@ -430,11 +511,20 @@ func runAIIdentify(job aiIdentifyJob) {
 	}
 	if !strings.HasPrefix(strings.ToLower(svc.Protocol), "http") {
 		// AI 识别链路目前只覆盖 HTTP(S)；非 HTTP 的交给引擎侧规则
+		aiMetricNonHTTP()
 		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Update("ai_checked_at", time.Now())
 		return
 	}
 
+	t0 := time.Now()
 	r := IdentifyService(svc)
+	total := time.Since(t0)
+	aiMetricNote(r, total)
+	// 一条一行，把"慢在哪一步"写清楚：渲染占比是判断"该不该少渲染"的唯一依据。
+	log.Printf("[ai-ident] %s:%d 用时 %s（抓包 %dms / 模型1 %dms / 渲染 %dms / 模型2 %dms）渲染=%v 置信证据=%v 结论=%s",
+		job.IP, job.Port, total.Round(100*time.Millisecond).String(),
+		r.Timing["trace"], r.Timing["llm1"], r.Timing["render"], r.Timing["llm2"],
+		r.Timing["render"] > 0, r.Confident, truncateStr(r.Title, 40))
 	changed := ApplyIdentResult(svc, r)
 	recordIdentConversation(job.TaskID, svc, r, changed)
 }

@@ -16,6 +16,12 @@
         <n-dropdown :options="aiScopeOptions" @select="reidentifyBatch">
           <n-button :loading="aiBatch">AI 批量识别</n-button>
         </n-dropdown>
+        <n-tag v-if="aiStats" round :type="aiStats.backlog > 0 ? 'warning' : 'success'"
+          style="margin-left:auto" :title="aiStatsTitle">
+          识别队列：待识别 {{ aiStats.backlog }} 条
+          <template v-if="aiStats.perMinute > 0"> · {{ aiStats.perMinute }} 条/分 · 约 {{ etaText }}跑完</template>
+          <template v-else> · 队列空闲</template>
+        </n-tag>
         <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
           <template #trigger>
             <n-button type="error" :disabled="checked.length === 0">
@@ -34,7 +40,7 @@
 </template>
 
 <script setup>
-import { ref, computed, h, onMounted } from 'vue'
+import { ref, computed, h, onMounted, onUnmounted } from 'vue'
 import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
 import SearchBar from '../components/SearchBar.vue'
@@ -58,6 +64,29 @@ function fmtLen(n) {
 
 const loading = ref(false)
 const checked = ref([])
+
+// 识别队列可见性（v0.0.51）
+// 之前积压完全不可见：用户只能看到"有些服务没名字"，不知道还有多少条在排队、
+// 一条要多久。现在每 30 秒拉一次快照，直接在筛选栏右侧显示 backlog / 速率 / ETA。
+const aiStats = ref(null)
+let aiStatsTimer = null
+const etaText = computed(() => {
+  const s = aiStats.value?.etaSeconds || 0
+  if (s <= 0) return '—'
+  if (s < 60) return s + ' 秒'
+  if (s < 3600) return Math.round(s / 60) + ' 分钟'
+  return (s / 3600).toFixed(1) + ' 小时'
+})
+const aiStatsTitle = computed(() => {
+  const s = aiStats.value
+  if (!s) return ''
+  return `并发 ${s.workers} 路 · 队列中 ${s.queueLen}/${s.queueCap}\n`
+    + `平均单条 ${(s.avgTotalMs / 1000).toFixed(1)}s（抓包 ${s.avgTraceMs}ms / 模型 ${s.avgLLM1Ms}ms / 渲染 ${s.avgRenderMs}ms / 复判 ${s.avgLLM2Ms}ms）\n`
+    + `本分钟吞吐 ${s.perMinute} 条 · 走了渲染 ${s.renderUsed} 条 · 渲染闸门跳过 ${s.renderSkipped} 条 · 模型失败 ${s.llmFail} 次`
+})
+async function loadAIStats() {
+  try { aiStats.value = await api.get('/services/ai-stats') } catch { /* 静默：状态条不该影响列表 */ }
+}
 const selectingAll = ref(false)
 const items = ref([])
 const page = ref(1)
@@ -427,7 +456,12 @@ function reset() {
   load()
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadAIStats()
+  aiStatsTimer = setInterval(loadAIStats, 30000)
+})
+onUnmounted(() => { if (aiStatsTimer) clearInterval(aiStatsTimer) })
 </script>
 
 <style scoped>
