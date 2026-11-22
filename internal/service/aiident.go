@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"runtime"
 	"strconv"
 	"encoding/json"
 	"fmt"
@@ -29,9 +30,31 @@ import (
 // 必须把真实请求行、响应头、页面内容喂进去才有意义。
 
 const (
-	aiIdentifyWorkers   = 3
 	aiIdentifyQueueSize = 2000
 )
+
+// aiIdentifyWorkers 并发识别数。每条可能拉起 chromium 渲染一个页面，
+// 单个渲染进程就能吃掉一个核，所以不能写死一个"看起来不大"的数字。
+//
+// v0.0.50：原来固定 3，4 核机器上 3 路渲染 + 扫描节点同时跑 = 整机吃满、web 打不开。
+// 现在默认 cpuN/2（下限 1、上限 3）：4 核 → 2，2 核 → 1，8 核及以上 → 3。
+// 可用 AI_IDENT_CONCURRENCY 显式覆盖（1~16）。
+func aiIdentifyWorkers() int {
+	if v := strings.TrimSpace(os.Getenv("AI_IDENT_CONCURRENCY")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 16 {
+			return n
+		}
+	}
+	// 每 2 核 1 路，且至少空出一个核给 web/DB：4 核 → 1 路，8 核 → 3 路。
+	n := (runtime.NumCPU() - 1) / 2
+	if n < 1 {
+		n = 1
+	}
+	if n > 3 {
+		n = 3
+	}
+	return n
+}
 
 // confidentEnough 第一轮（只看请求响应包）要多少分才直接收工。
 // 低于这个分数说明只判到了厂商/类别一级，继续走浏览器渲染拿页面文字。
@@ -130,9 +153,16 @@ func EnqueueAIIdentify(taskID uint, ip string, port int) {
 
 func startAIWorkers() {
 	aiQueue = make(chan aiIdentifyJob, aiIdentifyQueueSize)
-	for i := 0; i < aiIdentifyWorkers; i++ {
+	n := aiIdentifyWorkers()
+	log.Printf("[ai-ident] 识别工作池启动：%d 路（本机 %d 核，AI_IDENT_CONCURRENCY 可调）", n, runtime.NumCPU())
+	for i := 0; i < n; i++ {
 		go func() {
 			for job := range aiQueue {
+				// CPU 闸门：整机超预算就先等一下——渲染比网页更耐等，
+				// 而页面卡住是用户立刻能感知的（v0.0.50 实测容器峰值 445%）。
+				if d := identCPUGate(); d > 0 {
+					log.Printf("[ai-ident] 整机 CPU 超预算，识别前等待 %s", d)
+				}
 				runAIIdentifySafe(job)
 			}
 		}()

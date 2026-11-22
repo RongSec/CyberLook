@@ -41,20 +41,34 @@ const (
 	// 等满超时。并发太低（几百）界面看着像卡死，太高（3000+）又会让目标的限速/IPS
 	// 丢掉我们的 SYN，把活主机判死。1200 是实测的平衡点，且引擎侧还有抽样复核兜底：
 	// 一旦发现漏判就自动降速重扫（Adaptive），所以这里给得高一点也不会硬伤准确性。
-	aliveProbeConc = 1200
+	// aliveProbeConcMax 探测并发上限（历史实测的准确性平衡点）。实际并发见 probeConcurrency()。
+	aliveProbeConcMax = 1200
+	// probeChunkHosts 分块大小：每块探完看一次整机 CPU，超预算就歇一下。
+	// 2048 个 IP × 16 端口 ≈ 3.3 万次 dial，块耗时约 10~20s，粒度足够细。
+	probeChunkHosts = 2048
+	// aliveProbeConc 兼容旧日志口径（复核日志里要打印一个"承诺的速率"）
+	aliveProbeConc = aliveProbeConcMax
 	// aliveProbeTCPTimeout 单端口 TCP 超时（引擎默认 400ms，这里略微收紧）。
 	aliveProbeTCPTimeout = 350 * time.Millisecond
 )
 
-// ProbeAlive 调引擎做两阶段存活探测，返回存活 IP 与分阶段统计。
+// ProbeAlive 调引擎做两阶段存活探测（并发取 probeConcurrency()）。
 // onProgress(done, alive) 返回 false 表示调用方要求中止。
 func ProbeAlive(ctx context.Context, ips []string, onProgress func(done, alive int) bool) ([]string, portscan.AliveStats, error) {
+	return probeAliveWith(ctx, ips, probeConcurrency(), onProgress)
+}
+
+// probeAliveWith 与 ProbeAlive 相同，但并发由调用方给（分块探测会逐块调整）。
+func probeAliveWith(ctx context.Context, ips []string, conc int, onProgress func(done, alive int) bool) ([]string, portscan.AliveStats, error) {
 	if len(ips) == 0 {
 		return nil, portscan.AliveStats{}, nil
 	}
+	if conc <= 0 {
+		conc = probeConcurrency()
+	}
 	hosts, st := portscan.DiscoverHosts(ctx, ips, portscan.AliveOptions{
 		Ports:       portscan.DefaultAlivePorts, // 与 CLI 完全同一套端口集
-		Concurrency: aliveProbeConc,
+		Concurrency: conc,
 		TCPTimeout:  aliveProbeTCPTimeout,
 		ICMP:        true,
 		// 平台只要"这台活着/不活着"：ICMP 已经判活的主机不用再跑一轮 TCP，
@@ -134,7 +148,7 @@ func startQueueAfterAliveProbe(task model.ScanTask, portCount int) bool {
 	}
 
 	go func() {
-		alive, st, err := ProbeAlive(context.Background(), all, func(done, aliveCnt int) bool {
+		alive, st, err := probeAliveChunked(task.ID, all, func(done, aliveCnt int) bool {
 			config.DB.Model(&model.ScanTask{}).Where("id = ?", task.ID).
 				Updates(map[string]interface{}{"probe_offset": done, "alive_count": aliveCnt})
 			var state string
@@ -216,4 +230,87 @@ func aliveListBrief(ips []string, n int) string {
 		return strings.Join(ips, ", ")
 	}
 	return strings.Join(ips[:n], ", ") + fmt.Sprintf(" …（共 %d 台，完整清单见资产表）", len(ips))
+}
+
+// probeAliveChunked 分块做存活探测，块间按整机 CPU 预算让路。
+//
+// 为什么必须分块：引擎（portscan.DiscoverHosts）内部没有"观察 CPU 再限速"的钩子，
+// 一次把 9 万 IP 丢进去就是一个跑到底的黑盒——实测在 4 核混部机器上它能把容器
+// CPU 打到 220%、整机顶满，web 请求排队到 1~4 秒（页面像死了）。分块后每探完
+// 2048 个 IP 就有一次决策点：超预算就停一会儿、并下调下一块的并发；
+// 明显有余量就小幅回补。代价是每块多一次 ICMP/TCP 池初始化（毫秒级）。
+//
+// 进度口径不变：onProgress 收到的是**全局**已探数，与单块探测完全一致。
+func probeAliveChunked(taskID uint, all []string, onProgress func(done, alive int) bool) ([]string, portscan.AliveStats, error) {
+	conc := probeConcurrency()
+	budget := cpuBudgetPct()
+	total := len(all)
+	alive := make([]string, 0, total/8)
+	var agg portscan.AliveStats
+	agg.Hosts = total
+	agg.Ports = len(portscan.DefaultAlivePorts)
+	base := conc
+
+	for lo := 0; lo < total; lo += probeChunkHosts {
+		hi := lo + probeChunkHosts
+		if hi > total {
+			hi = total
+		}
+		chunk := all[lo:hi]
+		off := lo
+		aliveBefore := len(alive)
+		a, st, err := probeAliveWith(context.Background(), chunk, conc, func(done, aliveCnt int) bool {
+			return onProgress(off+done, aliveBefore+aliveCnt)
+		})
+		if err != nil {
+			return alive, agg, err
+		}
+		alive = append(alive, a...)
+		mergeAliveStats(&agg, st)
+
+		// 最后一块不用再让路
+		if hi >= total {
+			break
+		}
+		busy, ok := hostBusyPct()
+		if !ok {
+			continue
+		}
+		if wait := probePaceDelay(busy, budget); wait > 0 {
+			log.Printf("[存活探测] 任务 #%d 整机 CPU %.0f%% 超过预算 %.0f%%，暂停 %s 再继续（%d/%d）",
+				taskID, busy, budget, wait, hi, total)
+			time.Sleep(wait)
+			// 逐块下调，但不低于基线的 1/3（再低大网段要跑太久）
+			if next := conc * 2 / 3; next >= base/3 && next < conc {
+				conc = next
+			}
+		} else if busy < budget-25 && conc < base {
+			// 明显有余量：回补，但不超过基线
+			next := conc + base/4
+			if next > base {
+				next = base
+			}
+			conc = next
+		}
+	}
+	agg.Alive = len(alive)
+	return alive, agg, nil
+}
+
+// mergeAliveStats 把分块的统计累加进总计（字段语义见 portscan.AliveStats）。
+func mergeAliveStats(dst *portscan.AliveStats, src portscan.AliveStats) {
+	dst.Probes += src.Probes
+	dst.Skipped += src.Skipped
+	dst.ByICMP += src.ByICMP
+	dst.ByTCP += src.ByTCP
+	dst.Unreach += src.Unreach
+	dst.SampledN += src.SampledN
+	dst.SampledAlive += src.SampledAlive
+	dst.Passes += src.Passes
+	dst.Adjusted = dst.Adjusted || src.Adjusted
+	dst.ICMPSkip = src.ICMPSkip
+	dst.Elapsed += src.Elapsed
+	if src.ConcUsed > 0 {
+		dst.ConcUsed = src.ConcUsed
+	}
 }

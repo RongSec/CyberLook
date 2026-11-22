@@ -16,7 +16,7 @@ func newTestTuner(base int) *autoTuner {
 // ① 出现本地资源错误（EMFILE）必须立刻大幅回退：这是硬墙，不是慢。
 func TestAutoTuneShrinkOnLocalResourceErr(t *testing.T) {
 	tt := newTestTuner(1000)
-	why := tt.decide(20000, 3, 10, true)
+	why := tt.decide(20000, 3, 10, true, 0, false)
 	if tt.cur != 600 {
 		t.Fatalf("期望 1000→600（×0.6），实际 %d（%s）", tt.cur, why)
 	}
@@ -28,11 +28,11 @@ func TestAutoTuneShrinkOnLocalResourceErr(t *testing.T) {
 // ② CPU 首次冲高只观察，连续两次才降 —— 避免被单个窗口的尖峰带着抖。
 func TestAutoTuneCPUHighNeedsTwoWindows(t *testing.T) {
 	tt := newTestTuner(1000)
-	tt.decide(20000, 0, 95, true) // 首窗口只观察
+	tt.decide(20000, 0, 95, true, 0, false) // 首窗口只观察
 	if tt.cur != 1000 {
 		t.Fatalf("首个高 CPU 窗口不应调整，实际 %d", tt.cur)
 	}
-	tt.decide(20000, 0, 95, true) // 第二窗口才降
+	tt.decide(20000, 0, 95, true, 0, false) // 第二窗口才降
 	if tt.cur != 800 {
 		t.Fatalf("连续两个高 CPU 窗口应降到 800，实际 %d", tt.cur)
 	}
@@ -42,13 +42,13 @@ func TestAutoTuneCPUHighNeedsTwoWindows(t *testing.T) {
 func TestAutoTuneGrowCappedByBase(t *testing.T) {
 	tt := newTestTuner(1000)
 	tt.cur = 950
-	tt.decide(20000, 0, 20, true)
+	tt.decide(20000, 0, 20, true, 0, false)
 	if tt.cur != 1000 {
 		t.Fatalf("应上调但被 base 截断到 1000，实际 %d", tt.cur)
 	}
 	// 连续上调也不能超过 base
 	for i := 0; i < 10; i++ {
-		tt.decide(20000, 0, 10, true)
+		tt.decide(20000, 0, 10, true, 0, false)
 	}
 	if tt.cur != 1000 {
 		t.Fatalf("天花板失效，cur=%d", tt.cur)
@@ -60,7 +60,7 @@ func TestAutoTuneIdleDoesNotGrow(t *testing.T) {
 	tt := newTestTuner(1000)
 	tt.cur = 500
 	for i := 0; i < 5; i++ {
-		tt.decide(0, 0, 1, true)
+		tt.decide(0, 0, 1, true, 0, false)
 	}
 	if tt.cur != 500 {
 		t.Fatalf("空闲窗口不应调整，实际 %d", tt.cur)
@@ -71,7 +71,7 @@ func TestAutoTuneIdleDoesNotGrow(t *testing.T) {
 func TestAutoTuneFloor(t *testing.T) {
 	tt := newTestTuner(1000)
 	for i := 0; i < 20; i++ {
-		tt.decide(20000, 5, 99, true)
+		tt.decide(20000, 5, 99, true, 0, false)
 	}
 	if tt.cur != 250 {
 		t.Fatalf("期望兜底在 250（base/4），实际 %d", tt.cur)
@@ -79,7 +79,7 @@ func TestAutoTuneFloor(t *testing.T) {
 
 	small := newTestTuner(200) // base/4=50 < autoMinInflight(100) → 下限取 100
 	for i := 0; i < 20; i++ {
-		small.decide(20000, 5, 99, true)
+		small.decide(20000, 5, 99, true, 0, false)
 	}
 	if small.cur != autoMinInflight {
 		t.Fatalf("小机器下限应为 %d，实际 %d", autoMinInflight, small.cur)
@@ -90,7 +90,7 @@ func TestAutoTuneFloor(t *testing.T) {
 func TestAutoTuneNoCPUSignal(t *testing.T) {
 	tt := newTestTuner(1000)
 	tt.cur = 700
-	tt.decide(20000, 0, 0, false)
+	tt.decide(20000, 0, 0, false, 0, false)
 	if tt.cur != 700 {
 		t.Fatalf("无 CPU 信号时应维持，实际 %d", tt.cur)
 	}
@@ -173,5 +173,58 @@ func TestTunePrimesCPUSample(t *testing.T) {
 	}
 	if _, _, ok := procCPUPercent(tt.lastTicks, tt.lastAt); !ok {
 		t.Fatal("打点后仍算不出 CPU 使用率 —— CPU 信号永久失效，调速只剩 fd 一路")
+	}
+}
+
+// ⑪ v0.0.50：整机 CPU 才是主信号——本进程 CPU 很低，但整机已被识别/chromium 吃满时，
+// 也必须立刻退并发。这正是"扫描一开 web 就打不开"那个事故的回归用例。
+func TestAutoTuneShrinkOnHostBusy(t *testing.T) {
+	tt := newTestTuner(1000)
+	tt.reserveCores = 1 // 4 核留 1 核 → 预算 75%
+	if b := tt.busyBudget(); b != 75 {
+		t.Fatalf("预算口径应为 75%%，实际 %.0f", b)
+	}
+	// 整机 90%（超预算 10 个点以上），本进程只有 5% —— 旧逻辑会继续加并发
+	tt.decide(20000, 0, 5, true, 90, true)
+	if tt.cur != 700 {
+		t.Fatalf("整机超预算应立即 ×0.7 到 700，实际 %d", tt.cur)
+	}
+}
+
+// ⑫ 整机在预算内且有余量时才允许加并发；贴着预算（预算内 20 点内）维持不动。
+func TestAutoTuneHostBudgetHysteresis(t *testing.T) {
+	tt := newTestTuner(1000)
+	tt.reserveCores = 1 // 预算 75%
+	tt.cur = 800
+
+	tt.decide(20000, 0, 5, true, 70, true) // 距预算只有 5 点 → 维持
+	if tt.cur != 800 {
+		t.Fatalf("接近预算应维持，实际 %d", tt.cur)
+	}
+	tt.decide(20000, 0, 5, true, 40, true) // 明显有余量 → ×1.1
+	if tt.cur != 880 {
+		t.Fatalf("有余量应上调 10%% 到 880，实际 %d", tt.cur)
+	}
+}
+
+// ⑬ 预留核数的默认口径：4 核 1、8 核 2、2 核 0；显式配置不许留到一核不剩。
+func TestCPUReserveCores(t *testing.T) {
+	t.Setenv("SCAN_CPU_RESERVE_CORES", "")
+	if got := cpuReserveCores(4); got != 1 {
+		t.Fatalf("4 核应留 1 核，实际 %d", got)
+	}
+	if got := cpuReserveCores(8); got != 2 {
+		t.Fatalf("8 核应留 2 核，实际 %d", got)
+	}
+	if got := cpuReserveCores(2); got != 0 {
+		t.Fatalf("2 核不应留，实际 %d", got)
+	}
+	t.Setenv("SCAN_CPU_RESERVE_CORES", "99")
+	if got := cpuReserveCores(4); got != 3 {
+		t.Fatalf("显式配置应被钳到 cpuN-1=3，实际 %d", got)
+	}
+	t.Setenv("SCAN_CPU_RESERVE_CORES", "0")
+	if got := cpuReserveCores(4); got != 0 {
+		t.Fatalf("显式 0 应表示不留，实际 %d", got)
 	}
 }

@@ -7,7 +7,7 @@ package scanner
 //	portscan.Scan（connect 扫描，固定 worker 池 = Options.Concurrency）
 //	   │  OnOpen：发现开放端口即投递
 //	   ▼
-//	identCh ──► svcid.Identify 工作池（默认 32，可 IDENT_CONCURRENCY 覆盖）
+//	identCh ──► svcid.Identify 工作池（默认 每核 4 路、8~32，可 IDENT_CONCURRENCY 覆盖）
 //	                │ 识别完成
 //	                ▼
 //	              聚合器（独占 flushBuf）：攒满 200 条或 300ms 未发 → flush
@@ -23,6 +23,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,12 +201,24 @@ func ruleFilesFingerprint(paths string) (string, error) {
 	return b.String(), nil
 }
 
-// identWorkers 识别工作池并发（env IDENT_CONCURRENCY 可配，默认 32）
+// identWorkers 识别工作池并发（env IDENT_CONCURRENCY 可配）。
+//
+// 旧默认写死 32：识别这一步要抓 banner / HTTP 正文再跑上万条指纹正则，是**纯 CPU**；
+// 4 核混部机器上 32 路并发自己就能把整机 CPU 吃满，同机的平台 web 被饿死
+// （v0.0.50 实测：扫描一开页面打不开）。现在默认随核数走：每核 4 路，下限 8、上限 32，
+// 4 核 → 16、8 核 → 32，2 核 → 8。要压回去用 IDENT_CONCURRENCY。
 func identWorkers() int {
 	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("IDENT_CONCURRENCY"))); err == nil && v > 0 && v <= 512 {
 		return v
 	}
-	return 32
+	n := runtime.NumCPU() * 4
+	if n < 8 {
+		n = 8
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
 }
 
 // flushBatchSize / flushInterval 聚合器参数：攒满即发、最多憋 300ms

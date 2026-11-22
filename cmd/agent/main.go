@@ -319,6 +319,9 @@ func main() {
 	// 审计落库仅 agent 进程启用：config/config.db 与 scope-agent 同目录
 	// （下载 exe 到哪、审计库就生成到哪；不可写自动回退 ./config/）
 	scanner.EnableAudit()
+	// CPU 预算要在起任何 worker 之前定：GOMAXPROCS 收窄后运行时按新值建 P，
+	// 之后改只影响调度，不影响已创建的 P 数量（效果打折）。
+	applyCPUBudget()
 	checkNoFileLimit()
 	// nofile 自检给出 fd 预算，智能调速拿它当三堵墙之一，另两堵是 CPU 与内存。
 	startAutoTuner(safeInflight)
