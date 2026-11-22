@@ -546,15 +546,39 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	p.Title = mergedTitle
 	fpStr = mergedFP
 
-	// 是否需要 AI 复核：引擎的 needAi 只按"证据来源"标记，实测漏掉大量壳页
-	// （title=`Redirection……` / `307 TEMPORARY REDIRECT` / `HTTP` / 空），
-	// 这些条目标题看着存在、实际不含任何身份信息，AI 却从未被唤起。
-	// 所以在引擎标记之外，补一条结构性判定：标题是占位就强制走识别。
-	needAI := p.NeedAI
-	if !needAI && strings.HasPrefix(strings.ToLower(p.Protocol), "http") &&
-		scanner.PlaceholderTitle(p.Title, p.StatusCode) {
-		needAI = true
+	isHTTP := strings.HasPrefix(strings.ToLower(p.Protocol), "http")
+
+	// 占位标题不当服务名入库（v0.0.52）。
+	//
+	// 错误页/跳转页/壳页的 <title> 是 `502 Bad Gateway`、`403 Forbidden`、`Not Found`、
+	// `Redirection……` 这类状态文本，不含任何身份信息。以前直接写进 title，列表上看
+	// 就像"这台机器的服务叫 502 Bad Gateway"，既不准确也永远等不到 AI 覆盖
+	// （模型给不出置信结论，就不会改写）。
+	//
+	// 现在：title 存空、title_source 标 `placeholder`，**原文不再塞进 banner**——
+	// banner 是协议层横幅（`SSH-2.0-OpenSSH_9.3`、`HTTP/1.1 502`），不是标题载体，
+	// 把状态文本灌进去只会污染指纹匹配。状态码与内容长度本来就单独入库，前端据此显示
+	// 「HTTP 502 · 待识别」即可。
+	//
+	// 已有有效旧标题时保留旧值：这一轮碰到 502 不代表这台机器的身份变了。
+	// 除了白名单式占位判定，再加一条结构性判断：标题连"词"都没有（纯数字/纯符号，
+	// 例如 `1813`、`302`）同样不是服务名——这类值是跳转端口号被当成标题，留着只会误导。
+	placeholder := isHTTP && (scanner.PlaceholderTitle(p.Title, p.StatusCode) ||
+		(strings.TrimSpace(p.Title) != "" && !TitleClear(p.Title)))
+	if placeholder {
+		if prevTitle != "" && TitleClear(prevTitle) && !scanner.PlaceholderTitle(prevTitle, prevStatus) {
+			p.Title = prevTitle
+			titleSrc = "keep"
+		} else {
+			p.Title = ""
+			titleSrc = "placeholder"
+		}
 	}
+
+	// 是否需要 AI 复核：只对 HTTP(S)（v0.0.52）。
+	// 引擎会给 TCP/MSRPC/SMB 这些也打 needAi=true，但识别链路只处理 web——
+	// 这些行进了队列就被直接标 checked、什么也不做，白白制造"待识别 6,674 条"的假积压。
+	needAI := isHTTP && (p.NeedAI || placeholder || strings.TrimSpace(p.Title) == "")
 
 	if err == gorm.ErrRecordNotFound {
 		config.DB.Create(&model.Service{

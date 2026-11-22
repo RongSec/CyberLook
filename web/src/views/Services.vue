@@ -13,15 +13,6 @@
         <n-button type="info" :disabled="checked.length === 0" @click="copyCheckedUrls">
           复制 URL{{ checked.length ? `(${checked.length})` : '' }}
         </n-button>
-        <n-dropdown :options="aiScopeOptions" @select="reidentifyBatch">
-          <n-button :loading="aiBatch">AI 批量识别</n-button>
-        </n-dropdown>
-        <n-tag v-if="aiStats" round :type="aiStats.backlog > 0 ? 'warning' : 'success'"
-          style="margin-left:auto" :title="aiStatsTitle">
-          识别队列：待识别 {{ aiStats.backlog }} 条
-          <template v-if="aiStats.perMinute > 0"> · {{ aiStats.perMinute }} 条/分 · 约 {{ etaText }}跑完</template>
-          <template v-else> · 队列空闲</template>
-        </n-tag>
         <n-popconfirm @positive-click="batchDelete" positive-text="删除" negative-text="取消">
           <template #trigger>
             <n-button type="error" :disabled="checked.length === 0">
@@ -40,7 +31,7 @@
 </template>
 
 <script setup>
-import { ref, computed, h, onMounted, onUnmounted } from 'vue'
+import { ref, computed, h, onMounted } from 'vue'
 import { NTag, NButton, NPopconfirm, useMessage } from 'naive-ui'
 import api from '../api'
 import SearchBar from '../components/SearchBar.vue'
@@ -65,28 +56,6 @@ function fmtLen(n) {
 const loading = ref(false)
 const checked = ref([])
 
-// 识别队列可见性（v0.0.51）
-// 之前积压完全不可见：用户只能看到"有些服务没名字"，不知道还有多少条在排队、
-// 一条要多久。现在每 30 秒拉一次快照，直接在筛选栏右侧显示 backlog / 速率 / ETA。
-const aiStats = ref(null)
-let aiStatsTimer = null
-const etaText = computed(() => {
-  const s = aiStats.value?.etaSeconds || 0
-  if (s <= 0) return '—'
-  if (s < 60) return s + ' 秒'
-  if (s < 3600) return Math.round(s / 60) + ' 分钟'
-  return (s / 3600).toFixed(1) + ' 小时'
-})
-const aiStatsTitle = computed(() => {
-  const s = aiStats.value
-  if (!s) return ''
-  return `并发 ${s.workers} 路 · 队列中 ${s.queueLen}/${s.queueCap}\n`
-    + `平均单条 ${(s.avgTotalMs / 1000).toFixed(1)}s（抓包 ${s.avgTraceMs}ms / 模型 ${s.avgLLM1Ms}ms / 渲染 ${s.avgRenderMs}ms / 复判 ${s.avgLLM2Ms}ms）\n`
-    + `本分钟吞吐 ${s.perMinute} 条 · 走了渲染 ${s.renderUsed} 条 · 渲染闸门跳过 ${s.renderSkipped} 条 · 模型失败 ${s.llmFail} 次`
-})
-async function loadAIStats() {
-  try { aiStats.value = await api.get('/services/ai-stats') } catch { /* 静默：状态条不该影响列表 */ }
-}
 const selectingAll = ref(false)
 const items = ref([])
 const page = ref(1)
@@ -282,30 +251,6 @@ async function toggleSelectAll() {
   }
 }
 
-const aiBatch = ref(false)
-
-// 三种补识别范围：占位标题最省 token；未识别过的最彻底；全量最慢
-const aiScopeOptions = [
-  { label: '补识别：占位标题（Redirection…… / HTTP / 空）', key: 'placeholder' },
-  { label: '补识别：从未识别过的（含占位）', key: 'unchecked' },
-  { label: '补识别：全部 HTTP 服务（慢，慎用）', key: 'all' }
-]
-
-// 历史「不清晰」标题批量重识别：AI 只在入库时触发，存量的靠这个补。
-// scope=placeholder 只挑占位标题（Redirection……/HTTP/空/状态文本），
-// scope=unchecked 连从未识别过的也一起挑，scope=all 全量（慢，慎用）。
-async function reidentifyBatch(scope = 'placeholder', limit = 200) {
-  aiBatch.value = true
-  try {
-    const r = await api.post(`/services/reidentify?scope=${scope}&limit=${limit}`)
-    message.success(`已入队 ${r.queued} 条（候选 ${r.candidates} 条），后台识别中，稍后刷新即可看到更准确的标题与新变更标记`)
-  } catch (e) {
-    message.error(e.response?.data?.error || '提交失败')
-  } finally {
-    aiBatch.value = false
-  }
-}
-
 // 单条服务 → URL 文本（复制 URL 与导出 URL 共用同一口径，避免两处规则漂移）
 // 协议：protocol 含 https 则 https，否则 http；端口：非 80/443 才带 :port；结尾不加多余斜杠
 function buildUrl(row) {
@@ -456,12 +401,7 @@ function reset() {
   load()
 }
 
-onMounted(() => {
-  load()
-  loadAIStats()
-  aiStatsTimer = setInterval(loadAIStats, 30000)
-})
-onUnmounted(() => { if (aiStatsTimer) clearInterval(aiStatsTimer) })
+onMounted(load)
 </script>
 
 <style scoped>

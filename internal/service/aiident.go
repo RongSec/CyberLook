@@ -91,6 +91,8 @@ type aiIdentifyJob struct {
 	TaskID uint
 	IP     string
 	Port   int
+	// ServiceID 补给协程带上主键，扫完直接按 id 更新，省一次 ip+port 查询
+	ServiceID uint
 }
 
 var (
@@ -155,8 +157,55 @@ func EnqueueAIIdentify(taskID uint, ip string, port int) {
 	}
 }
 
+// aiInFlight 已入队待处理的 ip:port，防止补给协程重复入队。
+var aiInFlight sync.Map
+
+// aiQueueFeeder 每 15 秒从库里补一批待识别（仅 HTTP(S)），队列过半就歇着。
+//
+// 队列持久化的取舍：不引入 Redis/表锁，直接以 services.ai_need 作为"待办标记"，
+// 内存队列只是加速通道。重启后 inFlight 清空，同一批会在下一轮补给里重新入队，
+// 语义安全（识别是幂等的：重复跑最多多花几秒，不会写错数据）。
+func aiQueueFeeder() {
+	tk := time.NewTicker(15 * time.Second)
+	defer tk.Stop()
+	for range tk.C {
+		if aiQueue == nil || len(aiQueue) > aiIdentifyQueueSize/2 {
+			continue
+		}
+		fillQueueFromDB(200)
+	}
+}
+
+// fillQueueFromDB 把库里 ai_need 的 HTTP(S) 服务补进内存队列，返回入队条数。
+func fillQueueFromDB(limit int) int {
+	var svcs []model.Service
+	config.DB.Model(&model.Service{}).
+		Where("ai_need = ? AND ai_checked_at IS NULL AND protocol ILIKE 'http%'", true).
+		Order("last_seen DESC NULLS LAST").Limit(limit).Find(&svcs)
+	queued := 0
+	for _, s := range svcs {
+		key := s.IP + ":" + strconv.Itoa(s.Port)
+		if _, loaded := aiInFlight.LoadOrStore(key, time.Now()); loaded {
+			continue
+		}
+		select {
+		case aiQueue <- aiIdentifyJob{TaskID: s.LastTaskID, IP: s.IP, Port: s.Port, ServiceID: s.ID}:
+			aiMetricEnqueued()
+			queued++
+		default:
+			aiInFlight.Delete(key)
+			return queued
+		}
+	}
+	return queued
+}
+
 func startAIWorkers() {
 	aiQueue = make(chan aiIdentifyJob, aiIdentifyQueueSize)
+	// 补给协程：队列不再只靠"扫描时逐个 Enqueue"，而是持续从库里 ai_need 的
+	// HTTP(S) 条目补齐。这样进程重启不会丢掉"还没识别"的那批（内存队列本来是空的），
+	// 用户点一次重识别也只是"把库里标出来"，不需要一次塞进内存。
+	go aiQueueFeeder()
 	n := aiIdentifyWorkers()
 	log.Printf("[ai-ident] 识别工作池启动：%d 路（本机 %d 核，AI_IDENT_CONCURRENCY 可调）", n, runtime.NumCPU())
 	for i := 0; i < n; i++ {
@@ -269,7 +318,36 @@ func renderWorthwhile(hops []scanner.Hop) (bool, string) {
 	return true, ""
 }
 
-// IdentifyService 跑完整识别链路：请求响应包 → AI →（AI 说不够）→ 浏览器渲染 → AI。
+// skipRenderByVerdict 「已有明确标题且页面正常」时不再渲染（v0.0.52）。
+//
+// 用户口径：规则/引擎已经给出明确标题、页面也正常（2xx/3xx 且有正文）的，
+// 没必要再花 8~28 秒开浏览器；只有"页面明显不正常"（空壳 SPA、JS 加密登录、
+// 错误页、纯跳转）才值得深度判定。
+//
+// 例外：置信 60~79 且标题是"厂商级"时，历史实测渲染能纠正产品线（深信服 SSL VPN
+// → 超融合 HCI）。这种情况仍渲染——因为标题虽然"存在"，但粒度不够，属于"不正常"的一种。
+func skipRenderByVerdict(svc model.Service, hops []scanner.Hop, v aiVerdict) (bool, string) {
+	if len(hops) == 0 || !v.dotConfident() {
+		return false, ""
+	}
+	last := hops[len(hops)-1]
+	st := hopStatus(last.ResponseLine)
+	if st < 200 || st >= 400 {
+		return false, "" // 非正常状态，交给渲染闸门/后续判定
+	}
+	if !TitleClear(svc.Title) || scanner.PlaceholderTitle(svc.Title, svc.StatusCode) {
+		return false, ""
+	}
+	if len(strings.TrimSpace(last.Body)) < 200 {
+		return false, "" // 正文太少，可能还是壳页
+	}
+	if v.Confidence < confidentEnough {
+		return false, "" // 厂商级粒度，留给渲染纠产品线
+	}
+	return true, "已有明确标题且页面正常（2xx/3xx、正文完整、置信 " + strconv.Itoa(v.Confidence) + "），不再深度判定"
+}
+
+// IdentifyService 跑完整识别链路
 //
 // 这里不设"标题正则判清晰就跳过"的前置闸门——那会把"标题恰好像样、其实是默认页"
 // 的情况漏掉，也会把合法产品名当垃圾。是否足够判断，由模型自己说（Sufficient）。
@@ -280,6 +358,8 @@ func IdentifyService(svc model.Service) IdentResult {
 	mark := func(stage string, t0 time.Time) { res.Timing[stage] = time.Since(t0).Milliseconds() }
 	baseURL := buildURL(svc)
 	var hops []scanner.Hop
+	var firstVerdict *aiVerdict
+	haveFirst := false
 
 	if baseURL == "" {
 		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: "-", Output: "非 http(s) 协议，不适用 Web 识别"})
@@ -312,6 +392,7 @@ func IdentifyService(svc model.Service) IdentResult {
 		tLLM1 := time.Now()
 		verdict := askAI("请求响应包", digest, false)
 		mark("llm1", tLLM1)
+		firstVerdict, haveFirst = &verdict, true
 		stages = append(stages, IdentStage{
 			Stage: "AI·请求响应包", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
 			Output: orNone(verdict.Raw), OK: verdict.dotConfident(),
@@ -352,6 +433,15 @@ func IdentifyService(svc model.Service) IdentResult {
 	}
 
 	// 第 2 级：浏览器真渲染（先判断值不值得——这是最贵的一步）
+	if haveFirst {
+		if skip, why := skipRenderByVerdict(svc, hops, *firstVerdict); skip {
+			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + why})
+			aiMetricRenderSkipped()
+			res.apply(*firstVerdict)
+			res.Stages, res.Hops = stages, hops
+			return res
+		}
+	}
 	if ok, why := renderWorthwhile(hops); !ok {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + why})
 		aiMetricRenderSkipped()
@@ -469,7 +559,13 @@ const aiIdentSystem = `你是内网资产识别专家。用户给你一个 HTTP 
    例如深信服的 aTrust、SSL VPN、超融合 HCI、EDR 都用 window.VMP + RSAModulus 这套前端。
    如果证据里只有厂商特征、没有产品线文字（HCI / 超融合 / aTrust / SSL VPN / EDR 等），
    confidence 不得超过 55，sufficient 要给 false —— 页面渲染后通常能直接看到产品名。
-   把厂商名当成产品名输出，比不给名字更糟。`
+   把厂商名当成产品名输出，比不给名字更糟。
+12. **错误页/拒绝页/纯跳转页一律 sufficient=true**（不要要求渲染）：
+   状态码 4xx/5xx（502、503、500、404、403、401、405…）、正文只有状态文本、
+   "Redirection……"、nginx/Apache 默认页——这些页面浏览器再打开一次也还是同一个错误文本，
+   渲染 10 秒純属浪费。这种情况 confidence 给 30 以下、title 留空，
+   reason 写"错误页，无身份信息"。只有"页面看起来正常、但内容需要 JS 才能出来"
+   （空壳 SPA、登录框由脚本渲染、老式加密跳转）才 sufficient=false。`
 
 // askAI 让模型判断这是什么系统
 func askAI(source, info string, rendered bool) aiVerdict {
@@ -507,8 +603,11 @@ func askAI(source, info string, rendered bool) aiVerdict {
 func runAIIdentify(job aiIdentifyJob) {
 	var svc model.Service
 	if err := config.DB.Where("ip = ? AND port = ?", job.IP, job.Port).First(&svc).Error; err != nil {
+		aiInFlight.Delete(job.IP + ":" + strconv.Itoa(job.Port))
 		return
 	}
+	// 无论走哪条分支都要把"在途"标记清掉，否则补给协程永远不再碰这一条
+	defer aiInFlight.Delete(svc.IP + ":" + strconv.Itoa(svc.Port))
 	if !strings.HasPrefix(strings.ToLower(svc.Protocol), "http") {
 		// AI 识别链路目前只覆盖 HTTP(S)；非 HTTP 的交给引擎侧规则
 		aiMetricNonHTTP()

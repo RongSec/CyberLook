@@ -18,6 +18,13 @@
             <span class="running-hint" v-if="runningTask">
               正在执行：<b>{{ runningTask.name }}</b>（#{{ runningTask.id }}）
             </span>
+            <!-- 服务识别进度（v0.0.52）：扫描完的端口会被送进 AI 识别队列，
+                 这里显示积压与预计耗时——识别不再由用户在「应用服务」里手动触发。 -->
+            <n-tag v-if="aiStats && (aiStats.backlog > 0 || aiStats.queueLen > 0)" round type="info"
+              :title="aiStatsTitle" style="margin-left:auto">
+              服务识别：待识别 {{ aiStats.backlog }} 条<template v-if="aiStats.perMinute > 0">
+                · {{ aiStats.perMinute }} 条/分 · 约 {{ aiEtaText }}</template>
+            </n-tag>
           </div>
           <n-data-table :columns="columns" :data="items" :loading="loading" :pagination="{ ...pagination, showSizePicker: true, pageSizes: [10, 20, 50, 100], onUpdatePageSize: onPlanSize }"
             :row-key="rowKey" checkable @update:checked-row-keys="onChecked" remote @update:page="onPage" />
@@ -848,6 +855,7 @@ function stopSSE() {
 }
 watch(showLog, (v) => { if (!v) stopSSE() })
 
+let aiStatsTimer = null
 let pollTimer = null
 // ===== 分布式：节点 / 配置 / 进度 / 终端 =====
 const showConfig = ref(false)
@@ -1156,13 +1164,35 @@ const nodeProgCols = [
   }
 ]
 
+// 识别队列快照（/services/ai-stats），与任务列表一起轮询但节奏更慢（15s）
+const aiStats = ref(null)
+const aiEtaText = computed(() => {
+  const sec = aiStats.value?.etaSeconds || 0
+  if (sec <= 0) return '—'
+  if (sec < 60) return sec + ' 秒'
+  if (sec < 3600) return Math.round(sec / 60) + ' 分钟'
+  return (sec / 3600).toFixed(1) + ' 小时'
+})
+const aiStatsTitle = computed(() => {
+  const st = aiStats.value
+  if (!st) return ''
+  return `识别并发 ${st.workers} 路 · 队列 ${st.queueLen}/${st.queueCap}\n`
+    + `单条平均 ${(st.avgTotalMs / 1000).toFixed(1)}s（抓包 ${st.avgTraceMs}ms / 模型 ${st.avgLLM1Ms}ms / 渲染 ${st.avgRenderMs}ms / 复判 ${st.avgLLM2Ms}ms）\n`
+    + `走了渲染 ${st.renderUsed} 条 · 渲染闸门跳过 ${st.renderSkipped} 条 · 模型失败 ${st.llmFail} 次`
+})
+async function loadAIStats() {
+  try { aiStats.value = await api.get('/services/ai-stats') } catch { /* 不影响任务列表 */ }
+}
+
 onMounted(() => {
   load()
   loadTemplates()
   loadNodes()
+  loadAIStats()
   pollTimer = setInterval(load, 3000)
+  aiStatsTimer = setInterval(loadAIStats, 15000)
 })
-onBeforeUnmount(() => { clearInterval(pollTimer); stopSSE() })
+onBeforeUnmount(() => { clearInterval(pollTimer); clearInterval(aiStatsTimer); stopSSE() })
 </script>
 
 <style scoped>

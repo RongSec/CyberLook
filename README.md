@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.51-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-0.0.52-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />
@@ -156,6 +156,13 @@
 其它（含 SPA 空壳、JS 加密登录页）    → 渲染
 ```
 
+**是否深度判定交给模型自己说。** 提示词里新增第 12 条：状态码 4xx/5xx、只有状态文本、
+`Redirection……`、nginx/Apache 默认页——一律 `sufficient=true`、confidence<30、title 留空，
+不要要求渲染；只有"页面看着正常但内容要 JS 才出来"（空壳 SPA、脚本渲染的登录框、
+老式加密跳转）才 `sufficient=false`。规则侧再加一层：**已有明确标题且页面正常**
+（2xx/3xx、正文 ≥200 字节）的，即使模型给了 60~79 分也不再渲染，直接用规则标题；
+50 分以下或证据是壳页的，照旧渲染。
+
 效果：同一批样本单条 12.7s → 2.1s（-84%），渲染跳过 83%；而真正需要渲染的样本
 （`scope=unchecked` 里从没识别过的）渲染采用率仍接近一半、渲染成功率 31%~50%，说明闸门没有把
 真系统挡掉。渲染等待本身也收紧了：等 load 的事件上限 8s → 4s，正文稳定阈值 50 字 → 10 字。
@@ -165,7 +172,26 @@
 `识别队列：待识别 N 条 · X 条/分 · 约 Y 跑完`。积压只统计 HTTP——非 HTTP 的 `ai_need`
 识别流程不处理，算进去会把 787 条说成 7,461 条。
 
-### 4.4 CPU 预算：给平台留一点余量
+### 4.6 入库口径：占位标题不当服务名，非 HTTP 不排识别
+
+**占位标题不入 title。** 错误页/跳转页/壳页的 `<title>` 是 `502 Bad Gateway`、`403 Forbidden`、
+`Not Found`、`Redirection……`，以及 `1813` 这种连词都没有的纯数字（跳转端口号被当标题）。
+这些一律不入 `title`，改写为空并标 `title_source = placeholder`；已有有效旧标题时保留旧值
+（`title_source = keep`），不让一轮 502 把身份信息抹掉。
+
+> `banner` 不动。它是协议层横幅（`SSH-2.0-OpenSSH_9.3`、`HTTP/1.1 502`），不是标题载体，
+> 把状态文本灌进去只会污染指纹匹配。状态码/内容长度本来就单独入库，前端据此显示
+> 「HTTP 502 · 待识别」。
+
+**非 HTTP 不打 `ai_need`。** 引擎对 TCP/MSRPC/SMB/RDP 也标"需识别"，但识别链路只处理 web，
+这些行进队列就被直接标 `checked`、什么也不做——旧口径下积压里 6,674/7,461 都是这种。
+现在入库只对 HTTP(S) 打标记。
+
+**识别不再需要手动触发。** 「应用服务」页的「AI 批量识别」按钮已移除；识别队列由
+`services.ai_need` 驱动、后台持续补给，进度显示在**扫描页**（`服务识别：待识别 N 条 · X 条/分 · 约 Y`）。
+队列落库语义：内存队列只是加速通道，重启后从 `ai_need` 重新补给，不丢待办。
+
+### 4.5 识别提速：别把错误页丢给浏览器
 
 平台中心和扫描节点常混部在同一台机器上（web、PostgreSQL、AI 识别、chromium 渲染都在 server 里）。
 扫描把整机吃满时，最直接的后果是**页面打不开**——连接建得上，请求排不上队。所以两边都守一条预算线：
