@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"os"
 	"runtime"
 	"strconv"
@@ -235,13 +236,18 @@ func runAIIdentifySafe(job aiIdentifyJob) {
 			log.Printf("[ai-ident] panic %s:%d: %v", job.IP, job.Port, r)
 		}
 	}()
+	ctx, cancel := context.WithTimeout(context.Background(), aiIdentifyTimeout)
+	defer cancel()
 	timer := time.AfterFunc(aiIdentifyTimeout, func() {
-		log.Printf("[ai-ident] %s:%d 超过 %s 未完成，销毁浏览器实例强制收敛",
+		// 两件事一起做：cancel 让识别协程立刻从 CDP/LLM 等点退出（worker 立即归还），
+		// ResetBrowser 处理实例本身已经坏了的情况（后续调用重建）。
+		// 只杀浏览器不 cancel，协程还会傻等 HTTP/CDP 自己的长超时——这就是那条 125 秒。
+		log.Printf("[ai-ident] %s:%d 超过 %s 未完成，取消识别并销毁浏览器实例",
 			job.IP, job.Port, aiIdentifyTimeout)
 		scanner.ResetBrowser()
 	})
 	defer timer.Stop()
-	runAIIdentify(job)
+	runAIIdentifyCtx(ctx, job)
 	if d := time.Since(start); d > 30*time.Second {
 		log.Printf("[ai-ident] %s:%d 识别耗时 %s（偏慢，多半是渲染等待）", job.IP, job.Port, d.Round(time.Second))
 	}
@@ -256,7 +262,7 @@ type IdentResult struct {
 	Reason     string // 模型给的依据（20 字以内）
 	Stages     []IdentStage
 	Hops       []scanner.Hop
-	// Timing 分阶段耗时（毫秒）：trace / llm1 / render / llm2。
+	// Timing 分阶段耗时（毫秒）：trace / judge / render / identify。
 	// 没有这一步就只能看到"总共 43 秒"，看不出是渲染慢还是模型慢。
 	Timing map[string]int64
 }
@@ -318,169 +324,160 @@ func renderWorthwhile(hops []scanner.Hop) (bool, string) {
 	return true, ""
 }
 
-// skipRenderByVerdict 「已有明确标题且页面正常」时不再渲染（v0.0.52）。
+// traceWithFallback 抓包，协议判错时用另一个 scheme 重试一次。
 //
-// 用户口径：规则/引擎已经给出明确标题、页面也正常（2xx/3xx 且有正文）的，
-// 没必要再花 8~28 秒开浏览器；只有"页面明显不正常"（空壳 SPA、JS 加密登录、
-// 错误页、纯跳转）才值得深度判定。
-//
-// 例外：置信 60~79 且标题是"厂商级"时，历史实测渲染能纠正产品线（深信服 SSL VPN
-// → 超融合 HCI）。这种情况仍渲染——因为标题虽然"存在"，但粒度不够，属于"不正常"的一种。
-func skipRenderByVerdict(svc model.Service, hops []scanner.Hop, v aiVerdict) (bool, string) {
-	if len(hops) == 0 || !v.dotConfident() {
-		return false, ""
+// 为什么需要：入库的 protocol 来自引擎的端口探测，在"302 跳到 https"或"双栈端口"
+// 场景下经常判反。实测 198.18.6.114:80 被标成 HTTPS，识别时直接
+// `tls: first record does not look like a TLS handshake`，整条链路 0 秒空跑，
+// 白排一次队。识别是拿证据判断身份，协议错了就用另一个再试一次，代价只是多一次请求。
+func traceWithFallback(ip string, port int, scheme string) ([]scanner.Hop, error, string) {
+	hops, err := scanner.HTTPTrace(ip, port, scheme, 4)
+	if err == nil && len(hops) > 0 {
+		return hops, nil, scheme
 	}
-	last := hops[len(hops)-1]
-	st := hopStatus(last.ResponseLine)
-	if st < 200 || st >= 400 {
-		return false, "" // 非正常状态，交给渲染闸门/后续判定
+	alt := "https"
+	if scheme == "https" {
+		alt = "http"
 	}
-	if !TitleClear(svc.Title) || scanner.PlaceholderTitle(svc.Title, svc.StatusCode) {
-		return false, ""
+	if h2, e2 := scanner.HTTPTrace(ip, port, alt, 4); e2 == nil && len(h2) > 0 {
+		return h2, nil, alt
 	}
-	if len(strings.TrimSpace(last.Body)) < 200 {
-		return false, "" // 正文太少，可能还是壳页
-	}
-	if v.Confidence < confidentEnough {
-		return false, "" // 厂商级粒度，留给渲染纠产品线
-	}
-	return true, "已有明确标题且页面正常（2xx/3xx、正文完整、置信 " + strconv.Itoa(v.Confidence) + "），不再深度判定"
+	return hops, err, scheme
 }
 
-// IdentifyService 跑完整识别链路
-//
-// 这里不设"标题正则判清晰就跳过"的前置闸门——那会把"标题恰好像样、其实是默认页"
-// 的情况漏掉，也会把合法产品名当垃圾。是否足够判断，由模型自己说（Sufficient）。
+// IdentifyService 跑完整识别链路（不带 ctx，供非关键路径使用）。
 func IdentifyService(svc model.Service) IdentResult {
+	return IdentifyServiceCtx(context.Background(), svc)
+}
+
+// IdentifyServiceCtx 跑完整识别链路：
+//
+//	抓请求响应包 → 研判 agent（这页是否异常、要不要渲染）→ 浏览器渲染 → 识别 agent（给名字）
+//
+// ctx 贯穿全程。看门狗到点 cancel 后：渲染中的 CDP 调用立刻返回 context.Canceled，
+// LLM 调用走 chatWithCtx 也不再占着 worker 等 HTTP 超时，于是整条链路顺着错误退栈、
+// worker 立即归还。以前不传 ctx，看门狗只能杀浏览器，协程仍卡在等回复上——
+// 实测有一条拖到 125 秒，等于白占一个 worker 半分钟。
+func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	res := IdentResult{Title: strings.TrimSpace(svc.Title), Product: strings.TrimSpace(svc.Fingerprint),
 		Timing: map[string]int64{}}
 	stages := []IdentStage{}
 	mark := func(stage string, t0 time.Time) { res.Timing[stage] = time.Since(t0).Milliseconds() }
 	baseURL := buildURL(svc)
 	var hops []scanner.Hop
-	var firstVerdict *aiVerdict
-	haveFirst := false
 
-	if baseURL == "" {
-		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: "-", Output: "非 http(s) 协议，不适用 Web 识别"})
-		res.Stages = stages
+	done := func() IdentResult {
+		res.Stages, res.Hops = stages, hops
 		return res
 	}
 
-	// 第 1 级：抓完整请求响应包 → AI
+	if baseURL == "" {
+		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: "-", Output: "非 http(s) 协议，不适用 Web 识别"})
+		return done()
+	}
+
+	// 第 1 步：抓完整请求响应包（含跳转，最多 4 跳）
 	scheme := "http"
 	if strings.HasPrefix(strings.ToLower(svc.Protocol), "https") {
 		scheme = "https"
 	}
-	var trErr error
 	tTrace := time.Now()
-	hops, trErr = scanner.HTTPTrace(svc.IP, svc.Port, scheme, 4)
+	var trErr error
+	hops, trErr, scheme = traceWithFallback(svc.IP, svc.Port, scheme)
 	mark("trace", tTrace)
 	switch {
 	case trErr != nil:
 		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: baseURL, Output: "抓取失败：" + trErr.Error()})
+		return done()
 	case len(hops) == 0:
 		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: baseURL, Output: "无响应"})
-	default:
-		digest := scanner.TraceDigest(hops)
-		stages = append(stages, IdentStage{
-			Stage:  "抓取请求响应包",
-			Input:  fmt.Sprintf("%s（共 %d 跳）", baseURL, len(hops)),
-			Output: hops[0].ResponseLine + " / " + orNone(shortHeader(hops[0].ResponseHeaders)),
-			OK:     true,
-		})
-		tLLM1 := time.Now()
-		verdict := askAI("请求响应包", digest, false)
-		mark("llm1", tLLM1)
-		firstVerdict, haveFirst = &verdict, true
-		stages = append(stages, IdentStage{
-			Stage: "AI·请求响应包", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
-			Output: orNone(verdict.Raw), OK: verdict.dotConfident(),
-		})
-		if verdict.dotConfident() && verdict.Confidence >= confidentEnough {
-			res.apply(verdict)
-			res.Stages, res.Hops = stages, hops
-			return res
-		}
-		// 置信 60-79 属于「特征对上了，但只到厂商/类别一级」。
-		// 实测 198.18.8.65:80：模型凭 window.VMP + RSAModulus 判成
-		// 「深信服 SSL VPN/安全网关」置信 62 就收工，而渲染后的页面里
-		// 明明写着「深信服超融合平台 / SANGFOR HCI」——厂商对了、产品线错了。
-		// 这类结论不写回、继续渲染，让页面文字自己说话。
-		if verdict.dotConfident() {
-			stages = append(stages, IdentStage{
-				Stage:  "复核·结论粒度",
-				Input:  fmt.Sprintf("置信 %d", verdict.Confidence),
-				Output: fmt.Sprintf("只到厂商/类别一级（< %d），继续渲染复核产品线", confidentEnough),
-			})
-		}
-		// 模型明确说"信息已经够、只是给不出确切名字"→ 再渲染也没用。
-		// 但前提是它看到的确实是"完整证据"：如果抓到的全是壳页/跳转页/错误页
-		// （visibleText < 200 字），那句 sufficient 是被烂证据骗出来的，
-		// 必须继续渲染——浏览器会执行 JS 跳转，这是唯一能看到真实登录页的途径。
-		if verdict.Sufficient && !scanner.TraceWeak(hops) {
-			res.Sufficient, res.Reason = true, verdict.Reason
-			res.Stages, res.Hops = stages, hops
-			return res
-		}
-		if verdict.Sufficient {
-			stages = append(stages, IdentStage{
-				Stage:  "复核·证据强度",
-				Input:  fmt.Sprintf("%d 跳", len(hops)),
-				Output: "抓到的是壳页/跳转页（可见文字不足 200 字），模型判 sufficient 不可信，继续渲染",
-			})
-		}
+		return done()
+	}
+	digest := scanner.TraceDigest(hops)
+	stages = append(stages, IdentStage{
+		Stage:  "抓取请求响应包",
+		Input:  fmt.Sprintf("%s（共 %d 跳）", baseURL, len(hops)),
+		Output: hops[0].ResponseLine + " / " + orNone(shortHeader(hops[0].ResponseHeaders)),
+		OK:     true,
+	})
+	if ctx.Err() != nil {
+		stages = append(stages, IdentStage{Stage: "中止", Output: "超过单条时限，放弃本次识别"})
+		return done()
 	}
 
-	// 第 2 级：浏览器真渲染（先判断值不值得——这是最贵的一步）
-	if haveFirst {
-		if skip, why := skipRenderByVerdict(svc, hops, *firstVerdict); skip {
-			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + why})
-			aiMetricRenderSkipped()
-			res.apply(*firstVerdict)
-			res.Stages, res.Hops = stages, hops
-			return res
-		}
+	// 第 2 步：研判 agent —— 这一页是否异常、要不要开浏览器
+	tJudge := time.Now()
+	jv := askJudge(ctx, digest)
+	mark("judge", tJudge)
+	stages = append(stages, IdentStage{
+		Stage: "AI·研判", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
+		Output: fmt.Sprintf("kind=%s render=%v %s", orNone(jv.Kind), jv.Render, orNone(jv.Reason)),
+		OK:     jv.Kind != "",
+	})
+
+	// 研判失败（模型不可用、输出不是 JSON）时退回本地规则，不让整条链路停摆
+	needRender, renderWhy := jv.Render, "研判 kind="+orNone(jv.Kind)
+	if jv.Kind == "" {
+		ok, why := renderWorthwhile(hops)
+		needRender, renderWhy = ok, "本地规则："+why
 	}
-	if ok, why := renderWorthwhile(hops); !ok {
-		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + why})
+	if jv.Kind == "error" {
+		needRender, renderWhy = false, "研判：错误页，无身份信息"
+	}
+
+	// 第 3 步：按需渲染（全链路最贵的一步）
+	pageTitle, rendered := "", ""
+	if !needRender {
+		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + renderWhy})
 		aiMetricRenderSkipped()
-		res.Stages, res.Hops = stages, hops
-		return res
-	}
-	if !scanner.ChromeAvailable() {
+	} else if !scanner.ChromeAvailable() {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "容器内无 chromium，跳过"})
-		res.Stages, res.Hops = stages, hops
-		return res
+	} else {
+		tRender := time.Now()
+		var pageDesc, pageText string
+		var rerr error
+		pageTitle, pageDesc, pageText, rerr = scanner.RenderPageCtx(ctx, baseURL, 8*time.Second)
+		mark("render", tRender)
+		switch {
+		case rerr != nil && ctx.Err() != nil:
+			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "被中止：" + rerr.Error()})
+			return done()
+		case rerr != nil:
+			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "渲染失败：" + rerr.Error()})
+		default:
+			rendered = fmt.Sprintf("页面标题: %s\nmeta描述: %s\n正文摘要: %s",
+				orNone(pageTitle), orNone(pageDesc), orNone(pageText))
+			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: rendered,
+				OK: strings.TrimSpace(pageTitle) != ""})
+		}
 	}
-	tRender := time.Now()
-	pageTitle, pageDesc, pageText, rerr := scanner.RenderPage(baseURL, 8*time.Second)
-	mark("render", tRender)
-	if rerr != nil {
-		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "渲染失败：" + rerr.Error()})
-		res.Stages, res.Hops = stages, hops
-		return res
-	}
-	rendered := fmt.Sprintf("页面标题: %s\nmeta描述: %s\n正文摘要: %s", orNone(pageTitle), orNone(pageDesc), orNone(pageText))
-	stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: rendered, OK: strings.TrimSpace(pageTitle) != ""})
 
-	// 第 3 级：AI 用渲染结果再判（渲染标题本身不当结论，仍由模型判断）
-	tLLM2 := time.Now()
-	verdict2 := askAI("渲染结果", rendered, true)
-	mark("llm2", tLLM2)
-	stages = append(stages, IdentStage{Stage: "AI·渲染结果", Input: rendered, Output: orNone(verdict2.Raw), OK: verdict2.dotConfident()})
-	if verdict2.dotConfident() {
-		res.apply(verdict2)
-	} else if strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) &&
-		!scanner.PlaceholderTitle(pageTitle, "") {
+	// 第 4 步：识别 agent —— 有渲染结果就用渲染结果，否则用抓包证据
+	evidence, source := digest, "请求响应包"
+	if rendered != "" {
+		evidence, source = rendered, "渲染结果"
+	}
+	tId := time.Now()
+	iv := askIdentify(ctx, source, evidence, rendered != "")
+	mark("identify", tId)
+	stages = append(stages, IdentStage{
+		Stage: "AI·识别·" + source, Input: truncateStr(evidence, 120),
+		Output: orNone(iv.Raw), OK: iv.dotConfident(),
+	})
+
+	switch {
+	case iv.dotConfident():
+		res.apply(iv)
+	case strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) &&
+		!scanner.PlaceholderTitle(pageTitle, ""):
 		// 模型没给出高置信名字，但渲染后的标题本身是明确文字：作为低置信候选带上。
-		// 注意排除 `Login` / `Redirection……` 这类占位标题——浏览器的 <title>
-		// 经常就是 "Login"，直接拿来用等于把壳页标题又写回一遍。
+		// 排除 Login / Redirection…… 这类占位标题——浏览器的 <title> 经常就是它们。
 		res.Title = strings.TrimSpace(pageTitle)
 		res.Reason = "渲染标题（未经模型确认）"
+	case strings.TrimSpace(iv.Reason) != "":
+		res.Reason = iv.Reason
 	}
-	res.Stages, res.Hops = stages, hops
-	return res
+	return done()
 }
 
 // apply 采纳模型结论
@@ -525,69 +522,68 @@ func (v aiVerdict) dotConfident() bool {
 	return v.Confidence >= 60 && (strings.TrimSpace(v.Title) != "" || strings.TrimSpace(v.Product) != "")
 }
 
-const aiIdentSystem = `你是内网资产识别专家。用户给你一个 HTTP 端口的请求/响应证据，你要判断上面跑的是什么业务系统。
+// judgeVerdict 研判 agent 的结论
+type judgeVerdict struct {
+	Kind   string `json:"kind"`   // normal / error / shell / jump / weak
+	Render bool   `json:"render"` // 要不要开浏览器
+	Reason string `json:"reason"`
+	Raw    string `json:"-"`
+}
 
-只输出一个 JSON 对象，不要解释、不要 markdown 代码块：
-{"title":"业务系统名称","product":"产品/组件名（含厂商更好）","category":"分类，如 OA/财务/审计/中间件","confidence":0,"sufficient":true,"reason":"20 字以内依据"}
+// askJudge 研判这一页是否异常、要不要深度判定（渲染）。
+//
+// 输入只给"页面长相"相关的证据（TraceDigest 已含状态码、标题、跳转链、正文摘要），
+// 不要求它给名字——那是识别 agent 的事。两个角色分开，模型不会为了凑名字而忽略
+// "这其实是错误页"，也不会为了说"证据不足"而漏掉已经写在页面上的产品名。
+func askJudge(ctx context.Context, evidence string) judgeVerdict {
+	res, err := chatWithCtx(ctx, llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: PromptFor(RoleJudge)},
+			{Role: "user", Content: "证据：\n" + evidence},
+		},
+		Temperature: 0.1,
+		MaxTokens:   200,
+	})
+	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
+		if err != nil && ctx.Err() == nil {
+			aiMetricLLMFail()
+			log.Printf("[ai-ident] 研判调用失败: %v", err)
+		}
+		return judgeVerdict{}
+	}
+	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
+	var v judgeVerdict
+	if err := json.Unmarshal([]byte(extractJSON(answer)), &v); err != nil {
+		return judgeVerdict{Raw: answer}
+	}
+	switch v.Kind {
+	case "normal", "error", "shell", "jump", "weak":
+	default:
+		// 模型回了别的词：当作没判，退回本地规则
+		v.Kind = ""
+	}
+	v.Raw = answer
+	return v
+}
 
-判定要求：
-1. 只依据证据判断。证据里没有的不要编，宁可不给名字。
-2. title 写人看得懂的系统名（例如"明御数据库审计与风险控制系统"），不要写 nginx/Apache 这种服务器名。
-3. confidence 0-100：
-   - 90+：页面标题/接口/版权里直接写出产品名
-   - 60-89：有明确特征（特有路径、错误页样式、证书、界面元素）
-   - 30-59：只能判断类别
-   - <30：基本靠猜
-4. sufficient=true 表示"现有证据已经足够，但你只能给到类别或给不出名字"——
-   这种情况不要再要求渲染，渲染也拿不到更多信息。
-5. sufficient=false 表示"证据不足，需要看渲染后的完整页面"。
-   典型：标题为空或只有 Login/Welcome、正文几乎没有文字、页面是空壳 SPA。
-6. 如果现有证据里明明有产品名（哪怕长得怪，例如 "SAP Message Server,release 722 (SP8)"），
-   confidence 要给高——不要因为名字不符合常见格式就否定它。
-7. 证据可能是**多跳**：前几跳常常是跳转壳页（200 + <title>Redirection……</title> +
-   location.replace）。一律以**最后一跳**的页面内容为准，不要把中间跳转页的标题、
-   状态文本当成系统名。
-8. 下列内容**一律不是系统名**，禁止作为 title 输出：Redirection……、307 TEMPORARY REDIRECT、
-   Login、Welcome、HTTP、Index of /、Error 404、以及 Apache/nginx/IIS 这类服务器名。
-   只看到这些就说明证据不足，sufficient 要给 false，让流程继续去看渲染后的页面。
-9. 页面里的厂商特有对象/变量也可以作为依据（例如 window.VMP + RSAModulus +
-   ukey_service_version 是深信服系产品的登录页特征；Sangfor / H3C / Huawei 版权行同理），
-   但必须在 reason 里点明你依据的是哪个特征。
-10. 站点图标、公共资源路径（/common/resources/icon/enterprise_custom/）这类线索
-   只能辅助判断，单独出现不足以定名。
-11. **严格区分「厂商」和「产品线」**。同一厂商的多个产品常共用同一套登录框架：
-   例如深信服的 aTrust、SSL VPN、超融合 HCI、EDR 都用 window.VMP + RSAModulus 这套前端。
-   如果证据里只有厂商特征、没有产品线文字（HCI / 超融合 / aTrust / SSL VPN / EDR 等），
-   confidence 不得超过 55，sufficient 要给 false —— 页面渲染后通常能直接看到产品名。
-   把厂商名当成产品名输出，比不给名字更糟。
-12. **错误页/拒绝页/纯跳转页一律 sufficient=true**（不要要求渲染）：
-   状态码 4xx/5xx（502、503、500、404、403、401、405…）、正文只有状态文本、
-   "Redirection……"、nginx/Apache 默认页——这些页面浏览器再打开一次也还是同一个错误文本，
-   渲染 10 秒純属浪费。这种情况 confidence 给 30 以下、title 留空，
-   reason 写"错误页，无身份信息"。只有"页面看起来正常、但内容需要 JS 才能出来"
-   （空壳 SPA、登录框由脚本渲染、老式加密跳转）才 sufficient=false。`
-
-// askAI 让模型判断这是什么系统
-func askAI(source, info string, rendered bool) aiVerdict {
+// askIdentify 识别 agent：给出业务系统名。
+func askIdentify(ctx context.Context, source, evidence string, rendered bool) aiVerdict {
 	hint := "以下是从该端口抓到的真实请求/响应包（含重定向）"
 	if rendered {
 		hint = "以下是浏览器真正渲染后的页面信息"
 	}
-	prompt := fmt.Sprintf("%s。\n来源：%s\n\n%s", hint, source, info)
-
-	req := llm.ChatRequest{
+	res, err := chatWithCtx(ctx, llm.ChatRequest{
 		Messages: []llm.Message{
-			{Role: "system", Content: aiIdentSystem},
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: PromptFor(RoleIdentify)},
+			{Role: "user", Content: fmt.Sprintf("%s。\n来源：%s\n\n%s", hint, source, evidence)},
 		},
 		Temperature: 0.1,
 		MaxTokens:   400,
-	}
-	res, err := llm.ChatWithFailover(req, 0)
+	})
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
 			aiMetricLLMFail()
-			log.Printf("[ai-ident] 调用失败: %v", err)
+			log.Printf("[ai-ident] 识别调用失败: %v", err)
 		}
 		return aiVerdict{Sufficient: true, Raw: "模型调用失败"}
 	}
@@ -600,7 +596,36 @@ func askAI(source, info string, rendered bool) aiVerdict {
 	return v
 }
 
-func runAIIdentify(job aiIdentifyJob) {
+// chatWithCtx 让 LLM 调用可被 ctx 打断。
+//
+// llm.ChatWithFailover 内部用 http.Client 的固定超时（默认 120s），没有 ctx 入口。
+// 直接改它的签名会影响所有调用点，所以在外面包一层：调用放 goroutine，主协程 select
+// ctx.Done()。ctx 取消后主协程立刻返回，goroutine 由 HTTP 超时自然结束，
+// channel 带缓冲所以不会永久泄漏。
+func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, error) {
+	// 已经取消了就别起 goroutine：省一次无意义的调用，也让"取消后立即返回"
+	// 这条语义可以被单测直接覆盖。
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type result struct {
+		res *llm.CallResult
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		r, e := llm.ChatWithFailover(req, 0)
+		ch <- result{r, e}
+	}()
+	select {
+	case r := <-ch:
+		return r.res, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func runAIIdentifyCtx(ctx context.Context, job aiIdentifyJob) {
 	var svc model.Service
 	if err := config.DB.Where("ip = ? AND port = ?", job.IP, job.Port).First(&svc).Error; err != nil {
 		aiInFlight.Delete(job.IP + ":" + strconv.Itoa(job.Port))
@@ -616,13 +641,13 @@ func runAIIdentify(job aiIdentifyJob) {
 	}
 
 	t0 := time.Now()
-	r := IdentifyService(svc)
+	r := IdentifyServiceCtx(ctx, svc)
 	total := time.Since(t0)
 	aiMetricNote(r, total)
 	// 一条一行，把"慢在哪一步"写清楚：渲染占比是判断"该不该少渲染"的唯一依据。
-	log.Printf("[ai-ident] %s:%d 用时 %s（抓包 %dms / 模型1 %dms / 渲染 %dms / 模型2 %dms）渲染=%v 置信证据=%v 结论=%s",
+	log.Printf("[ai-ident] %s:%d 用时 %s（抓包 %dms / 研判 %dms / 渲染 %dms / 识别 %dms）渲染=%v 置信=%v 结论=%s",
 		job.IP, job.Port, total.Round(100*time.Millisecond).String(),
-		r.Timing["trace"], r.Timing["llm1"], r.Timing["render"], r.Timing["llm2"],
+		r.Timing["trace"], r.Timing["judge"], r.Timing["render"], r.Timing["identify"],
 		r.Timing["render"] > 0, r.Confident, truncateStr(r.Title, 40))
 	changed := ApplyIdentResult(svc, r)
 	recordIdentConversation(job.TaskID, svc, r, changed)

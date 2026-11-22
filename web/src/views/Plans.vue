@@ -1177,7 +1177,7 @@ const aiStatsTitle = computed(() => {
   const st = aiStats.value
   if (!st) return ''
   return `识别并发 ${st.workers} 路 · 队列 ${st.queueLen}/${st.queueCap}\n`
-    + `单条平均 ${(st.avgTotalMs / 1000).toFixed(1)}s（抓包 ${st.avgTraceMs}ms / 模型 ${st.avgLLM1Ms}ms / 渲染 ${st.avgRenderMs}ms / 复判 ${st.avgLLM2Ms}ms）\n`
+    + `单条平均 ${(st.avgTotalMs / 1000).toFixed(1)}s（抓包 ${st.avgTraceMs}ms / 研判 ${st.avgJudgeMs}ms / 渲染 ${st.avgRenderMs}ms / 识别 ${st.avgIdentifyMs}ms）\n`
     + `走了渲染 ${st.renderUsed} 条 · 渲染闸门跳过 ${st.renderSkipped} 条 · 模型失败 ${st.llmFail} 次`
 })
 async function loadAIStats() {

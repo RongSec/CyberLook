@@ -27,21 +27,38 @@ func renderSlot() chan struct{} {
 // 用途：扫描只拿到 banner（如 websocket-sharp/1.0）根本判断不出是什么系统，
 // 必须让浏览器真的打开一次页面才能看到业务系统名。
 func RenderPage(url string, wait time.Duration) (title, desc, text string, err error) {
+	return RenderPageCtx(context.Background(), url, wait)
+}
+
+// RenderPageCtx 与 RenderPage 相同，但接受调用方的 ctx。
+//
+// ctx 的作用是把「别等了」这一信号传进 CDP 调用：识别 worker 的看门狗到点 cancel 后，
+// c.call(ctx, ...) 立刻返回 context.Canceled，整条识别链路顺着错误退栈，
+// 不必再等 20 秒兜底超时。这就是单条识别从 125 秒收敛到 90 秒以内的原因。
+func RenderPageCtx(ctx context.Context, url string, wait time.Duration) (title, desc, text string, err error) {
 	if wait <= 0 {
 		wait = 8 * time.Second
 	}
 	sem := renderSlot()
-	sem <- struct{}{}
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		// 排队等标签页时就被取消：直接返回，不占渲染槽
+		return "", "", "", ctx.Err()
+	}
 	defer func() { <-sem }()
 
 	// 超时保护：目标不响应/页面挂起时必须收敛，否则识别 worker 被拖死
-	ctx, cancel := context.WithTimeout(context.Background(), wait+20*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, wait+20*time.Second)
 	defer cancel()
 
-	html, err := FetchHTML(ctx, url, wait)
+	html, err := FetchHTML(rctx, url, wait)
 	if err != nil {
+		if rctx.Err() != nil {
+			return "", "", "", rctx.Err()
+		}
 		// 一次重试：实例刚被空闲回收、或首次启动抖动，重建后通常就好
-		html, err = FetchHTML(ctx, url, wait)
+		html, err = FetchHTML(rctx, url, wait)
 		if err != nil {
 			return "", "", "", err
 		}

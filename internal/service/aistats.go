@@ -33,9 +33,9 @@ type aiMetrics struct {
 	nonHTTP    atomic.Int64
 
 	traceMs  atomic.Int64
-	llm1Ms   atomic.Int64
+	judgeMs  atomic.Int64
 	renderMs atomic.Int64
-	llm2Ms   atomic.Int64
+	identMs  atomic.Int64
 	totalMs  atomic.Int64
 	slowest  atomic.Int64 // 单条最长耗时
 
@@ -68,9 +68,9 @@ func aiMetricNote(r IdentResult, total time.Duration) {
 		m.slowest.Store(total.Milliseconds())
 	}
 	m.traceMs.Add(r.Timing["trace"])
-	m.llm1Ms.Add(r.Timing["llm1"])
+	m.judgeMs.Add(r.Timing["judge"])
 	m.renderMs.Add(r.Timing["render"])
-	m.llm2Ms.Add(r.Timing["llm2"])
+	m.identMs.Add(r.Timing["identify"])
 	if r.Timing["render"] > 0 {
 		m.renderUsed.Add(1)
 		if r.Confident {
@@ -165,9 +165,9 @@ func AIQueueStats() map[string]interface{} {
 		"nonHTTP":          m.nonHTTP.Load(),
 		"avgTotalMs":       avg(m.totalMs.Load()),
 		"avgTraceMs":       avg(m.traceMs.Load()),
-		"avgLLM1Ms":        avg(m.llm1Ms.Load()),
+		"avgJudgeMs":       avg(m.judgeMs.Load()),
 		"avgRenderMs":      avg(m.renderMs.Load()),
-		"avgLLM2Ms":        avg(m.llm2Ms.Load()),
+		"avgIdentifyMs":    avg(m.identMs.Load()),
 		"slowestMs":        m.slowest.Load(),
 		"perMinute":        float64(int(perMin*100)) / 100,
 		"etaSeconds":       etaSec,

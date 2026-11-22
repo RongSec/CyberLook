@@ -174,6 +174,8 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.GET("/agent-tasks/:id/log", ShardLog)
 		auth.GET("/ai/settings", GetAISettings)
 		auth.PUT("/ai/settings", UpdateAISettings)
+		auth.GET("/ai/prompts", GetAIPrompts)
+		auth.PUT("/ai/prompts", UpdateAIPrompt)
 		auth.GET("/backup/settings", GetBackupSettings)
 		auth.PUT("/backup/settings", UpdateBackupSettings)
 		auth.GET("/backups", ListBackups)

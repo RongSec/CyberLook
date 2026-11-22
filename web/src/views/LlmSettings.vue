@@ -16,6 +16,42 @@
         </span>
       </div>
     </n-card>
+    <n-card :bordered="false" style="margin-bottom: 12px">
+      <template #header>
+        <div class="header">
+          <div class="title">
+            <span>AI Agent</span>
+            <n-tag size="small" round type="info">2 个角色</n-tag>
+          </div>
+          <div class="actions">
+            <n-button size="small" @click="resetPrompt(currentRole)">恢复默认</n-button>
+            <n-button size="small" type="primary" :loading="promptSaving" @click="savePrompt(currentRole)">保存</n-button>
+          </div>
+        </div>
+      </template>
+
+      <n-tabs v-model:value="currentRole" type="segment" animated>
+        <n-tab-pane v-for="role in roleList" :key="role.key" :name="role.key" :tab="role.tab">
+          <div class="prompt-head">
+            <span class="prompt-desc">{{ role.desc }}</span>
+            <n-tag v-if="promptDirty(role.key)" size="small" type="warning" round>已修改未保存</n-tag>
+            <n-tag v-else-if="promptIsDefault(role.key)" size="small" round>默认</n-tag>
+            <n-tag v-else size="small" type="success" round>自定义</n-tag>
+          </div>
+          <n-input
+            v-model:value="promptText[role.key]"
+            type="textarea"
+            :rows="18"
+            :placeholder="role.placeholder"
+            class="prompt-editor"
+          />
+          <div class="prompt-foot">
+            留空即使用内置默认。提示词在每条识别时实时读取，保存后下一条立即生效，不需要重启。
+          </div>
+        </n-tab-pane>
+      </n-tabs>
+    </n-card>
+
     <n-card :bordered="false">
       <template #header>
         <div class="header">
@@ -177,11 +213,63 @@
 import { ref, onMounted, h } from 'vue'
 import {
   NCard, NTag, NButton, NAlert, NDataTable, NModal, NForm, NFormItem, NFormItemGi,
-  NGrid, NInput, NInputNumber, NSelect, NDivider, NCheckbox, NSpace, useMessage, useDialog
+  NGrid, NInput, NInputNumber, NSelect, NDivider, NCheckbox, NSpace, NTabs, NTabPane, useMessage, useDialog
 } from 'naive-ui'
 import api from '../api'
 
 const message = useMessage()
+
+// ===== AI Agent 提示词 =====
+// 两个角色分开编辑：
+//   judge    ── 研判：这页是正常/错误/壳/跳转/粒度不足，要不要渲染
+//   identify ── 识别：给出业务系统名
+const roleList = [
+  { key: 'judge', tab: '判断', desc: '研判页面类型，决定是否用浏览器深度渲染', placeholder: '留空使用默认研判提示词' },
+  { key: 'identify', tab: '识别', desc: '从证据中提取业务系统名称与产品线', placeholder: '留空使用默认识别提示词' },
+]
+const currentRole = ref('judge')
+const promptSaving = ref(false)
+const promptText = ref({ judge: '', identify: '' })
+const promptSaved = ref({ judge: '', identify: '' })
+const promptDefault = ref({ judge: '', identify: '' })
+
+function promptIsDefault(role) {
+  return (promptText.value[role] || '').trim() === (promptDefault.value[role] || '').trim()
+}
+function promptDirty(role) {
+  return (promptText.value[role] || '') !== (promptSaved.value[role] || '')
+}
+
+async function loadPrompts() {
+  try {
+    const r = await api.get('/ai/prompts')
+    for (const it of (r.items || [])) {
+      promptText.value[it.role] = it.text
+      promptSaved.value[it.role] = it.text
+      promptDefault.value[it.role] = it.default
+    }
+  } catch { /* 配置页读不到就不显示，不阻塞 LLM 配置 */ }
+}
+async function savePrompt(role) {
+  promptSaving.value = true
+  try {
+    const r = await api.put('/ai/prompts', { role, text: promptText.value[role] })
+    for (const it of (r.items || [])) {
+      promptText.value[it.role] = it.text
+      promptSaved.value[it.role] = it.text
+      promptDefault.value[it.role] = it.default
+    }
+    message.success('提示词已保存，下一条识别立即生效')
+  } catch (e) {
+    message.error(e.response?.data?.error || '保存失败')
+  } finally {
+    promptSaving.value = false
+  }
+}
+async function resetPrompt(role) {
+  promptText.value[role] = ''
+  await savePrompt(role)
+}
 const aiSet = ref({ serviceIdentify: true, scanMonitor: true })
 
 async function loadAISet() {
@@ -378,11 +466,23 @@ function remove(r) {
   })
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadAISet()
+  loadPrompts()
+})
 </script>
 
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; }
 .title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
 .actions { display: flex; gap: 8px; }
+.prompt-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.prompt-desc { color: #666; font-size: 13px; }
+.prompt-editor :deep(textarea) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.prompt-foot { color: #999; font-size: 12px; margin-top: 8px; }
 </style>

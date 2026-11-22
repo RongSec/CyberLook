@@ -242,3 +242,29 @@ func ReidentifyServices(c *gin.Context) {
 func AIIdentifyStats(c *gin.Context) {
 	c.JSON(http.StatusOK, service.AIQueueStats())
 }
+
+// GetAIPrompts AI Agent 提示词（GET /api/ai/prompts）
+//
+// 两个角色：judge（研判页面是否异常、要不要渲染）、identify（识别系统名）。
+// 一起返回默认值，前端可以直接做「恢复默认」和「已修改」标记。
+func GetAIPrompts(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"items": service.AllPrompts()})
+}
+
+// UpdateAIPrompt 保存某个角色的提示词（PUT /api/ai/prompts）
+// body: {"role":"judge","text":"..."}，text 为空表示恢复默认
+func UpdateAIPrompt(c *gin.Context) {
+	var req struct {
+		Role string `json:"role"`
+		Text string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	if err := service.SetPrompt(req.Role, req.Text); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已保存", "items": service.AllPrompts()})
+}

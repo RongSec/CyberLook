@@ -7,6 +7,11 @@ type AISettings struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	ServiceIdentify bool      `gorm:"column:service_identify;default:true" json:"serviceIdentify"`
 	ScanMonitor     bool      `gorm:"column:scan_monitor;default:true" json:"scanMonitor"`
+	// JudgePrompt / IdentifyPrompt 两个 AI Agent 的自定义提示词。
+	// 空 = 用内置默认（见 service/aiprompt.go）。存库而不是存文件，是为了让
+	// LLM 配置页能直接改、改完立即生效，不需要重启。
+	JudgePrompt    string `gorm:"column:judge_prompt;type:text" json:"judgePrompt"`
+	IdentifyPrompt string `gorm:"column:identify_prompt;type:text" json:"identifyPrompt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
