@@ -330,6 +330,23 @@
           </template>
         </span>
       </div>
+      <!-- 识别状态条（v0.0.57）：识别是独立于扫描的第二条流水线，
+           进度用单独一行表示，不再写进终端日志——日志是事件流，状态每 30 秒
+           刷一行会把真正的扫描输出顶掉，用户在滚动里也不容易读到。
+           数据来自 /api/services/ai-stats（弹窗打开时 3 秒一刷）。 -->
+      <div v-if="aiStats" class="queue-bar ai-bar">
+        <n-tag size="small" :bordered="false" type="warning">识别日志</n-tag>
+        <template v-if="aiStats.backlog > 0 || aiStats.pendingRender > 0 || aiStats.rendering > 0 || aiStats.inLLM > 0">
+          <span class="q-item">待识别 <b>{{ fmtNum(aiStats.backlog) }}</b></span>
+          <span class="q-item">待渲染 <b>{{ fmtNum(aiStats.pendingRender) }}</b></span>
+          <span class="q-item q-run">渲染中 <b>{{ aiStats.rendering }}</b></span>
+          <span class="q-item q-done">模型在途 <b>{{ aiStats.inLLM }}</b></span>
+        </template>
+        <span v-else class="q-item q-done"><b>队列空闲</b>（无待识别条目）</span>
+        <span class="q-item">并发 <b>{{ aiStats.workers }}</b></span>
+        <span v-if="aiStats.llmFail > 0" class="q-item q-fail">模型失败 <b>{{ aiStats.llmFail }}</b></span>
+        <span class="q-item q-probe">预计时间 <b>{{ aiEtaLongText }}</b></span>
+      </div>
       <div class="terminal" ref="terminalEl">
         <div v-for="(line, i) in logLines" :key="i" class="log-line">{{ line }}</div>
         <div v-if="progressLine" class="log-line progress-line">{{ progressLine }}</div>
@@ -1173,6 +1190,22 @@ const aiEtaText = computed(() => {
   if (sec < 3600) return Math.round(sec / 60) + ' 分钟'
   return (sec / 3600).toFixed(1) + ' 小时'
 })
+// aiEtaLongText 识别剩余时间，按「x时xx分xx秒」给出。
+// 与扫描的 etaText 分开：那个带置信度（低置信显示"估算中"），这里只服务识别队列。
+const aiEtaLongText = computed(() => {
+  const st = aiStats.value
+  if (!st) return '估算中'
+  const sec = st.etaSeconds
+  if (sec === undefined || sec === null || sec < 0) {
+    return st.backlog > 0 ? '估算中' : '剩余 0'
+  }
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s2 = sec % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}时${pad(m)}分${pad(s2)}秒` : `${m}分${pad(s2)}秒`
+})
+
 const aiStatsTitle = computed(() => {
   const st = aiStats.value
   if (!st) return ''
@@ -1183,6 +1216,18 @@ const aiStatsTitle = computed(() => {
 async function loadAIStats() {
   try { aiStats.value = await api.get('/services/ai-stats') } catch { /* 不影响任务列表 */ }
 }
+
+// 弹窗打开时把识别状态刷新提到 3 秒：终端里那一行要"看着在动"，
+// 15 秒的列表级刷新放在弹窗里会让人觉得卡住了。关闭后降回 15 秒，避免无谓请求。
+watch(showLog, (v) => {
+  if (aiStatsTimer) { clearInterval(aiStatsTimer); aiStatsTimer = null }
+  if (v) {
+    loadAIStats()
+    aiStatsTimer = setInterval(loadAIStats, 3000)
+  } else {
+    aiStatsTimer = setInterval(loadAIStats, 15000)
+  }
+})
 
 onMounted(() => {
   load()
@@ -1235,6 +1280,8 @@ onBeforeUnmount(() => { clearInterval(pollTimer); clearInterval(aiStatsTimer); s
 .queue-bar .q-fail b { color: #ef4444; }
 .queue-bar .q-probe { margin-left: auto; }
 .queue-bar .q-error { color: #f87171; font-size: 12px; }
+/* 识别条与扫描条并列但语义不同：扫描条用蓝/绿，识别条用琥珀色左边框区分 */
+.ai-bar { border-left: 3px solid #f59e0b; }
 .ctrl-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 10px; margin-bottom: 10px; border-radius: 8px;

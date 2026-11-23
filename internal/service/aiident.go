@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,7 +18,6 @@ import (
 	"asset-platform/internal/llm"
 	"asset-platform/internal/model"
 	"asset-platform/internal/scanner"
-	"asset-platform/internal/tasklog"
 )
 
 // ===== AI 服务识别工作流 =====
@@ -50,6 +50,24 @@ const (
 
 // aiInflight 当前在处理的批次数，上限由 aiParallel() 每次实时读取（设置页可改）。
 var aiInflight atomic.Int64
+
+// aiThinkUnsupported 网关不认 chat_template_kwargs 时置位，之后不再携带。
+//
+// 关闭思考链的依据（实测 2026-11-23，deepseek-v4.1-flash @ provider-b，同一份渲染证据）：
+//   开思考             21784ms  out=386  结论：海康威视综合安防管理平台
+//   reasoning_effort=low 10885ms out=192 结论：Hikvision Web Client
+//   enable_thinking=false 5402ms out=118 结论：Hikvision（海康威视）设备/平台登录页
+// 结论一致，延迟降到 1/4。识别是"读证据→填字段"，思考链不产生额外信息，
+// 只产生 token 和时间。所以识别链路默认关思考；网关不支持时自动退回默认行为。
+var aiThinkUnsupported atomic.Bool
+
+// identChatExtra 关闭思考链的模板参数；网关不支持过一次后返回 nil。
+func identChatExtra() map[string]interface{} {
+	if aiThinkUnsupported.Load() {
+		return nil
+	}
+	return map[string]interface{}{"enable_thinking": false}
+}
 
 // aiBatchSize 一次模型调用处理的目标数，可用 AI_BATCH_SIZE 覆盖（1~16）。
 func aiBatchSize() int {
@@ -188,63 +206,19 @@ var aiRetryAfter sync.Map
 // 内存队列只是加速通道。重启后 inFlight 清空，同一批会在下一轮补给里重新入队，
 // 语义安全（识别是幂等的：重复跑最多多花几秒，不会写错数据）。
 func aiQueueFeeder() {
+	// 只负责补给。识别进度不再写进日志终端——它是状态，不是事件：
+	// 写日志会每 30 秒刷一行、把真正的扫描输出顶掉，而且用户不容易在滚动
+	// 的终端里读到。现在由前端在任务日志弹窗里单独画一条横条，
+	// 数据来自 /api/services/ai-stats（backlog / pendingRender / rendering / inLLM / etaSeconds）。
 	tk := time.NewTicker(5 * time.Second)
 	defer tk.Stop()
-	lastLine := time.Time{}
 	for range tk.C {
 		if aiQueue != nil && len(aiQueue) <= aiIdentifyQueueSize/2 {
 			fillQueueFromDB(200)
 		}
-		// 每 30 秒给运行中的扫描任务写一行识别进度：待识别 / 模型在途 / 渲染中 / 预计。
-		// 走 AppendTS 而不是进度条：进度条已经被扫描百分比占着，覆盖会丢扫描进度。
-		if time.Since(lastLine) >= 30*time.Second {
-			lastLine = time.Now()
-			logAIProgressLine()
-		}
 	}
 }
 
-// logAIProgressLine 往所有 running 任务写一行识别进度。
-//
-// 这一行的用途是回答"识别卡在哪"：待识别多 → 模型排队；渲染中多 → 浏览器慢；
-// 两者都少但没收敛 → 网关长尾。ETA 用「待识别条数 × 单条均值 / 并发」估算，
-// 均值来自本进程已完成的条目（跨进程/重启后从 0 开始，前几条会偏差）。
-func logAIProgressLine() {
-	st := AIQueueStats()
-	backlog, _ := st["backlog"].(int64)
-	rendering, _ := st["rendering"].(int64)
-	inLLM, _ := st["inLLM"].(int64)
-	if backlog == 0 && rendering == 0 && inLLM == 0 {
-		return
-	}
-	parallel := aiParallel()
-	avgMs := int64(0)
-	if v, ok := st["avgTotalMs"].(int64); ok {
-		avgMs = v
-	}
-	eta := "估算中"
-	if avgMs > 0 && backlog > 0 {
-		sec := backlog * avgMs / 1000 / int64(parallel)
-		if sec < 60 {
-			eta = fmt.Sprintf("%ds", sec)
-		} else if sec < 3600 {
-			eta = fmt.Sprintf("%dm%02ds", sec/60, sec%60)
-		} else {
-			eta = fmt.Sprintf("%dh%02dm", sec/3600, (sec%3600)/60)
-		}
-	} else if backlog == 0 {
-		eta = "剩余 0"
-	}
-	line := fmt.Sprintf("服务识别：待识别 %d 条 · 模型在途 %d · 渲染中 %d · 并发 %d · 预计 %s",
-		backlog, inLLM, rendering, parallel, eta)
-	var tasks []model.ScanTask
-	if config.DB != nil {
-		config.DB.Model(&model.ScanTask{}).Where("status = ?", "running").Find(&tasks)
-	}
-	for _, t := range tasks {
-		tasklog.AppendTS(t.ID, "%s", line)
-	}
-}
 
 // fillQueueFromDB 把库里 ai_need 的 HTTP(S) 服务补进内存队列，返回入队条数。
 func fillQueueFromDB(limit int) int {
@@ -876,6 +850,8 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	needRender := !iv.dotConfident() && (iv.NeedRender || iv.conf() < 40)
 	renderWhy := ""
 	switch {
+	case iv.Failed:
+		needRender, renderWhy = false, "识别调用未完成（网关未返回），跳过渲染，保留重试"
 	case !needRender:
 		renderWhy = "识别 agent 未要求渲染"
 		if iv.dotConfident() {
@@ -928,8 +904,13 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 			Stage: "AI·识别·渲染证据", Input: truncateStr(rendered, 120),
 			Output: orNone(iv2.Raw), OK: iv2.dotConfident(),
 		})
-		if iv2.hasName() {
+		switch {
+		case iv2.hasName():
 			iv = iv2
+		case iv2.Failed && !iv.dotConfident():
+			// 同批量路径：渲染证据没答出来 + 上一轮是猜，则整条判失败重试，
+			// 不把猜测写进库。
+			iv.Failed = true
 		}
 	}
 
@@ -1083,7 +1064,9 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 	rendered := map[int]string{}
 	pageTitle := map[int]string{}
 	if len(ridx) > 0 && scanner.ChromeAvailable() {
+		aiMetricsRef.pendingRender.Add(int64(len(ridx)))
 		runParallel(len(ridx), 2, func(k int) {
+			aiMetricsRef.pendingRender.Add(-1)
 			aiMetricsRef.rendering.Add(1)
 			defer aiMetricsRef.rendering.Add(-1)
 			i := ridx[k]
@@ -1137,8 +1120,18 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 				Stage: "AI·识别·渲染证据", Input: fmt.Sprintf("第 %d/%d 条", k+1, len(rpend)),
 				Output: orNone(got[k].Raw), OK: got[k].dotConfident(),
 			})
-			if got[k].hasName() {
+			switch {
+			case got[k].hasName():
 				verdict[i] = got[k]
+			case got[k].Failed && !verdict[i].dotConfident():
+				// 渲染证据没答出来，而上一轮只是低置信猜测（模型自己都要求渲染）：
+				// 不能让猜测落库。整条标失败，保留 ai_need 重试。
+				// 198.19.160.4:80 就是这条：首轮把 Server: Webs 猜成"华为"（conf 45），
+				// 渲染页里写着 ©2018 Hikvision，但二次识别被 max_tokens 截断返回空，
+				// 结果"华为"被写进库，而真名就摆在渲染结果里。
+				v2 := verdict[i]
+				v2.Failed = true
+				verdict[i] = v2
 			}
 		}
 	}
@@ -1326,18 +1319,35 @@ func askJudge(ctx context.Context, evidence string) judgeVerdict {
 
 // askIdentify 识别 agent：给出业务系统名。
 func askIdentify(ctx context.Context, source, evidence string, rendered bool) aiVerdict {
+	return askIdentifyWith(ctx, source, evidence, rendered, identChatExtra())
+}
+
+func askIdentifyWith(ctx context.Context, source, evidence string, rendered bool, kwargs map[string]interface{}) aiVerdict {
 	hint := "以下是从该端口抓到的真实请求/响应包（含重定向）"
 	if rendered {
 		hint = "以下是浏览器真正渲染后的页面信息"
 	}
 	res, err := chatWithCtx(ctx, llm.ChatRequest{
+		ChatTemplateKwargs: kwargs,
 		Messages: []llm.Message{
 			{Role: "system", Content: PromptFor(RoleIdentify)},
 			{Role: "user", Content: fmt.Sprintf("%s。\n来源：%s\n\n%s", hint, source, evidence)},
 		},
 		Temperature: 0,
-		MaxTokens:   600,
+		// 2000 而不是 600：这个网关上跑的是思考模型（deepseek-v4.1-flash），
+		// 思考 token 计入 completion。600 的预算下实测 finish=length、out=600、
+		// content 为空——不是"看过但没认出来"，是"话没说完就被截断"。
+		// 这类空回复此前被当成"模型没有结论"，直接让上一步的低置信猜测落库
+		// （198.19.160.4:80 就是被这条吃掉的：渲染结果里明明写着 Hikvision）。
+		MaxTokens: 2000,
 	})
+	if err != nil && kwargs != nil && ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
+		// 网关不认 chat_template_kwargs（400/422）：永久关掉这个参数再试一次。
+		// 加速项绝不能变成单点故障——换个网关就整条链路瘫掉是不可接受的。
+		aiThinkUnsupported.Store(true)
+		log.Printf("[ai-ident] 网关不接受 enable_thinking 参数，回退默认：%v", err)
+		return askIdentifyWith(ctx, source, evidence, rendered, nil)
+	}
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil && ctx.Err() == nil {
 			aiMetricLLMFail()
@@ -1347,8 +1357,12 @@ func askIdentify(ctx context.Context, source, evidence string, rendered bool) ai
 	}
 	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
 	if answer == "" {
-		log.Printf("[ai-ident] 识别返回空内容（finish=%s tokens=%s）",
-			res.Resp.Choices[0].Reason, usageBrief(res.Resp))
+		reason := res.Resp.Choices[0].Reason
+		log.Printf("[ai-ident] 识别返回空内容（finish=%s tokens=%s）", reason, usageBrief(res.Resp))
+		// 空内容一律算失败（保留待办重试），不当成"看过但没结论"。
+		// 两种成因：finish=length（思考吃光预算）与 finish=stop（模型确实没输出），
+		// 前者提高预算后可重试成功，后者重试也无害（有退避，不会打爆网关）。
+		return aiVerdict{Raw: "模型返回空内容（finish=" + orNone(reason) + "）", Failed: true}
 	}
 	var v aiVerdict
 	if err := json.Unmarshal([]byte(extractJSON(answer)), &v); err != nil {
@@ -1391,13 +1405,22 @@ func askIdentifyBatch(ctx context.Context, items []identEvidence) []aiVerdict {
 		`[{"title":"","product":"","category":"","confidence":0,"need_render":false,"reason":""}]`, len(items), len(items))
 
 	res, err := chatWithCtxTimeout(ctx, llm.ChatRequest{
+		ChatTemplateKwargs: identChatExtra(),
 		Messages: []llm.Message{
 			{Role: "system", Content: PromptFor(RoleIdentify) + "\n\n本次输入是多条目标，输出必须是 JSON 数组，长度与输入条数一致。"},
 			{Role: "user", Content: sb.String()},
 		},
 		Temperature: 0,
-		MaxTokens:   220 * len(items),
+		// 每条 600 + 固定 1200：批量输出是 JSON 数组，思考链比单条更长，
+		// 220*n 的旧预算在思考模型上稳定被截断（实测 finish=length、响应半截数组）。
+		MaxTokens: 600*len(items) + 1200,
 	}, batchLLMTimeout(len(items)))
+	if err != nil && ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) && identChatExtra() != nil {
+		// 同单条路径：参数被网关拒绝时永久关掉它，退回逐条（逐条请求不带该参数）。
+		aiThinkUnsupported.Store(true)
+		log.Printf("[ai-ident] 网关不接受 enable_thinking 参数，批量回退逐条：%v", err)
+		return askIdentifyEach(ctx, items)
+	}
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil {
 			aiMetricLLMFail()
@@ -1415,6 +1438,16 @@ func askIdentifyBatch(ctx context.Context, items []identEvidence) []aiVerdict {
 		return askIdentifyEach(ctx, items)
 	}
 	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
+	if answer == "" {
+		// 截断/空回复整批标失败，不回退逐条：同一份预算下逐条只会得到同样的空，
+		// 白白多付 N 次往返。失败会保留 ai_need，等退避后重试。
+		log.Printf("[ai-ident] 批量识别（%d 条）返回空内容（finish=%s tokens=%s）",
+			len(items), res.Resp.Choices[0].Reason, usageBrief(res.Resp))
+		for i := range out {
+			out[i] = aiVerdict{Raw: "模型返回空内容", Failed: true}
+		}
+		return out
+	}
 	var arr []aiVerdict
 	if e := json.Unmarshal([]byte(extractJSONArray(answer)), &arr); e == nil && len(arr) == len(items) {
 		for i := range arr {
@@ -1443,9 +1476,11 @@ func batchLLMTimeout(n int) time.Duration {
 	// 实测（deepseek-v4.1-flash，同构证据）：1 条 9.2s、2 条 9.7s、4 条 13.7s、8 条 18.9s。
 	// 批量的单条等效成本随条数下降（9.2s → 2.4s），但总时长仍在涨，所以超时必须
 	// 按条数放宽，否则正常批量会被判成超时、整批回退逐条，比不批量还慢。
-	d := 20*time.Second + time.Duration(n)*6*time.Second
-	if d > 120*time.Second {
-		d = 120 * time.Second
+	// 与 max_tokens 同步放宽：预算涨到 600*n+1200 之后，思考链也变长。
+	// 实测 2 条 32 秒不够用，按 40s + 15s/条给，上限 150s。
+	d := 40*time.Second + time.Duration(n)*15*time.Second
+	if d > 150*time.Second {
+		d = 150 * time.Second
 	}
 	return d
 }
@@ -1465,7 +1500,9 @@ func usageBrief(r *llm.ChatResponse) string {
 // ctx.Done()。ctx 取消后主协程立刻返回，goroutine 由 HTTP 超时自然结束，
 // channel 带缓冲所以不会永久泄漏。
 func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, error) {
-	return chatWithCtxTimeout(ctx, req, 30*time.Second)
+	// 60 秒：思考模型在 2000 token 预算下单条实测 25~45 秒（长时间思考常见），
+	// 30 秒会把正常调用判成超时——实测 198.19.160.4:80 连续两次 context deadline。
+	return chatWithCtxTimeout(ctx, req, 60*time.Second)
 }
 
 // chatWithCtxTimeout 同 chatWithCtx，但子超时可指定（批量调用输出更长，需要更宽的预算）。

@@ -35,6 +35,10 @@ type aiMetrics struct {
 	// 队列可见性需要它：用户要知道"卡在模型还是卡在浏览器"，这两个数就是答案。
 	rendering atomic.Int64
 	inLLM     atomic.Int64
+	// pendingRender 已判定"需要浏览器渲染"、但还没轮到执行的目标数。
+	// 队列可见性里这是最有信息量的一格：它涨起来说明渲染是瓶颈，
+	// 它不涨而 backlog 不降说明卡在模型（inLLM 高）或网关（llmFail 涨）。
+	pendingRender atomic.Int64
 
 	traceMs  atomic.Int64
 	judgeMs  atomic.Int64
@@ -177,5 +181,6 @@ func AIQueueStats() map[string]interface{} {
 		"etaSeconds":       etaSec,
 		"rendering":        m.rendering.Load(),
 		"inLLM":            m.inLLM.Load(),
+		"pendingRender":    m.pendingRender.Load(),
 	}
 }

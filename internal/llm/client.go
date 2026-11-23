@@ -44,6 +44,10 @@ type ChatRequest struct {
 	// 实测不约束时模型会先写一段分析再给 JSON，输出 300~600 token、
 	// 单条识别拖到 10~15 秒（本地/网关模型约 40 token/s）；约束后稳定在几十 token。
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	// ChatTemplateKwargs 透传给推理后端的聊天模板参数（vLLM 约定）。
+	// 目前只用 enable_thinking=false：结构化抽取任务不需要思考链，
+	// 而思考链在思考模型上会带来 3~4 倍延迟。
+	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
 }
 
 // ResponseFormat 响应格式约束
