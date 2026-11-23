@@ -31,6 +31,10 @@ type aiMetrics struct {
 	renderWon  atomic.Int64 // 渲染后拿到了名字（说明渲染这一步有价值）
 	llmFail    atomic.Int64
 	nonHTTP    atomic.Int64
+	// rendering 当前正在浏览器渲染的目标数；inLLM 正在等模型返回的目标数。
+	// 队列可见性需要它：用户要知道"卡在模型还是卡在浏览器"，这两个数就是答案。
+	rendering atomic.Int64
+	inLLM     atomic.Int64
 
 	traceMs  atomic.Int64
 	judgeMs  atomic.Int64
@@ -121,7 +125,7 @@ func AIQueueStats() map[string]interface{} {
 	config.DB.Model(&model.Service{}).
 		Where("ai_checked_at > ?", time.Now().Add(-time.Hour)).Count(&recent)
 
-	workers := aiIdentifyWorkers()
+	workers := aiParallel()
 	// 吞吐：优先用最近 5 分钟的滑动窗口（反映"现在多快"），窗口内样本不足再退回
 	// "最近一小时写回数 / 60"。前者是给用户看 ETA 的，后者是冷启动兜底。
 	perMin := float64(recent) / 60.0
@@ -171,5 +175,7 @@ func AIQueueStats() map[string]interface{} {
 		"slowestMs":        m.slowest.Load(),
 		"perMinute":        float64(int(perMin*100)) / 100,
 		"etaSeconds":       etaSec,
+		"rendering":        m.rendering.Load(),
+		"inLLM":            m.inLLM.Load(),
 	}
 }

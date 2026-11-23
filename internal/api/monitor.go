@@ -268,3 +268,26 @@ func UpdateAIPrompt(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "已保存", "items": service.AllPrompts()})
 }
+
+// GetAIParallel 识别并发数（GET /api/ai/parallel）
+func GetAIParallel(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"parallel": service.AIParallel()})
+}
+
+// UpdateAIParallel 设置识别并发数（PUT /api/ai/parallel）
+// body: {"parallel":3}，范围 1~16。改完对下一条生效，不需要重启。
+func UpdateAIParallel(c *gin.Context) {
+	var req struct {
+		Parallel int `json:"parallel"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+	n, err := service.SetAIParallel(req.Parallel)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已保存", "parallel": n})
+}

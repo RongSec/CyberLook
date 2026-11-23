@@ -50,6 +50,13 @@
           </div>
         </n-tab-pane>
       </n-tabs>
+
+      <div class="parallel-row">
+        <span class="prompt-desc">识别并发</span>
+        <n-input-number v-model:value="parallel" :min="1" :max="16" size="small" style="width: 110px" />
+        <span class="parallel-hint">同时进行的识别任务数，默认 3。网关能扛多少就调多少，改完下一条生效。</span>
+        <n-button size="small" type="primary" :loading="parallelSaving" @click="saveParallel">保存</n-button>
+      </div>
     </n-card>
 
     <n-card :bordered="false">
@@ -224,7 +231,7 @@ const message = useMessage()
 //   judge    ── 研判：这页是正常/错误/壳/跳转/粒度不足，要不要渲染
 //   identify ── 识别：给出业务系统名
 const roleList = [
-  { key: 'judge', tab: '判断', desc: '研判页面类型，决定是否用浏览器深度渲染', placeholder: '留空使用默认研判提示词' },
+  { key: 'judge', tab: '判断（备用）', desc: 'v0.0.56 起判断并入识别 agent，这份提示词暂不下发，保留用于回滚', placeholder: '留空使用默认研判提示词' },
   { key: 'identify', tab: '识别', desc: '从证据中提取业务系统名称与产品线', placeholder: '留空使用默认识别提示词' },
 ]
 const currentRole = ref('judge')
@@ -270,6 +277,21 @@ async function resetPrompt(role) {
   promptText.value[role] = ''
   await savePrompt(role)
 }
+const parallel = ref(3)
+const parallelSaving = ref(false)
+async function loadParallel() {
+  try { const r = await api.get('/ai/parallel'); parallel.value = r.parallel || 3 } catch { /* 读不到就用默认 */ }
+}
+async function saveParallel() {
+  parallelSaving.value = true
+  try {
+    await api.put('/ai/parallel', { parallel: parallel.value })
+    message.success('并发数已保存，下一条识别生效')
+  } catch (e) {
+    message.error(e.response?.data?.error || '保存失败')
+  } finally { parallelSaving.value = false }
+}
+
 const aiSet = ref({ serviceIdentify: true, scanMonitor: true })
 
 async function loadAISet() {
@@ -469,6 +491,7 @@ function remove(r) {
 onMounted(() => {
   load()
   loadAISet()
+  loadParallel()
   loadPrompts()
 })
 </script>
@@ -485,4 +508,18 @@ onMounted(() => {
   line-height: 1.6;
 }
 .prompt-foot { color: #999; font-size: 12px; margin-top: 8px; }
+
+.parallel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--n-border-color, #efeff5);
+}
+.parallel-hint {
+  font-size: 12px;
+  opacity: .65;
+  flex: 1;
+}
 </style>

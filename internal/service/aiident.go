@@ -10,12 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/llm"
 	"asset-platform/internal/model"
 	"asset-platform/internal/scanner"
+	"asset-platform/internal/tasklog"
 )
 
 // ===== AI 服务识别工作流 =====
@@ -34,29 +36,29 @@ const (
 	aiIdentifyQueueSize = 2000
 )
 
-// aiIdentifyWorkers 并发识别数。每条可能拉起 chromium 渲染一个页面，
-// 单个渲染进程就能吃掉一个核，所以不能写死一个"看起来不大"的数字。
-//
-// v0.0.50：原来固定 3，4 核机器上 3 路渲染 + 扫描节点同时跑 = 整机吃满、web 打不开。
-// 现在默认 cpuN/2（下限 1、上限 3）：4 核 → 2，2 核 → 1，8 核及以上 → 3。
-// 可用 AI_IDENT_CONCURRENCY 显式覆盖（1~16）。
-func aiIdentifyWorkers() int {
-	if v := strings.TrimSpace(os.Getenv("AI_IDENT_CONCURRENCY")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 16 {
+const (
+	// aiBatchSize 一次模型调用最多处理多少条目标。
+	//
+	// 实测（deepseek-v4.1-flash，真实证据每条约 3KB）：
+	//   1 条 9.2s · 2 条 9.7s · 4 条 13.7s · 8 条 18.9s（极简证据探测）
+	//   真实证据下 4 条约 20s，单条等效成本与逐条持平——网关是按输入 token
+	//   线性计时的，"省冷启动"省下来的那几秒被输入膨胀吃掉了。
+	// 所以默认 2：既能省掉一半冷启动，又不会把网关压到排队。
+	// 可用 AI_BATCH_SIZE 调（1 = 完全逐条）。
+	aiBatchSizeDefault = 2
+)
+
+// aiInflight 当前在处理的批次数，上限由 aiParallel() 每次实时读取（设置页可改）。
+var aiInflight atomic.Int64
+
+// aiBatchSize 一次模型调用处理的目标数，可用 AI_BATCH_SIZE 覆盖（1~16）。
+func aiBatchSize() int {
+	if v := strings.TrimSpace(os.Getenv("AI_BATCH_SIZE")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 16 {
 			return n
 		}
 	}
-	// 每 2 核 1 路（上限 3）：4 核 → 2 路。渲染闸门上线后单条只需 1~3 秒，
-	// 2 路的 CPU 由 identCPUGate 兜住，比"为了省 CPU 只跑 1 路"更合理——
-	// 积压是真问题，空转也是真浪费。
-	n := runtime.NumCPU() / 2
-	if n < 1 {
-		n = 1
-	}
-	if n > 3 {
-		n = 3
-	}
-	return n
+	return aiBatchSizeDefault
 }
 
 // 写回门槛：fillBar 填空（不会覆盖任何东西），overwriteBar 覆盖已有有效标题。
@@ -76,7 +78,7 @@ const confidentEnough = 80
 
 // aiIdentifyTimeout 单条识别的硬上限。正常一条 5-15 秒，走渲染最多 30 秒；
 // 超过这个值基本可以认定 CDP 卡死，销毁浏览器实例收敛。
-const aiIdentifyTimeout = 90 * time.Second
+const aiIdentifyTimeout = 150 * time.Second
 
 // aiIdentifyMaxPerTask 每个任务最多识别多少条服务。
 // 历史值 100 导致上万 web 端口只有前 100 条走识别，其余静默丢弃。
@@ -171,19 +173,76 @@ func EnqueueAIIdentify(taskID uint, ip string, port int) {
 // aiInFlight 已入队待处理的 ip:port，防止补给协程重复入队。
 var aiInFlight sync.Map
 
+// aiRetryDelay 网关失败后的重试间隔。
+//
+// 不设退避会死循环：失败 → ai_need 保持 true → 15 秒后 feeder 又补进来 →
+// 仍失败。5 分钟足够让网关的排队自愈，也避免把不健康的后端持续打满。
+const aiRetryDelay = 5 * time.Minute
+
+// aiRetryAfter 失败条目的下次可重试时间（进程内，重启即清空）。
+var aiRetryAfter sync.Map
+
 // aiQueueFeeder 每 15 秒从库里补一批待识别（仅 HTTP(S)），队列过半就歇着。
 //
 // 队列持久化的取舍：不引入 Redis/表锁，直接以 services.ai_need 作为"待办标记"，
 // 内存队列只是加速通道。重启后 inFlight 清空，同一批会在下一轮补给里重新入队，
 // 语义安全（识别是幂等的：重复跑最多多花几秒，不会写错数据）。
 func aiQueueFeeder() {
-	tk := time.NewTicker(15 * time.Second)
+	tk := time.NewTicker(5 * time.Second)
 	defer tk.Stop()
+	lastLine := time.Time{}
 	for range tk.C {
-		if aiQueue == nil || len(aiQueue) > aiIdentifyQueueSize/2 {
-			continue
+		if aiQueue != nil && len(aiQueue) <= aiIdentifyQueueSize/2 {
+			fillQueueFromDB(200)
 		}
-		fillQueueFromDB(200)
+		// 每 30 秒给运行中的扫描任务写一行识别进度：待识别 / 模型在途 / 渲染中 / 预计。
+		// 走 AppendTS 而不是进度条：进度条已经被扫描百分比占着，覆盖会丢扫描进度。
+		if time.Since(lastLine) >= 30*time.Second {
+			lastLine = time.Now()
+			logAIProgressLine()
+		}
+	}
+}
+
+// logAIProgressLine 往所有 running 任务写一行识别进度。
+//
+// 这一行的用途是回答"识别卡在哪"：待识别多 → 模型排队；渲染中多 → 浏览器慢；
+// 两者都少但没收敛 → 网关长尾。ETA 用「待识别条数 × 单条均值 / 并发」估算，
+// 均值来自本进程已完成的条目（跨进程/重启后从 0 开始，前几条会偏差）。
+func logAIProgressLine() {
+	st := AIQueueStats()
+	backlog, _ := st["backlog"].(int64)
+	rendering, _ := st["rendering"].(int64)
+	inLLM, _ := st["inLLM"].(int64)
+	if backlog == 0 && rendering == 0 && inLLM == 0 {
+		return
+	}
+	parallel := aiParallel()
+	avgMs := int64(0)
+	if v, ok := st["avgTotalMs"].(int64); ok {
+		avgMs = v
+	}
+	eta := "估算中"
+	if avgMs > 0 && backlog > 0 {
+		sec := backlog * avgMs / 1000 / int64(parallel)
+		if sec < 60 {
+			eta = fmt.Sprintf("%ds", sec)
+		} else if sec < 3600 {
+			eta = fmt.Sprintf("%dm%02ds", sec/60, sec%60)
+		} else {
+			eta = fmt.Sprintf("%dh%02dm", sec/3600, (sec%3600)/60)
+		}
+	} else if backlog == 0 {
+		eta = "剩余 0"
+	}
+	line := fmt.Sprintf("服务识别：待识别 %d 条 · 模型在途 %d · 渲染中 %d · 并发 %d · 预计 %s",
+		backlog, inLLM, rendering, parallel, eta)
+	var tasks []model.ScanTask
+	if config.DB != nil {
+		config.DB.Model(&model.ScanTask{}).Where("status = ?", "running").Find(&tasks)
+	}
+	for _, t := range tasks {
+		tasklog.AppendTS(t.ID, "%s", line)
 	}
 }
 
@@ -196,6 +255,12 @@ func fillQueueFromDB(limit int) int {
 	queued := 0
 	for _, s := range svcs {
 		key := s.IP + ":" + strconv.Itoa(s.Port)
+		if v, ok := aiRetryAfter.Load(key); ok {
+			if until, ok := v.(time.Time); ok && time.Now().Before(until) {
+				continue // 网关刚失败过，等退避到点再试
+			}
+			aiRetryAfter.Delete(key)
+		}
 		if _, loaded := aiInFlight.LoadOrStore(key, time.Now()); loaded {
 			continue
 		}
@@ -226,19 +291,156 @@ func startAIWorkers() {
 	// HTTP(S) 条目补齐。这样进程重启不会丢掉"还没识别"的那批（内存队列本来是空的），
 	// 用户点一次重识别也只是"把库里标出来"，不需要一次塞进内存。
 	go aiQueueFeeder()
-	n := aiIdentifyWorkers()
-	log.Printf("[ai-ident] 识别工作池启动：%d 路（本机 %d 核，AI_IDENT_CONCURRENCY 可调）", n, runtime.NumCPU())
-	for i := 0; i < n; i++ {
-		go func() {
-			for job := range aiQueue {
-				// CPU 闸门：整机超预算就先等一下——渲染比网页更耐等，
-				// 而页面卡住是用户立刻能感知的（v0.0.50 实测容器峰值 445%）。
-				if d := identCPUGate(); d > 0 {
-					log.Printf("[ai-ident] 整机 CPU 超预算，识别前等待 %s", d)
-				}
-				runAIIdentifySafe(job)
+	// 派发协程固定 4 个：实际并发由 aiParallel() 动态控制（设置页可改），
+	// 不把 worker 数量写死在启动参数里——改完设置不该要求重启进程。
+	n := aiParallel()
+	log.Printf("[ai-ident] 识别工作池启动：并发 %d（可在 LLM 配置页调整），批量 %d 条/请求，本机 %d 核",
+		n, aiBatchSize(), runtime.NumCPU())
+	for i := 0; i < 4; i++ {
+		go aiDispatchLoop()
+	}
+}
+
+// aiDispatchLoop 取一条任务，再凑够一批，交给批量识别。
+//
+// v0.0.56：识别从"一条一次模型调用"改成"一批一次"。每次调用都是一次冷启动
+// （新会话、无缓存、首 token 1~3 秒），45 条串起来光首 token 就一百多秒；
+// 8 条放进同一个请求，首 token 只付一次。
+func aiDispatchLoop() {
+	for {
+		job, ok := <-aiQueue
+		if !ok {
+			return
+		}
+		for !aiTryAcquire() {
+			// 并发已满：等一下再抢。50ms 粒度足够，也不会空转烧 CPU。
+			if d := identCPUGate(); d > 0 {
+				_ = d
 			}
-		}()
+			time.Sleep(50 * time.Millisecond)
+		}
+		batch := []aiIdentifyJob{job}
+	collect:
+		for len(batch) < aiBatchSize() {
+			select {
+			case j, ok := <-aiQueue:
+				if !ok {
+					break collect
+				}
+				batch = append(batch, j)
+			default:
+				break collect
+			}
+		}
+		go func(b []aiIdentifyJob) {
+			defer aiRelease()
+			runAIIdentifyBatchSafe(b)
+		}(batch)
+	}
+}
+
+// aiTryAcquire 抢一个并发名额；并发上限每次实时读设置，改设置立即生效。
+func aiTryAcquire() bool {
+	limit := int64(aiParallel())
+	for {
+		cur := aiInflight.Load()
+		if cur >= limit {
+			return false
+		}
+		if aiInflight.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func aiRelease() { aiInflight.Add(-1) }
+
+// aiParallel 识别并发数：DB 设置 > 环境变量 > 3。
+func aiParallel() int {
+	if config.DB != nil {
+		var s model.AISettings
+		if err := config.DB.Select("parallel").First(&s, 1).Error; err == nil && s.Parallel > 0 {
+			return clampParallel(s.Parallel)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AI_IDENT_CONCURRENCY")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return clampParallel(n)
+		}
+	}
+	return 3
+}
+
+// AIParallel 对外暴露当前识别并发（设置页读）
+func AIParallel() int { return aiParallel() }
+
+// SetAIParallel 保存识别并发（1~16），下一条任务立即按新值限流。
+func SetAIParallel(n int) (int, error) {
+	if n < 1 || n > 16 {
+		return 0, fmt.Errorf("并发数必须在 1~16 之间")
+	}
+	var s model.AISettings
+	if err := config.DB.First(&s, 1).Error; err != nil {
+		return 0, err
+	}
+	if err := config.DB.Model(&model.AISettings{}).Where("id = ?", 1).Update("parallel", n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func clampParallel(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}
+
+// runAIIdentifyBatchSafe 一批识别的兜底：panic 不杀进程，超时强制收敛。
+//
+// 看门狗按"批"算而不是按"条"：批内多条目标共用一次模型调用，按条计时会把
+// 正常的长批误杀。超时后销毁浏览器并 cancel，整批按失败落库（下次补给会重试）。
+func runAIIdentifyBatchSafe(jobs []aiIdentifyJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ai-ident] 批量识别 panic（%d 条）: %v", len(jobs), r)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), aiIdentifyTimeout)
+	defer cancel()
+	timer := time.AfterFunc(aiIdentifyTimeout, func() {
+		log.Printf("[ai-ident] 批量识别（%d 条）超过 %s 未完成，取消并销毁浏览器实例",
+			len(jobs), aiIdentifyTimeout)
+		scanner.ResetBrowser()
+	})
+	defer timer.Stop()
+
+	svcs := make([]model.Service, 0, len(jobs))
+	for _, j := range jobs {
+		var svc model.Service
+		if err := config.DB.Where("ip = ? AND port = ?", j.IP, j.Port).First(&svc).Error; err != nil {
+			aiInFlight.Delete(j.IP + ":" + strconv.Itoa(j.Port))
+			continue
+		}
+		svcs = append(svcs, svc)
+	}
+	if len(svcs) == 0 {
+		return
+	}
+	t0 := time.Now()
+	results := IdentifyBatchCtx(ctx, svcs)
+	// 统计分摊：整批耗时按条数均摊。不记账的话 ai-stats 的 doneTotal/avgTotalMs
+	// 永远是 0，界面上的 ETA 会一直显示"估算中"。
+	per := time.Since(t0) / time.Duration(len(svcs))
+	for i, svc := range svcs {
+		r := results[i]
+		aiMetricNote(r, per)
+		changed := ApplyIdentResult(svc, r)
+		recordIdentConversation(svc.LastTaskID, svc, r, changed)
+		aiInFlight.Delete(svc.IP + ":" + strconv.Itoa(svc.Port))
 	}
 }
 
@@ -283,6 +485,8 @@ type IdentResult struct {
 	// Source 标题从哪来：html（原始 <title> 直接采纳）/ render（渲染后 document.title）
 	// / ai（模型判定）。写回时落到 services.title_source，便于事后区分置信层级。
 	Source string
+	// Failed 链路没跑完（网关超时/取消），结论不可信：不落"待分析"，保留待办重试。
+	Failed bool
 	Stages []IdentStage
 	Hops   []scanner.Hop
 	// Timing 分阶段耗时（毫秒）：trace / judge / render / identify。
@@ -301,50 +505,46 @@ func hopStatus(respLine string) int {
 	return 0
 }
 
-// renderWorthwhile 判断「这一步渲染值不值得」——这是识别里最贵的一步（实测 8.4~28s，
-// 占单条总耗时 77%~85%），不能对必然拿不到答案的响应无脑渲染。
+// renderWorthwhile 唯一的本地渲染闸门：只拦"物理上拿不到更多信息"的情况。
 //
-// 实测（2026-11-22，30 条占位样本）：13 条全部进渲染，平均 9.8s；渲染后能给出结论的
-// 比例是 **0%**——证据全是 502/403/404/302 这类错误页或跳转页，浏览器打开它们只是把
-// 同一段错误文本再读一遍。这就是「前置阶段没处理就丢给浏览器」的具体表现。
+// v0.0.56：这里只剩一条判据——**响应根本不是 HTML**（JSON / 纯文本 / 图片 / 二进制）。
+// 这是物理事实：浏览器打开 JSON 拿到的还是那段 JSON。除了它，要不要渲染完全由
+// 识别 agent 的 need_render 决定。
 //
-// 规则：
-//   - 非 HTML（JSON/纯文本/二进制）→ 不渲染，渲染也只会拿到 JSON 字符串；
-//   - 最后一跳 404/405/5xx → 不渲染，错误页没有身份信息；
-//   - 401/403 且正文很小（<1500 字节）→ 不渲染，那只是一个 "403 Forbidden" 文本；
-//   - 其它 → 渲染（含 JS 加密登录页、SPA 空壳，这些只有浏览器能出内容）。
+// 之前这里的 401/403 正文 <1500 字节、4xx/5xx 一律不渲染等分支都删掉了：
+// 那些阈值是围着上一批内网站点调出来的，换环境就不成立（同一段代码在不同环境
+// 会得出相反结论），属于必须清除的特调。判断权归模型，规则只管物理边界。
 func renderWorthwhile(hops []scanner.Hop) (bool, string) {
 	if len(hops) == 0 {
 		return false, "无响应"
 	}
 	last := hops[len(hops)-1]
+	if hopStatus(last.ResponseLine) == 0 {
+		return false, "没有可解析的 HTTP 状态行"
+	}
 	hdr := strings.ToLower(last.ResponseHeaders)
 	bodyLow := strings.ToLower(last.Body)
 	looksHTML := strings.Contains(hdr, "text/html") ||
 		strings.Contains(bodyLow, "<html") || strings.Contains(bodyLow, "<!doctype html")
-	if !looksHTML {
-		ct := ""
-		for _, ln := range strings.Split(last.ResponseHeaders, "\n") {
-			if strings.HasPrefix(strings.ToLower(ln), "content-type:") {
-				ct = strings.TrimSpace(ln[len("content-type:"):])
-				break
-			}
-		}
-		if ct == "" {
-			ct = "非 HTML"
-		}
-		return false, "非 HTML 响应（" + truncateStr(ct, 40) + "），浏览器也只拿到同样的字节"
+	if looksHTML {
+		return true, ""
 	}
-	st := hopStatus(last.ResponseLine)
-	switch {
-	case st == 401 || st == 403:
-		if len(strings.TrimSpace(last.Body)) < 1500 {
-			return false, fmt.Sprintf("%d 拒绝页且正文仅 %d 字节，渲染拿不到系统名", st, len(last.Body))
-		}
-	case st >= 400:
-		return false, fmt.Sprintf("最后一跳是 %d 错误页，错误页里没有身份信息", st)
+	// 有些服务不写 Content-Type，只返回一段 HTML 片段或一个空 body + 脚本。
+	// 这两种情况下浏览器仍可能渲染出内容（典型：Vue/React 的 index.html）。
+	if hasScriptBundle(last.Body) || strings.TrimSpace(last.Body) == "" && strings.Contains(hdr, "text/") {
+		return true, ""
 	}
-	return true, ""
+	ct := ""
+	for _, ln := range strings.Split(last.ResponseHeaders, "\n") {
+		if strings.HasPrefix(strings.ToLower(ln), "content-type:") {
+			ct = strings.TrimSpace(ln[len("content-type:"):])
+			break
+		}
+	}
+	if ct == "" {
+		ct = "非 HTML"
+	}
+	return false, "非 HTML 响应（" + truncateStr(ct, 40) + "），浏览器也只拿到同样的字节"
 }
 
 // chromeErrorMarkers 浏览器内置错误页的特征文本。
@@ -361,36 +561,6 @@ var chromeErrorMarkers = []string{
 	"you don’t have authorization to view this page",
 	"you don't have authorization to view this page",
 	"dns_probe", "err_connection", "err_empty_response",
-}
-
-// needsJudge 本地规则拿不准时返回 true，交给判断 agent 决定要不要渲染。
-//
-// 判定口径（实测校准）：最后一跳是 2xx 且去掉标签后正文 ≥ 400 字，说明页面
-// 有真实内容，直接识别就够；正文极少或全是脚本（空壳 SPA、JS 跳转页）才值得
-// 花一次判断调用，让模型看整体证据决定渲染。
-// needsJudge 判断「要不要问判断 agent」。
-//
-// v0.0.55 起判据从"可见正文够不够 400 字"换成"标题不可用时的结构信号"：
-//   - 调用本函数的前提已经是「没有可用 title」（有 title 的走 L0 直接采纳）；
-//   - 所以真正拿不准的只剩两种：正文也少（壳页），或者正文虽长但整页是 script
-//     骨架（SPA，正文由 JS 渲染，抓包拿到的只是空 div）。
-//
-// 长度门槛从 400 降到 80：中文页面 400 字是一条很长的正文，正常登录页
-// （导航 + 版权 + 备案号）也就 100 字上下，旧门槛把它们全判成"需要判断"。
-// 80 字相当于"至少有一行真实文案"，再短就只剩空 div 或纯跳转脚本了。
-func needsJudge(hops []scanner.Hop) bool {
-	if len(hops) == 0 {
-		return false
-	}
-	last := hops[len(hops)-1]
-	st := hopStatus(last.ResponseLine)
-	if st < 200 || st >= 400 {
-		return false
-	}
-	if len([]rune(stripTags(last.Body))) >= 80 && !hasScriptBundle(last.Body) {
-		return false
-	}
-	return true
 }
 
 // hasScriptBundle 响应体是否引用了外部脚本（典型 SPA 骨架的特征）。
@@ -498,45 +668,64 @@ func renderLooksBroken(title, text string) bool {
 	return false
 }
 
-// traceWithFallback 抓包，协议判错时用另一个 scheme 重试一次。
+// traceDual 两个协议各试一次，取"能给出有效响应"的那个。
 //
-// 为什么需要：入库的 protocol 来自引擎的端口探测，在"302 跳到 https"或"双栈端口"
-// 场景下经常判反。实测 198.18.6.114:80 被标成 HTTPS，识别时直接
-// `tls: first record does not look like a TLS handshake`，整条链路 0 秒空跑，
-// 白排一次队。识别是拿证据判断身份，协议错了就用另一个再试一次，代价只是多一次请求。
-func traceWithFallback(ip string, port int, scheme string) ([]scanner.Hop, error, string) {
-	hops, err := scanner.HTTPTrace(ip, port, scheme, 4)
-	if err == nil && len(hops) > 0 && !isSchemeMismatch(hops) {
-		return hops, nil, scheme
+// v0.0.56：不再猜协议。旧做法信任引擎入库的 protocol，判错时靠 400 响应里的
+// 文本特征回退——那套逻辑本身就是"针对已知错法"的特调，换一种错法就失效：
+// 实测 198.18.20.124:8083 入库 http，首跳 302 跳到 https:9091，抓包"成功"了，
+// 回退没触发，渲染拿到的是 `400 The plain HTTP request was sent to HTTPS port`。
+//
+// 现在按结果选，不按声明选：先抓入库协议，拿不到有效响应就抓另一个。
+// "有效"只有两条：有可解析的状态行；响应不是协议栈的拒绝应答。
+func traceDual(ip string, port int, prefer string) ([]scanner.Hop, error, string) {
+	if prefer != "https" {
+		prefer = "http"
 	}
 	alt := "https"
-	if scheme == "https" {
+	if prefer == "https" {
 		alt = "http"
 	}
-	if h2, e2 := scanner.HTTPTrace(ip, port, alt, 4); e2 == nil && len(h2) > 0 && !isSchemeMismatch(h2) {
+	if h1, e1 := scanner.HTTPTrace(ip, port, prefer, 4); e1 == nil && traceUsable(h1) {
+		return h1, nil, prefer
+	}
+	if h2, e2 := scanner.HTTPTrace(ip, port, alt, 4); e2 == nil && traceUsable(h2) {
 		return h2, nil, alt
 	}
-	return hops, err, scheme
+	// 两个都不可用时，把首选协议抓到的原始结果交回去：里面至少还有状态行和
+	// 响应头，模型能据此判断"这端口是个 https 栈 / 是个拒绝应答"。
+	h1, e1 := scanner.HTTPTrace(ip, port, prefer, 4)
+	if len(h1) > 0 {
+		return h1, nil, prefer
+	}
+	return nil, e1, prefer
 }
 
-// isSchemeMismatch 判断这次抓包是不是"协议用错了"。
+// traceUsable 这次抓包是否给出了"有信息量"的响应。
 //
-// 关键案例：6443 / 10250 这类端口用 http 去连，服务器不回连接错误，而是正常回
-// 400 + 正文 "Client sent an HTTP request to an HTTPS server"。这既不是 err
-// 也不是空 hops，旧逻辑认为"抓包成功"，于是把这段错误文本交给模型——
-// 实测被识别成 nginx（响应头里确有 Server: nginx），把 Kubernetes 张冠李戴。
-// 认出这个特征就必须换 https 重抓。
-func isSchemeMismatch(hops []scanner.Hop) bool {
+// 唯一排除的是协议栈的拒绝应答：用 http 连 https 端口（或反过来）时，服务器
+// 不回连接错误，而是正常回 400 + 一段 "plain HTTP request was sent to HTTPS port"。
+// 这不是站点内容，是协议栈在说"你走错门了"——把它当证据只会让模型把
+// Kubernetes 认成 nginx（响应头里确实有 Server: nginx）。
+//
+// 这是 HTTP 语义，不是某个环境的特调：任何服务器被错协议访问时都这么回。
+func traceUsable(hops []scanner.Hop) bool {
 	if len(hops) == 0 {
 		return false
 	}
-	last := hops[len(hops)-1]
+	return !isProtocolReject(hops[len(hops)-1])
+}
+
+func isProtocolReject(last scanner.Hop) bool {
 	if hopStatus(last.ResponseLine) != 400 {
 		return false
 	}
+	if len(last.Body) > 2048 {
+		return false // 正文这么长的 400 是真错误页，不是协议栈应答
+	}
 	low := strings.ToLower(last.Body)
 	return strings.Contains(low, "http request to an https server") ||
-		strings.Contains(low, "plain http request was sent to https port")
+		strings.Contains(low, "plain http request was sent") ||
+		strings.Contains(low, "https port")
 }
 
 // IdentifyService 跑完整识别链路（不带 ctx，供非关键路径使用）。
@@ -577,7 +766,7 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	}
 	tTrace := time.Now()
 	var trErr error
-	hops, trErr, scheme = traceWithFallback(svc.IP, svc.Port, scheme)
+	hops, trErr, scheme = traceDual(svc.IP, svc.Port, scheme)
 	mark("trace", tTrace)
 	switch {
 	case trErr != nil:
@@ -644,79 +833,64 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		})
 	}
 
-	// 第 3 步：判断（按需）。
+	// 第 3 步：识别 agent（一次往返，自带"要不要渲染"的判断）。
 	//
-	// 为什么不是每条都调判断 agent：串行两轮调用让每条固定多 1~3 秒；并行两轮又会
-	// 把 LLM 网关的并发打满，实测触发排队（单条 40~70 秒）。所以先用本地规则把
-	// "明显不需要深度判定"的页面挑出去（有可用标题、错误页、正文完整的正常页），
-	// 只把壳页/空壳/SPA 骨架这类真正拿不准的交给判断 agent。
+	// v0.0.56：不再单独调判断 agent。判断需要的信息（页面长什么样）和识别需要的
+	// 信息（页面上写了什么）来自同一份证据，拆成两次往返等于把同一份证据读两遍，
+	// 而且每次往返都是一次冷启动（首 token 1~3 秒）。现在识别 agent 一次输出
+	// 名字 + need_render：证据够就直接定论，不够就在同一个回复里要求渲染，
+	// 链路据此决定下一步，没有第二次独立往返。
 	brief := scanner.TraceDigestBrief(hops)
-	var jv judgeVerdict
-	judgeNeeded := !titleUsable && needsJudge(hops)
-	switch {
-	case titleUsable:
-		stages = append(stages, IdentStage{
-			Stage: "研判", Input: fmt.Sprintf("%d 跳", len(hops)),
-			Output: "本地规则：HTML 标题可用，不需要判断 agent 介入",
-		})
-	case judgeNeeded:
-		tJudge := time.Now()
-		jv = askJudge(ctx, brief)
-		mark("judge", tJudge)
-		stages = append(stages, IdentStage{
-			Stage: "AI·研判", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(brief)),
-			Output: fmt.Sprintf("kind=%s render=%v %s", orNone(jv.Kind), jv.Render, orNone(jv.Reason)),
-			OK:     jv.Kind != "",
-		})
-	default:
-		stages = append(stages, IdentStage{
-			Stage: "研判", Input: fmt.Sprintf("%d 跳", len(hops)),
-			Output: "本地规则已判定：页面结构清楚，不需要判断 agent 介入",
-		})
+	if titleUsable {
+		// 带导航后缀的标题单独点出来：模型要做的只是截掉后缀，不需要重新读整页。
+		brief = "原始 <title>: " + htmlTitle + "\n" + brief
+	}
+	tId := time.Now()
+	iv := askIdentify(ctx, brief, "请求响应包", false)
+	mark("identify", tId)
+	stages = append(stages, IdentStage{
+		Stage: "AI·识别·抓包证据", Input: truncateStr(brief, 120),
+		Output: orNone(iv.Raw), OK: iv.dotConfident(),
+	})
+	// 只在"调用成功但返回空对象"时重试一次。判据用 Raw：调用失败时 Raw 是
+	// "模型调用失败"，空内容时 Raw 为空串。超时不重试——网关不健康时重试会把
+	// 15 秒翻倍成 30 秒，worker 被长期占住、整队吞吐塌掉。
+	if strings.TrimSpace(iv.Raw) == "" && !iv.hasName() && ctx.Err() == nil {
+		if retry := askIdentify(ctx, brief+"\n\n注意：title 和 product 不能都为空。", "请求响应包", false); retry.hasName() {
+			iv = retry
+			stages = append(stages, IdentStage{Stage: "AI·识别·空结果重试", Output: orNone(retry.Raw), OK: retry.dotConfident()})
+		}
 	}
 
-	// 渲染决策：本地硬闸门优先，模型只在闸门放行后才说了算。
+	// 第 4 步：渲染（只在两个条件同时成立时：识别 agent 要求渲染，且物理上不是白页）
 	//
-	// 为什么不让模型推翻本地规则：非 HTML（JSON / 纯文本 / 二进制）、4xx-5xx、
-	// 小正文 401/403 是物理事实，"渲染也只会拿到同样的字节"。模型偶尔把这些判成
-	// shell 要求渲染，实测 198.18.49.116:8077（正文就一个 pong）白花 8.4 秒。
+	// 本地只剩"物理事实"闸门：非 HTML 且无脚本（JSON / 图片 / 二进制），渲染只会
+	// 拿到同样的字节。其余一律听模型的——这里是判断权从规则搬回模型的唯一改动点。
+	pageTitle, rendered := "", ""
 	localOK, localWhy := renderWorthwhile(hops)
-	var needRender bool
+	// 渲染条件：模型自己要求（need_render）或它明确说"在猜"（confidence < 40）。
+	// 后者是通用策略而非阈值特调——提示词已定义 <30 是靠猜、30~59 只到类别，
+	// 这类结论值得再花一次浏览器把页面打开。
+	// 实测代价：不这样做时，`Browser Error`（真名 HDM）、`Login`（深信海超融合）
+	// 这类"HTML 里写着占位词、真名由 JS 写入"的页面全部落成空标题。
+	needRender := !iv.dotConfident() && (iv.NeedRender || iv.conf() < 40)
 	renderWhy := ""
 	switch {
+	case !needRender:
+		renderWhy = "识别 agent 未要求渲染"
+		if iv.dotConfident() {
+			renderWhy = "已有高置信结论，无需渲染"
+		}
 	case !localOK:
-		// 物理事实优先：非 HTML / 4xx-5xx / 小正文 401-403，渲染也拿不到更多
-		needRender, renderWhy = false, "本地规则："+localWhy
-	case isDeviceErrorTitle(htmlTitle):
-		// 设备自带的"浏览器不支持/出错"静态页：真实身份由 JS 渲染后才写进 title。
-		// 实测 198.19.252.2:80 原始 title 是 `Browser Error`，渲染后才是 `HDM`；
-		// 交给判断 agent 会被判成 kind=error 而不渲染，直接把答案丢掉。
-		needRender, renderWhy = true, "标题为设备自带错误页，真实身份需渲染"
-	case titleUsable:
-		// 页面自己声明的标题已经是身份信息，浏览器不会给出更多
-		needRender, renderWhy = false, "本地规则：HTML 标题可用，无需渲染"
-	case len(strings.TrimSpace(lastHop.Body)) < 40 && !hasScriptBundle(lastHop.Body):
-		// 正文连 40 字节都没有、也没有脚本：浏览器打开只会是一张白纸。
-		// 实测 198.18.49.116:8077（正文就一个 pong）白花 14 秒渲染，最后什么也没拿到。
-		needRender, renderWhy = false, "本地规则：正文不足 40 字节且无脚本，渲染也是空白"
-	case judgeNeeded && jv.Kind == "":
-		needRender, renderWhy = true, "研判不可用，按本地规则渲染"
-	case jv.Kind == "":
-		needRender, renderWhy = false, "本地规则：标题缺失但正文完整，无需渲染"
-	case jv.Render:
-		needRender, renderWhy = true, "研判 kind="+jv.Kind
-	default:
-		needRender, renderWhy = false, "研判 kind="+jv.Kind+"，无需深度判定"
+		needRender, renderWhy = false, "本地硬闸门："+localWhy
+		aiMetricRenderSkipped()
 	}
 
-	// 第 3 步：按需渲染（全链路最贵的一步）
-	pageTitle, rendered := "", ""
-	if !needRender {
-		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + renderWhy})
-		aiMetricRenderSkipped()
-	} else if !scanner.ChromeAvailable() {
+	if needRender && !scanner.ChromeAvailable() {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "容器内无 chromium，跳过"})
-	} else {
+		needRender = false
+	}
+	if needRender {
 		tRender := time.Now()
 		var pageDesc, pageText string
 		var rerr error
@@ -739,35 +913,25 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: rendered,
 				OK: strings.TrimSpace(pageTitle) != ""})
 		}
+	} else {
+		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "跳过：" + renderWhy})
 	}
 
-	// 第 5 步：识别（一次）。有渲染结果就用渲染结果，否则用抓包证据。
-	evidence, source := brief, "请求响应包"
+	// 第 5 步：渲染后再识别一次（仍是一次往返）。渲染结果与抓包证据是两份不同材料，
+	// 必须让模型重看一遍；这一步不能省，也不能和上一步合并——合并就要把浏览器
+	// 的等待塞进同一次模型调用里，网关超时会同时废掉两条。
 	if rendered != "" {
-		evidence, source = rendered, "渲染结果"
-	} else if titleUsable {
-		// 带导航后缀的标题单独点出来：模型要做的只是截掉后缀，不需要重新读整页。
-		evidence = "原始 <title>: " + htmlTitle + "\n" + evidence
-	}
-	tId := time.Now()
-	iv := askIdentify(ctx, source, evidence, rendered != "")
-	// 只在"调用成功但返回空对象"时重试一次。
-	//
-	// 不能对超时也重试：网关不健康时单次要 15 秒，重试直接翻倍到 30 秒以上，
-	// worker 被长期占住、整队吞吐塌掉（实测一轮 45 条跑了 7 分钟）。
-	// 判据用 Raw：调用失败时 askIdentify 会把 Raw 置成"模型调用失败"，空内容时 Raw 为空串。
-	if strings.TrimSpace(iv.Raw) == "" && strings.TrimSpace(iv.Title) == "" &&
-		strings.TrimSpace(iv.Product) == "" && ctx.Err() == nil {
-		if retry := askIdentify(ctx, source, evidence+"\n\n注意：title 和 product 不能都为空。", rendered != ""); strings.TrimSpace(retry.Title) != "" || strings.TrimSpace(retry.Product) != "" {
-			iv = retry
-			stages = append(stages, IdentStage{Stage: "AI·识别·空结果重试", Input: "空结果", Output: orNone(retry.Raw), OK: retry.dotConfident()})
+		tId2 := time.Now()
+		iv2 := askIdentify(ctx, rendered, "渲染结果", true)
+		mark("identify_render", tId2)
+		stages = append(stages, IdentStage{
+			Stage: "AI·识别·渲染证据", Input: truncateStr(rendered, 120),
+			Output: orNone(iv2.Raw), OK: iv2.dotConfident(),
+		})
+		if iv2.hasName() {
+			iv = iv2
 		}
 	}
-	mark("identify", tId)
-	stages = append(stages, IdentStage{
-		Stage: "AI·识别·" + source, Input: truncateStr(evidence, 120),
-		Output: orNone(iv.Raw), OK: iv.dotConfident(),
-	})
 
 	switch {
 	case iv.hasName():
@@ -775,8 +939,6 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	case strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) &&
 		!scanner.PlaceholderTitle(pageTitle, "") && !titleIsAllNoise(pageTitle):
 		// 模型没给出名字，但渲染后的标题本身是明确文字：作为低置信候选带上。
-		// 排除 Login / Redirection…… / 「登录」/「首页」这类占位标题——
-		// 浏览器的 <title> 经常就是它们（实测 198.19.160.4:80 渲染后 title 就是「登录」）。
 		res.Title = strings.TrimSpace(pageTitle)
 		res.Source = "render"
 		res.Reason = "渲染标题（未经模型确认）"
@@ -784,6 +946,250 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		res.Reason = iv.Reason
 	}
 	return done()
+}
+
+// ===== 批量识别（v0.0.56） =====
+//
+// 队列消费从"一条一次模型调用"改成"一批一次"。单条调用里真正贵的是冷启动
+// （新会话、首 token 1~3 秒），证据本身只有几百 token；8 条共用一次冷启动，
+// 总耗时接近 1 条。下方 IdentifyBatchCtx 是批量版链路，与 IdentifyServiceCtx
+// 语义一致：抓包 → L0 标题直取 → 识别（批量）→ 渲染（按需）→ 复识别（批量）。
+
+type identPrep struct {
+	svc         model.Service
+	hops        []scanner.Hop
+	baseURL     string
+	htmlTitle   string
+	titleUsable bool
+	settled     bool
+	res         IdentResult
+	stages      []IdentStage
+	timing      map[string]int64
+}
+
+// identPrepare 抓包 + L0 判定。能定论的（标题直取 / 抓包失败）直接置 settled。
+func identPrepare(ctx context.Context, svc model.Service) identPrep {
+	p := identPrep{svc: svc, timing: map[string]int64{}}
+	p.res = IdentResult{
+		Title: strings.TrimSpace(svc.Title), Product: strings.TrimSpace(svc.Fingerprint),
+		Timing: p.timing,
+	}
+	baseURL := buildURL(svc)
+	if baseURL == "" {
+		p.settled = true
+		p.stages = append(p.stages, IdentStage{Stage: "抓取请求响应包", Output: "非 http(s) 协议，不适用 Web 识别"})
+		return p
+	}
+	scheme := "http"
+	if strings.HasPrefix(strings.ToLower(svc.Protocol), "https") {
+		scheme = "https"
+	}
+	t0 := time.Now()
+	hops, err, scheme := traceDual(svc.IP, svc.Port, scheme)
+	p.timing["trace"] = time.Since(t0).Milliseconds()
+	if err != nil || len(hops) == 0 {
+		p.settled = true
+		msg := "无响应"
+		if err != nil {
+			msg = "抓取失败：" + err.Error()
+		}
+		p.stages = append(p.stages, IdentStage{Stage: "抓取请求响应包", Input: baseURL, Output: msg})
+		return p
+	}
+	p.hops = hops
+	p.baseURL = fmt.Sprintf("%s://%s:%d/", scheme, svc.IP, svc.Port)
+	last := hops[len(hops)-1]
+	p.htmlTitle = scanner.HTMLTitle(last.Body)
+	st := hopStatus(last.ResponseLine)
+	p.titleUsable = st >= 200 && st < 300 &&
+		TitleClear(p.htmlTitle) && !scanner.PlaceholderTitle(p.htmlTitle, "") &&
+		!titleIsAllNoise(p.htmlTitle)
+	p.stages = append(p.stages, IdentStage{
+		Stage: "抓取请求响应包", Input: fmt.Sprintf("%s（共 %d 跳）", p.baseURL, len(hops)),
+		Output: last.ResponseLine, OK: true,
+	})
+	if p.titleUsable && !titleHasNoisySegment(p.htmlTitle) {
+		p.res.Title = p.htmlTitle
+		p.res.Confidence = 100
+		p.res.Confident = true
+		p.res.Sufficient = true
+		p.res.Source = "html"
+		p.res.Reason = "HTML <title> 直接可用"
+		p.stages = append(p.stages, IdentStage{
+			Stage: "规则·HTML 标题", Input: truncateStr(p.htmlTitle, 60),
+			Output: "标题明确，跳过模型调用", OK: true,
+		})
+		p.settled = true
+	}
+	return p
+}
+
+// IdentifyBatchCtx 批量识别：同阶段的模型调用合并成一次请求。
+func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
+	preps := make([]identPrep, len(svcs))
+	runParallel(len(svcs), 4, func(i int) {
+		preps[i] = identPrepare(ctx, svcs[i])
+	})
+
+	// ---- 第一次批量识别：抓包证据 ----
+	var pending []int
+	var evs []identEvidence
+	for i := range preps {
+		if preps[i].settled || ctx.Err() != nil {
+			continue
+		}
+		body := scanner.TraceDigestBrief(preps[i].hops)
+		if preps[i].titleUsable {
+			body = "原始 <title>: " + preps[i].htmlTitle + "\n" + body
+		}
+		pending = append(pending, i)
+		evs = append(evs, identEvidence{
+			Label:  fmt.Sprintf("%s:%d", preps[i].svc.IP, preps[i].svc.Port),
+			Source: "请求响应包", Body: body,
+		})
+	}
+	verdict := map[int]aiVerdict{}
+	if len(evs) > 0 {
+		aiMetricsRef.inLLM.Add(int64(len(evs)))
+		t0 := time.Now()
+		got := askIdentifyBatch(ctx, evs)
+		aiMetricsRef.inLLM.Add(-int64(len(evs)))
+		ms := time.Since(t0).Milliseconds()
+		for k, i := range pending {
+			verdict[i] = got[k]
+			preps[i].timing["identify"] = ms // 批量共享：整批耗时记到每一条
+			preps[i].stages = append(preps[i].stages, IdentStage{
+				Stage: "AI·识别·批量", Input: fmt.Sprintf("第 %d/%d 条", k+1, len(pending)),
+				Output: orNone(got[k].Raw), OK: got[k].dotConfident(),
+			})
+		}
+	}
+
+	// ---- 渲染（只处理识别 agent 明确要求、且物理上不是白页的）----
+	var ridx []int
+	for _, i := range pending {
+		v := verdict[i]
+		if v.dotConfident() || (!v.NeedRender && v.conf() >= 40) {
+			continue
+		}
+		if ok, why := renderWorthwhile(preps[i].hops); !ok {
+			preps[i].stages = append(preps[i].stages, IdentStage{
+				Stage: "浏览器渲染", Input: preps[i].baseURL, Output: "跳过：本地硬闸门：" + why,
+			})
+			continue
+		}
+		ridx = append(ridx, i)
+	}
+	rendered := map[int]string{}
+	pageTitle := map[int]string{}
+	if len(ridx) > 0 && scanner.ChromeAvailable() {
+		runParallel(len(ridx), 2, func(k int) {
+			aiMetricsRef.rendering.Add(1)
+			defer aiMetricsRef.rendering.Add(-1)
+			i := ridx[k]
+			t0 := time.Now()
+			title, desc, text, err := scanner.RenderPageCtx(ctx, preps[i].baseURL, 6*time.Second)
+			preps[i].timing["render"] = time.Since(t0).Milliseconds()
+			switch {
+			case err != nil && ctx.Err() != nil:
+				preps[i].stages = append(preps[i].stages, IdentStage{Stage: "浏览器渲染", Output: "被中止：" + err.Error()})
+			case err != nil:
+				preps[i].stages = append(preps[i].stages, IdentStage{Stage: "浏览器渲染", Output: "渲染失败：" + err.Error()})
+			case renderLooksBroken(title, text):
+				preps[i].stages = append(preps[i].stages, IdentStage{Stage: "浏览器渲染",
+					Output: "渲染得到浏览器错误页，不作为证据"})
+			default:
+				pageTitle[i] = title
+				rendered[i] = fmt.Sprintf("页面标题: %s\nmeta描述: %s\n正文摘要: %s",
+					orNone(title), orNone(desc), orNone(text))
+				preps[i].stages = append(preps[i].stages, IdentStage{Stage: "浏览器渲染",
+					Input: preps[i].baseURL, Output: rendered[i], OK: strings.TrimSpace(title) != ""})
+			}
+		})
+	} else if len(ridx) > 0 {
+		for _, i := range ridx {
+			preps[i].stages = append(preps[i].stages, IdentStage{Stage: "浏览器渲染", Output: "容器内无 chromium，跳过"})
+		}
+	}
+
+	// ---- 第二次批量识别：渲染结果 ----
+	var rpend []int
+	var revs []identEvidence
+	for _, i := range ridx {
+		if rendered[i] == "" {
+			continue
+		}
+		rpend = append(rpend, i)
+		revs = append(revs, identEvidence{
+			Label:  fmt.Sprintf("%s:%d", preps[i].svc.IP, preps[i].svc.Port),
+			Source: "渲染结果", Body: rendered[i],
+		})
+	}
+	if len(revs) > 0 {
+		aiMetricsRef.inLLM.Add(int64(len(revs)))
+		t0 := time.Now()
+		got := askIdentifyBatch(ctx, revs)
+		aiMetricsRef.inLLM.Add(-int64(len(revs)))
+		ms := time.Since(t0).Milliseconds()
+		for k, i := range rpend {
+			preps[i].timing["identify_render"] = ms
+			preps[i].stages = append(preps[i].stages, IdentStage{
+				Stage: "AI·识别·渲染证据", Input: fmt.Sprintf("第 %d/%d 条", k+1, len(rpend)),
+				Output: orNone(got[k].Raw), OK: got[k].dotConfident(),
+			})
+			if got[k].hasName() {
+				verdict[i] = got[k]
+			}
+		}
+	}
+
+	// ---- 组装 ----
+	out := make([]IdentResult, len(svcs))
+	for i := range preps {
+		r := preps[i].res
+		if !preps[i].settled {
+			v := verdict[i]
+			if v.Failed {
+				r.Failed = true
+			}
+			switch {
+			case v.hasName():
+				r.apply(v)
+			case pageTitle[i] != "" && TitleClear(pageTitle[i]) &&
+				!scanner.PlaceholderTitle(pageTitle[i], "") && !titleIsAllNoise(pageTitle[i]):
+				r.Title = strings.TrimSpace(pageTitle[i])
+				r.Source = "render"
+				r.Reason = "渲染标题（未经模型确认）"
+			case strings.TrimSpace(v.Reason) != "":
+				r.Reason = v.Reason
+			}
+		}
+		r.Stages, r.Hops, r.Timing = preps[i].stages, preps[i].hops, preps[i].timing
+		out[i] = r
+	}
+	return out
+}
+
+// runParallel 以固定并发跑 n 个下标任务，用于把抓包/渲染的重叠起来。
+func runParallel(n, conc int, fn func(i int)) {
+	if n == 0 {
+		return
+	}
+	if conc < 1 {
+		conc = 1
+	}
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // apply 采纳模型结论
@@ -796,11 +1202,12 @@ func (r *IdentResult) apply(v aiVerdict) {
 	if strings.TrimSpace(v.Product) != "" {
 		r.Product = strings.TrimSpace(v.Product)
 	}
-	r.Confidence = v.Confidence
-	r.Confident = v.Confidence >= 60
+	r.Confidence = v.conf()
+	r.Confident = v.conf() >= 60
 	r.Sufficient = v.Sufficient
 	r.Reason = v.Reason
 	r.Source = "ai"
+	r.Failed = v.Failed
 }
 
 // shortHeader 取响应头里的 Location / Server 行，用于阶段摘要
@@ -818,16 +1225,43 @@ func shortHeader(h string) string {
 type aiVerdict struct {
 	Title      string `json:"title"`
 	Product    string `json:"product"`
-	Category   string `json:"category"`
-	Confidence int    `json:"confidence"`
+	Category string `json:"category"`
+	// Confidence 用 float64 接：网关/模型在不同上下文里既会输出 0~100 的整数，
+	// 也会输出 0~1 的小数（实测批量模式下 8 条全是 0.1/0.2）。用 int 接会让
+	// 整个 JSON 反序列化失败——一条不匹配，整批结论全部丢失，最后全落"待分析"。
+	Confidence float64 `json:"confidence"`
 	Sufficient bool   `json:"sufficient"`
+	// NeedRender 识别 agent 自己判断"这份证据不够，需要浏览器渲染后再看一次"。
+	// v0.0.56 起判断权交给它，不再单独调判断 agent——两次往返读的是同一份证据。
+	NeedRender bool   `json:"need_render"`
 	Reason     string `json:"reason"`
 	Raw        string `json:"-"`
+	// Failed 这次结论是"网关没答出来"，不是"模型看过但没认出来"。
+	// 两者必须分开：前者要保留待办下轮重试，后者才是真正的终态（待分析）。
+	Failed bool `json:"-"`
+}
+
+// conf 归一化后的 0~100 置信度。
+//
+// 两种尺度都要认：<=1 视为比例（0.1 → 10 分）；否则视为百分制。
+// 不归一化就会出现"模型给 0.9 分却被当成 0 分丢掉"。
+func (v aiVerdict) conf() int {
+	c := v.Confidence
+	if c > 0 && c <= 1 {
+		c *= 100
+	}
+	if c < 0 {
+		c = 0
+	}
+	if c > 100 {
+		c = 100
+	}
+	return int(c)
 }
 
 // dotConfident 名字可用：有名字且置信度达标
 func (v aiVerdict) dotConfident() bool {
-	return v.Confidence >= 60 && (strings.TrimSpace(v.Title) != "" || strings.TrimSpace(v.Product) != "")
+	return v.conf() >= 60 && (strings.TrimSpace(v.Title) != "" || strings.TrimSpace(v.Product) != "")
 }
 
 // hasName 模型给出了任何名字（不论置信）。
@@ -909,7 +1343,7 @@ func askIdentify(ctx context.Context, source, evidence string, rendered bool) ai
 			aiMetricLLMFail()
 			log.Printf("[ai-ident] 识别调用失败: %v", err)
 		}
-		return aiVerdict{Sufficient: true, Raw: "模型调用失败"}
+		return aiVerdict{Sufficient: true, Raw: "模型调用失败", Failed: true}
 	}
 	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
 	if answer == "" {
@@ -922,6 +1356,98 @@ func askIdentify(ctx context.Context, source, evidence string, rendered bool) ai
 	}
 	v.Raw = answer
 	return v
+}
+
+// identEvidence 批量识别里的一条证据
+type identEvidence struct {
+	Label  string // "198.18.7.30:443"
+	Source string // 请求响应包 / 渲染结果
+	Body   string
+}
+
+// askIdentifyBatch 一次请求识别多条目标。
+//
+// 为什么要批量：每次调用都是一次冷启动（新会话、无缓存、首 token 1~3 秒）。
+// 45 条串起来光首 token 就要一百多秒，而证据本身只有几百 token。
+// 8 条放进同一个请求，首 token 只付一次。
+//
+// 批量是加速手段，不能变成新的故障点：格式不符、条数不匹配、网关报错时
+// 一律回退成逐条调用，结果与逐条路径完全一致。
+func askIdentifyBatch(ctx context.Context, items []identEvidence) []aiVerdict {
+	out := make([]aiVerdict, len(items))
+	if len(items) == 0 {
+		return out
+	}
+	if len(items) == 1 {
+		out[0] = askIdentify(ctx, items[0].Body, orNone(items[0].Source), false)
+		return out
+	}
+	var sb strings.Builder
+	for i, it := range items {
+		fmt.Fprintf(&sb, "【第 %d 条】%s（来源：%s）\n%s\n\n", i+1, it.Label, orNone(it.Source), it.Body)
+	}
+	fmt.Fprintf(&sb, "共 %d 条。只输出一个 JSON 数组，长度必须是 %d，顺序与上面一致，"+
+		"不要解释、不要 markdown：\n"+
+		`[{"title":"","product":"","category":"","confidence":0,"need_render":false,"reason":""}]`, len(items), len(items))
+
+	res, err := chatWithCtxTimeout(ctx, llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: PromptFor(RoleIdentify) + "\n\n本次输入是多条目标，输出必须是 JSON 数组，长度与输入条数一致。"},
+			{Role: "user", Content: sb.String()},
+		},
+		Temperature: 0,
+		MaxTokens:   220 * len(items),
+	}, batchLLMTimeout(len(items)))
+	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
+		if err != nil {
+			aiMetricLLMFail()
+			log.Printf("[ai-ident] 批量识别（%d 条）失败: %v", len(items), err)
+		}
+		// 超时/取消不回退逐条：逐条只是把同一个已经排队的网关再打一遍，
+		// 实测把整轮时长从 40 秒拖到 158 秒，且最终结论更差。整批标失败，
+		// 保留 ai_need 让下一轮重试——这比"当场拿到一句空结论"有价值。
+		if err != nil || ctx.Err() != nil {
+			for i := range out {
+				out[i] = aiVerdict{Raw: "模型调用失败", Failed: true, Sufficient: false}
+			}
+			return out
+		}
+		return askIdentifyEach(ctx, items)
+	}
+	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
+	var arr []aiVerdict
+	if e := json.Unmarshal([]byte(extractJSONArray(answer)), &arr); e == nil && len(arr) == len(items) {
+		for i := range arr {
+			arr[i].Raw = answer
+		}
+		return arr
+	}
+	// 数组解析失败或条数对不上：整批回退。宁可多花几秒，也不能把 A 的结论写进 B。
+	log.Printf("[ai-ident] 批量识别返回不可用（%d 条，响应 %d 字节），回退逐条", len(items), len(answer))
+	return askIdentifyEach(ctx, items)
+}
+
+func askIdentifyEach(ctx context.Context, items []identEvidence) []aiVerdict {
+	out := make([]aiVerdict, len(items))
+	for i, it := range items {
+		if ctx.Err() != nil {
+			break
+		}
+		out[i] = askIdentify(ctx, it.Body, orNone(it.Source), false)
+	}
+	return out
+}
+
+// batchLLMTimeout 批量调用的子超时（依据见函数体内的实测数据）。
+func batchLLMTimeout(n int) time.Duration {
+	// 实测（deepseek-v4.1-flash，同构证据）：1 条 9.2s、2 条 9.7s、4 条 13.7s、8 条 18.9s。
+	// 批量的单条等效成本随条数下降（9.2s → 2.4s），但总时长仍在涨，所以超时必须
+	// 按条数放宽，否则正常批量会被判成超时、整批回退逐条，比不批量还慢。
+	d := 20*time.Second + time.Duration(n)*6*time.Second
+	if d > 120*time.Second {
+		d = 120 * time.Second
+	}
+	return d
 }
 
 // usageBrief 输出 usage 摘要，用于诊断空回复（推理 token 是否吃掉了预算）
@@ -939,6 +1465,11 @@ func usageBrief(r *llm.ChatResponse) string {
 // ctx.Done()。ctx 取消后主协程立刻返回，goroutine 由 HTTP 超时自然结束，
 // channel 带缓冲所以不会永久泄漏。
 func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, error) {
+	return chatWithCtxTimeout(ctx, req, 30*time.Second)
+}
+
+// chatWithCtxTimeout 同 chatWithCtx，但子超时可指定（批量调用输出更长，需要更宽的预算）。
+func chatWithCtxTimeout(ctx context.Context, req llm.ChatRequest, d time.Duration) (*llm.CallResult, error) {
 	// 已经取消了就别起 goroutine：省一次无意义的调用，也让"取消后立即返回"
 	// 这条语义可以被单测直接覆盖。
 	if err := ctx.Err(); err != nil {
@@ -951,7 +1482,7 @@ func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, err
 	// 单次调用子超时：网关偶发把一条请求挂到 40~70 秒（实测 198.19.160.4
 	// 单次识别 46 秒、整条 69 秒），占着 worker 拖垮整队吞吐。正常响应 1~3 秒，
 	// 12 秒已经宽松；超时按失败处理，走兜底逻辑，不再无限等。
-	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 
 	ch := make(chan result, 1)
@@ -987,9 +1518,9 @@ func runAIIdentifyCtx(ctx context.Context, job aiIdentifyJob) {
 	total := time.Since(t0)
 	aiMetricNote(r, total)
 	// 一条一行，把"慢在哪一步"写清楚：渲染占比是判断"该不该少渲染"的唯一依据。
-	log.Printf("[ai-ident] %s:%d 用时 %s（抓包 %dms / 研判 %dms / 渲染 %dms / 识别 %dms）渲染=%v 置信=%v 结论=%s",
+	log.Printf("[ai-ident] %s:%d 用时 %s（抓包 %dms / 识别 %dms / 渲染 %dms / 复识别 %dms）渲染=%v 置信=%v 结论=%s",
 		job.IP, job.Port, total.Round(100*time.Millisecond).String(),
-		r.Timing["trace"], r.Timing["judge"], r.Timing["render"], r.Timing["identify"],
+		r.Timing["trace"], r.Timing["identify"], r.Timing["render"], r.Timing["identify_render"],
 		r.Timing["render"] > 0, r.Confident, truncateStr(r.Title, 40))
 	changed := ApplyIdentResult(svc, r)
 	recordIdentConversation(job.TaskID, svc, r, changed)
@@ -1028,6 +1559,14 @@ func IsUnidentified(title string) bool {
 //   - fingerprint：置信 >=60 且非空，允许覆盖旧值，旧值留在 prev_fingerprint
 //   - 无论是否改动，都记 ai_checked_at 并把 ai_need 清掉，避免重复排队
 func ApplyIdentResult(svc model.Service, r IdentResult) bool {
+	// 网关没答出来 ≠ 识别不出。前者保留待办（5 分钟后重排），后者才是终态。
+	// 不区分就会把一大片"网关超时"写成"待分析"，用户看到的是假结论。
+	if r.Failed {
+		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).
+			Updates(map[string]interface{}{"ai_need": true, "ai_checked_at": nil})
+		aiRetryAfter.Store(svc.IP+":"+strconv.Itoa(svc.Port), time.Now().Add(aiRetryDelay))
+		return false
+	}
 	updates := map[string]interface{}{"ai_checked_at": time.Now(), "ai_need": false}
 	changed := false
 	usableTitle := TitleClear(r.Title) && !scanner.PlaceholderTitle(r.Title, "")
@@ -1054,12 +1593,14 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	if usableTitle && IsUnidentified(r.Title) {
 		usableTitle = false
 	}
+	titleWritten := false
 	if r.Confidence >= bar && usableTitle && r.Title != svc.Title {
 		updates["title"] = truncateStr(r.Title, 300)
 		updates["title_source"] = titleSourceOf(r)
 		if strings.TrimSpace(svc.Title) != "" {
 			updates["prev_title"] = svc.Title // 供「新变更」标签
 		}
+		titleWritten = true
 		changed = true
 	}
 	// 指纹门槛单独一档（v0.0.54）：模型明确给出产品名（哪怕置信只有 15，例如
@@ -1072,26 +1613,21 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 		}
 		changed = true
 	}
+	// 终态：识别跑完仍没有任何标题时写「待分析」，不再留白。
+	//
+	// 为什么不是「无法识别」：留白在列表上分不清"还没识别"和"识别过没结论"，
+	// 「待分析」是一个明确的人工待办——这条已经跑完整条链路（抓包→识别→渲染→再识别），
+	// 机器给不出名字，需要人打开看一眼。
+	//
+	// 已有原文的不动：`502 Bad Gateway`、`Not Found` 这类本身就是信息，
+	// 换成「待分析」是净损失（0.0.52 曾经把占位标题置空，导致列表整片空白）。
+	if !titleWritten && strings.TrimSpace(svc.Title) == "" {
+		updates["title"] = "待分析"
+		updates["title_source"] = "none"
+		changed = true
+	}
 	config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates)
 	return changed
-}
-
-// isDeviceErrorTitle 设备/浏览器自带的错误页标题（不是站点真实身份）。
-//
-// 这类页面有一个共同特征：静态 HTML 里写的是错误文案，真实身份由 JS 在
-// 渲染后改写 title。所以判据不是"要不要相信标题"，而是"必须渲染再取一次"。
-var deviceErrorTitles = map[string]bool{
-	"browser error":           true,
-	"browser not supported":   true,
-	"error page":              true,
-	"页面错误":                    true,
-	"网页错误":                    true,
-	"出错了":                     true,
-	"加载失败":                    true,
-}
-
-func isDeviceErrorTitle(title string) bool {
-	return deviceErrorTitles[normNoise(title)]
 }
 
 // titleSourceOf 标题来源标记，落库后用于区分「HTML 直取 / 渲染后读 / 模型判定」。
@@ -1261,6 +1797,16 @@ func oneLine(s string) string {
 }
 
 // extractJSON 从模型输出里抠出第一个 JSON 对象
+// extractJSONArray 取第一个 '[' 到最后一个 ']' 之间的内容（批量识别用）。
+func extractJSONArray(s string) string {
+	start := strings.Index(s, "[")
+	end := strings.LastIndex(s, "]")
+	if start >= 0 && end > start {
+		return s[start : end+1]
+	}
+	return s
+}
+
 func extractJSON(s string) string {
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")

@@ -50,10 +50,10 @@ render 规则：
 - 无响应、非 HTML → kind 给 error，render 给 false`
 
 // DefaultIdentifyPrompt 识别 agent 的默认提示词
-const DefaultIdentifyPrompt = `你是内网资产识别专家。读 HTTP 证据，给出上面跑的是什么业务系统。
+const DefaultIdentifyPrompt = `你是内网资产识别专家。读 HTTP 证据，给出上面跑的是什么业务系统，并判断这份证据够不够。
 
 只输出一个 JSON，不要解释、不要 markdown：
-{"title":"业务系统名称","product":"产品/组件（含厂商）","category":"OA/财务/审计/中间件","confidence":0,"reason":"15字以内"}
+{"title":"业务系统名称","product":"产品/组件（含厂商）","category":"OA/财务/审计/中间件","confidence":0,"need_render":false,"reason":"15字以内"}
 
 规则：
 1. 只用证据里的信息，不要编造。
@@ -65,7 +65,13 @@ const DefaultIdentifyPrompt = `你是内网资产识别专家。读 HTTP 证据�
 6. confidence：90+ 页面直接写出产品名；60-89 有明确特征（特有路径、证书、界面元素）；30-59 只到类别；<30 是靠猜。
 7. 区分厂商和产品线。只有 Sangfor、H3C、Huawei 这类厂商特征、没有产品线文字时，confidence 不超过 55。
 8. 页面是错误页或空壳页时，title 留空，但 product 仍要给出可见的技术栈；reason 写页面类型。
-9. 输出必须是一个完整的 JSON 对象，不要写分析、不要复述证据。`
+9. need_render：把"证据不足"和"这就是结论"分开，不要因为页面像错误页就直接给 false。
+   - true：正文几乎为空；整页只有 <script> 外壳；或 HTTP 200 但标题是占位词
+     （Login / Welcome / Error / Browser Error / 重定向中 / 纯 IP）。这类页面真实身份
+     常由 JS 在渲染后写进 title，不渲染就永远看不到。
+   - false：证据已足够定论；或页面就是接口响应 / 纯错误页（4xx-5xx 且正文只有状态文本、
+     JSON、纯文本、空 body）。
+10. 输出必须是一个完整的 JSON 对象，不要写分析、不要复述证据。`
 
 // promptLock 串行化提示词写操作（读是单行主键查询，不需要锁）
 var promptLock sync.Mutex

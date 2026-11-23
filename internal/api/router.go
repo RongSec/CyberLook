@@ -176,6 +176,8 @@ func RegisterRoutes(r *gin.Engine) {
 		auth.PUT("/ai/settings", UpdateAISettings)
 		auth.GET("/ai/prompts", GetAIPrompts)
 		auth.PUT("/ai/prompts", UpdateAIPrompt)
+		auth.GET("/ai/parallel", GetAIParallel)
+		auth.PUT("/ai/parallel", UpdateAIParallel)
 		auth.GET("/backup/settings", GetBackupSettings)
 		auth.PUT("/backup/settings", UpdateBackupSettings)
 		auth.GET("/backups", ListBackups)
