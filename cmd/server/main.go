@@ -108,6 +108,10 @@ func main() {
 		// 分片停滞看门狗：节点还活着但扫描进程卡死（scanned 长时间不涨）时收尾或回收，
 		// 否则分片永远 running，任务进度卡在 99%
 		service.StartShardWatchdog()
+		// 识别工作池随服务启动：库里 ai_need 的待办要能自己接着跑。
+		// 之前只在"扫描入库"或"手动重识别"时启动，重启后整条队列静默停摆——
+		// 表现为库里几百条 ai_need 一直不动、页面上看不到任何识别进度。
+		service.StartAIWorkers()
 	}
 
 	r := gin.Default()

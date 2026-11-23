@@ -2,12 +2,12 @@ package service
 
 import (
 	"context"
-	"os"
-	"runtime"
-	"strconv"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +58,16 @@ func aiIdentifyWorkers() int {
 	}
 	return n
 }
+
+// 写回门槛：fillBar 填空（不会覆盖任何东西），overwriteBar 覆盖已有有效标题。
+const (
+	// fillBar 填空门槛压到 15：填空不会覆盖任何既有信息，最坏情况是填进一个
+	// 技术栈名（Microsoft IIS / Kubernetes），也比列表上一片空白有信息量。
+	// overwriteBar 保持 60：已有有效标题时，只有模型足够确定才允许改写。
+	fillBar        = 15
+	overwriteBar   = 60
+	fingerprintBar = 15
+)
 
 // confidentEnough 第一轮（只看请求响应包）要多少分才直接收工。
 // 低于这个分数说明只判到了厂商/类别一级，继续走浏览器渲染拿页面文字。
@@ -201,6 +211,15 @@ func fillQueueFromDB(limit int) int {
 	return queued
 }
 
+// StartAIWorkers 服务启动时拉起识别工作池与补给协程。
+// 没有可用 LLM 配置时不做任何事（后续 Enqueue 仍会尝试启动）。
+func StartAIWorkers() {
+	if len(llm.AvailableProfiles()) == 0 {
+		return
+	}
+	aiQueueOnce.Do(startAIWorkers)
+}
+
 func startAIWorkers() {
 	aiQueue = make(chan aiIdentifyJob, aiIdentifyQueueSize)
 	// 补给协程：队列不再只靠"扫描时逐个 Enqueue"，而是持续从库里 ai_need 的
@@ -257,6 +276,7 @@ func runAIIdentifySafe(job aiIdentifyJob) {
 type IdentResult struct {
 	Title      string
 	Product    string
+	Confidence int    // 模型自评置信（0-100），写回门槛见 ApplyIdentResult
 	Confident  bool   // 模型给出名字且置信度达标（>=60）
 	Sufficient bool   // 模型认为"现有证据已经足够判断，只是给不出确切名字"
 	Reason     string // 模型给的依据（20 字以内）
@@ -324,6 +344,86 @@ func renderWorthwhile(hops []scanner.Hop) (bool, string) {
 	return true, ""
 }
 
+// chromeErrorMarkers 浏览器内置错误页的特征文本。
+//
+// 这些文字不是目标站点返回的内容，而是 chromium 自己生成的：DNS 解析失败、
+// 连接被拒、重定向环、协议错配。拿它当证据会把主机名（sctst03、scecc03a）、
+// "webserver" 这种词当成系统名——实测 45 条样本里就踩了 5 次。
+var chromeErrorMarkers = []string{
+	"this page can’t be found", "this page can't be found",
+	"this site can’t be reached", "this site can't be reached",
+	"this page isn’t working", "this page isn't working",
+	"refused to connect", "redirected you too many times",
+	"client sent an http request to an https server",
+	"you don’t have authorization to view this page",
+	"you don't have authorization to view this page",
+	"dns_probe", "err_connection", "err_empty_response",
+}
+
+// needsJudge 本地规则拿不准时返回 true，交给判断 agent 决定要不要渲染。
+//
+// 判定口径（实测校准）：最后一跳是 2xx 且去掉标签后正文 ≥ 400 字，说明页面
+// 有真实内容，直接识别就够；正文极少或全是脚本（空壳 SPA、JS 跳转页）才值得
+// 花一次判断调用，让模型看整体证据决定渲染。
+func needsJudge(hops []scanner.Hop) bool {
+	if len(hops) == 0 {
+		return false
+	}
+	last := hops[len(hops)-1]
+	st := hopStatus(last.ResponseLine)
+	if st < 200 || st >= 400 {
+		return false
+	}
+	visible := []rune(stripTags(last.Body))
+	return len(visible) < 400
+}
+
+// stripTags 粗略去掉标签与脚本，用来估算可见正文长度
+func stripTags(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	depth := 0
+	inScript := false
+	low := strings.ToLower(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] == '<' {
+			rest := low[i:]
+			if strings.HasPrefix(rest, "<script") || strings.HasPrefix(rest, "<style") {
+				inScript = true
+			}
+			depth++
+			continue
+		}
+		if s[i] == '>' {
+			rest := low[i:]
+			if inScript && (strings.Contains(rest, "</script") || strings.Contains(rest, "</style")) {
+				inScript = false
+			}
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth == 0 && !inScript {
+			b.WriteByte(s[i])
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// renderLooksBroken 判断渲染结果是不是浏览器错误页。
+func renderLooksBroken(title, text string) bool {
+	low := strings.ToLower(title + " " + text)
+	for _, m := range chromeErrorMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // traceWithFallback 抓包，协议判错时用另一个 scheme 重试一次。
 //
 // 为什么需要：入库的 protocol 来自引擎的端口探测，在"302 跳到 https"或"双栈端口"
@@ -332,17 +432,37 @@ func renderWorthwhile(hops []scanner.Hop) (bool, string) {
 // 白排一次队。识别是拿证据判断身份，协议错了就用另一个再试一次，代价只是多一次请求。
 func traceWithFallback(ip string, port int, scheme string) ([]scanner.Hop, error, string) {
 	hops, err := scanner.HTTPTrace(ip, port, scheme, 4)
-	if err == nil && len(hops) > 0 {
+	if err == nil && len(hops) > 0 && !isSchemeMismatch(hops) {
 		return hops, nil, scheme
 	}
 	alt := "https"
 	if scheme == "https" {
 		alt = "http"
 	}
-	if h2, e2 := scanner.HTTPTrace(ip, port, alt, 4); e2 == nil && len(h2) > 0 {
+	if h2, e2 := scanner.HTTPTrace(ip, port, alt, 4); e2 == nil && len(h2) > 0 && !isSchemeMismatch(h2) {
 		return h2, nil, alt
 	}
 	return hops, err, scheme
+}
+
+// isSchemeMismatch 判断这次抓包是不是"协议用错了"。
+//
+// 关键案例：6443 / 10250 这类端口用 http 去连，服务器不回连接错误，而是正常回
+// 400 + 正文 "Client sent an HTTP request to an HTTPS server"。这既不是 err
+// 也不是空 hops，旧逻辑认为"抓包成功"，于是把这段错误文本交给模型——
+// 实测被识别成 nginx（响应头里确有 Server: nginx），把 Kubernetes 张冠李戴。
+// 认出这个特征就必须换 https 重抓。
+func isSchemeMismatch(hops []scanner.Hop) bool {
+	if len(hops) == 0 {
+		return false
+	}
+	last := hops[len(hops)-1]
+	if hopStatus(last.ResponseLine) != 400 {
+		return false
+	}
+	low := strings.ToLower(last.Body)
+	return strings.Contains(low, "http request to an https server") ||
+		strings.Contains(low, "plain http request was sent to https port")
 }
 
 // IdentifyService 跑完整识别链路（不带 ctx，供非关键路径使用）。
@@ -393,7 +513,11 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		stages = append(stages, IdentStage{Stage: "抓取请求响应包", Input: baseURL, Output: "无响应"})
 		return done()
 	}
-	digest := scanner.TraceDigest(hops)
+	// 协议判错时抓包已切到另一个 scheme，渲染必须跟着走——
+	// 否则 6443 / 10250 这类 HTTPS 端口会被渲染成
+	// "Client sent an HTTP request to an HTTPS server" 的错误页。
+	baseURL = fmt.Sprintf("%s://%s:%d/", scheme, svc.IP, svc.Port)
+
 	stages = append(stages, IdentStage{
 		Stage:  "抓取请求响应包",
 		Input:  fmt.Sprintf("%s（共 %d 跳）", baseURL, len(hops)),
@@ -405,24 +529,50 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		return done()
 	}
 
-	// 第 2 步：研判 agent —— 这一页是否异常、要不要开浏览器
-	tJudge := time.Now()
-	jv := askJudge(ctx, digest)
-	mark("judge", tJudge)
-	stages = append(stages, IdentStage{
-		Stage: "AI·研判", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(digest)),
-		Output: fmt.Sprintf("kind=%s render=%v %s", orNone(jv.Kind), jv.Render, orNone(jv.Reason)),
-		OK:     jv.Kind != "",
-	})
-
-	// 研判失败（模型不可用、输出不是 JSON）时退回本地规则，不让整条链路停摆
-	needRender, renderWhy := jv.Render, "研判 kind="+orNone(jv.Kind)
-	if jv.Kind == "" {
-		ok, why := renderWorthwhile(hops)
-		needRender, renderWhy = ok, "本地规则："+why
+	// 第 2 步：判断（按需）+ 识别（一次）。
+	//
+	// 为什么不是每条都调判断 agent：串行两轮调用让每条固定多 1~3 秒；并行两轮又会
+	// 把 LLM 网关的并发打满，实测触发排队（单条 40~70 秒）。所以先用本地规则把
+	// "明显不需要深度判定"的页面挑出去（错误页、正文完整的正常页），只把
+	// 壳页/空壳/跳转这类真正拿不准的交给判断 agent。
+	brief := scanner.TraceDigestBrief(hops)
+	var jv judgeVerdict
+	if needsJudge(hops) {
+		tJudge := time.Now()
+		jv = askJudge(ctx, brief)
+		mark("judge", tJudge)
+		stages = append(stages, IdentStage{
+			Stage: "AI·研判", Input: fmt.Sprintf("%d 跳 / %d 字节", len(hops), len(brief)),
+			Output: fmt.Sprintf("kind=%s render=%v %s", orNone(jv.Kind), jv.Render, orNone(jv.Reason)),
+			OK:     jv.Kind != "",
+		})
+	} else {
+		stages = append(stages, IdentStage{
+			Stage: "研判", Input: fmt.Sprintf("%d 跳", len(hops)),
+			Output: "本地规则已判定：页面结构清楚，不需要判断 agent 介入",
+		})
 	}
-	if jv.Kind == "error" {
-		needRender, renderWhy = false, "研判：错误页，无身份信息"
+
+	// 渲染决策：本地硬闸门优先，模型只在闸门放行后才说了算。
+	//
+	// 为什么不让模型推翻本地规则：非 HTML（JSON / 纯文本 / 二进制）、4xx-5xx、
+	// 小正文 401/403 是物理事实，"渲染也只会拿到同样的字节"。模型偶尔把这些判成
+	// shell 要求渲染，实测 198.18.49.116:8077（正文就一个 pong）白花 8.4 秒。
+	localOK, localWhy := renderWorthwhile(hops)
+	var needRender bool
+	renderWhy := ""
+	switch {
+	case !localOK:
+		// 物理事实优先：非 HTML / 4xx-5xx / 小正文 401-403，渲染也拿不到更多
+		needRender, renderWhy = false, "本地规则："+localWhy
+	case jv.Kind == "" && !needsJudge(hops):
+		needRender, renderWhy = false, "本地规则：页面结构清楚，正文足够判断"
+	case jv.Kind == "":
+		needRender, renderWhy = true, "研判不可用，按本地规则渲染"
+	case jv.Render:
+		needRender, renderWhy = true, "研判 kind="+jv.Kind
+	default:
+		needRender, renderWhy = false, "研判 kind="+jv.Kind+"，无需深度判定"
 	}
 
 	// 第 3 步：按需渲染（全链路最贵的一步）
@@ -436,7 +586,7 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		tRender := time.Now()
 		var pageDesc, pageText string
 		var rerr error
-		pageTitle, pageDesc, pageText, rerr = scanner.RenderPageCtx(ctx, baseURL, 8*time.Second)
+		pageTitle, pageDesc, pageText, rerr = scanner.RenderPageCtx(ctx, baseURL, 6*time.Second)
 		mark("render", tRender)
 		switch {
 		case rerr != nil && ctx.Err() != nil:
@@ -444,6 +594,11 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 			return done()
 		case rerr != nil:
 			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "渲染失败：" + rerr.Error()})
+		case renderLooksBroken(pageTitle, pageText):
+			// 浏览器错误页不是目标内容：不能拿它当证据，也不能把它当候选标题
+			pageTitle = ""
+			stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL,
+				Output: "渲染得到浏览器错误页（DNS/连接/重定向失败），不作为证据，退回抓包结果"})
 		default:
 			rendered = fmt.Sprintf("页面标题: %s\nmeta描述: %s\n正文摘要: %s",
 				orNone(pageTitle), orNone(pageDesc), orNone(pageText))
@@ -452,13 +607,25 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		}
 	}
 
-	// 第 4 步：识别 agent —— 有渲染结果就用渲染结果，否则用抓包证据
-	evidence, source := digest, "请求响应包"
+	// 第 4 步：识别（一次）。有渲染结果就用渲染结果，否则用抓包证据。
+	evidence, source := brief, "请求响应包"
 	if rendered != "" {
 		evidence, source = rendered, "渲染结果"
 	}
 	tId := time.Now()
 	iv := askIdentify(ctx, source, evidence, rendered != "")
+	// 只在"调用成功但返回空对象"时重试一次。
+	//
+	// 不能对超时也重试：网关不健康时单次要 15 秒，重试直接翻倍到 30 秒以上，
+	// worker 被长期占住、整队吞吐塌掉（实测一轮 45 条跑了 7 分钟）。
+	// 判据用 Raw：调用失败时 askIdentify 会把 Raw 置成"模型调用失败"，空内容时 Raw 为空串。
+	if strings.TrimSpace(iv.Raw) == "" && strings.TrimSpace(iv.Title) == "" &&
+		strings.TrimSpace(iv.Product) == "" && ctx.Err() == nil {
+		if retry := askIdentify(ctx, source, evidence+"\n\n注意：title 和 product 不能都为空。", rendered != ""); strings.TrimSpace(retry.Title) != "" || strings.TrimSpace(retry.Product) != "" {
+			iv = retry
+			stages = append(stages, IdentStage{Stage: "AI·识别·空结果重试", Input: "空结果", Output: orNone(retry.Raw), OK: retry.dotConfident()})
+		}
+	}
 	mark("identify", tId)
 	stages = append(stages, IdentStage{
 		Stage: "AI·识别·" + source, Input: truncateStr(evidence, 120),
@@ -490,6 +657,7 @@ func (r *IdentResult) apply(v aiVerdict) {
 	if strings.TrimSpace(v.Product) != "" {
 		r.Product = strings.TrimSpace(v.Product)
 	}
+	r.Confidence = v.Confidence
 	r.Confident = v.Confidence >= 60
 	r.Sufficient = v.Sufficient
 	r.Reason = v.Reason
@@ -541,8 +709,8 @@ func askJudge(ctx context.Context, evidence string) judgeVerdict {
 			{Role: "system", Content: PromptFor(RoleJudge)},
 			{Role: "user", Content: "证据：\n" + evidence},
 		},
-		Temperature: 0.1,
-		MaxTokens:   200,
+		Temperature: 0,
+		MaxTokens:   600,
 	})
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil && ctx.Err() == nil {
@@ -552,6 +720,12 @@ func askJudge(ctx context.Context, evidence string) judgeVerdict {
 		return judgeVerdict{}
 	}
 	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
+	if answer == "" {
+		// 空 content 的两种成因必须分得清：模型真没答（finish=length 说明思考把
+		// 预算耗尽），还是答了但被拦。不记 finish_reason 就只能靠猜。
+		log.Printf("[ai-ident] 研判返回空内容（finish=%s tokens=%s）",
+			res.Resp.Choices[0].Reason, usageBrief(res.Resp))
+	}
 	var v judgeVerdict
 	if err := json.Unmarshal([]byte(extractJSON(answer)), &v); err != nil {
 		return judgeVerdict{Raw: answer}
@@ -577,8 +751,8 @@ func askIdentify(ctx context.Context, source, evidence string, rendered bool) ai
 			{Role: "system", Content: PromptFor(RoleIdentify)},
 			{Role: "user", Content: fmt.Sprintf("%s。\n来源：%s\n\n%s", hint, source, evidence)},
 		},
-		Temperature: 0.1,
-		MaxTokens:   400,
+		Temperature: 0,
+		MaxTokens:   600,
 	})
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil && ctx.Err() == nil {
@@ -588,12 +762,24 @@ func askIdentify(ctx context.Context, source, evidence string, rendered bool) ai
 		return aiVerdict{Sufficient: true, Raw: "模型调用失败"}
 	}
 	answer := strings.TrimSpace(res.Resp.Choices[0].Message.Content)
+	if answer == "" {
+		log.Printf("[ai-ident] 识别返回空内容（finish=%s tokens=%s）",
+			res.Resp.Choices[0].Reason, usageBrief(res.Resp))
+	}
 	var v aiVerdict
 	if err := json.Unmarshal([]byte(extractJSON(answer)), &v); err != nil {
 		return aiVerdict{Sufficient: true, Raw: answer}
 	}
 	v.Raw = answer
 	return v
+}
+
+// usageBrief 输出 usage 摘要，用于诊断空回复（推理 token 是否吃掉了预算）
+func usageBrief(r *llm.ChatResponse) string {
+	if r == nil || r.Usage == nil {
+		return "无"
+	}
+	return fmt.Sprintf("in=%d out=%d total=%d", r.Usage.PromptTokens, r.Usage.CompletionTokens, r.Usage.TotalTokens)
 }
 
 // chatWithCtx 让 LLM 调用可被 ctx 打断。
@@ -612,6 +798,12 @@ func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, err
 		res *llm.CallResult
 		err error
 	}
+	// 单次调用子超时：网关偶发把一条请求挂到 40~70 秒（实测 198.19.160.4
+	// 单次识别 46 秒、整条 69 秒），占着 worker 拖垮整队吞吐。正常响应 1~3 秒，
+	// 12 秒已经宽松；超时按失败处理，走兜底逻辑，不再无限等。
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	ch := make(chan result, 1)
 	go func() {
 		r, e := llm.ChatWithFailover(req, 0)
@@ -620,8 +812,8 @@ func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, err
 	select {
 	case r := <-ch:
 		return r.res, r.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-cctx.Done():
+		return nil, cctx.Err()
 	}
 }
 
@@ -689,11 +881,25 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	updates := map[string]interface{}{"ai_checked_at": time.Now(), "ai_need": false}
 	changed := false
 	usableTitle := TitleClear(r.Title) && !scanner.PlaceholderTitle(r.Title, "")
+
+	// 写回门槛分两档（v0.0.54）。
+	//
+	// 实测 45 条真值样本：模型给对名字但置信 40~55 的情况很常见——「身份认证系统」
+	// 「IIS Windows Server」「Integrations」「SAP 消息服务器监控」都是这样，
+	// 统一按 60 卡掉等于把这些能认出来的全丢掉，正是"该识别到的没识别到"。
+	// 但 40 分也覆盖已有的、正确的旧标题就太冒险。
+	//
+	// 所以：填空（当前没有有效标题）40 分即可，覆盖（已有有效标题）仍要 60 分。
+	haveValidOld := TitleClear(svc.Title) && !scanner.PlaceholderTitle(svc.Title, svc.StatusCode)
+	bar := overwriteBar
+	if !haveValidOld {
+		bar = fillBar
+	}
 	// 已有有效标题时，不允许用"未识别/未知"这类否定结论覆盖它
-	if usableTitle && IsUnidentified(r.Title) && !scanner.PlaceholderTitle(svc.Title, svc.StatusCode) {
+	if usableTitle && IsUnidentified(r.Title) && haveValidOld {
 		usableTitle = false
 	}
-	if r.Confident && usableTitle && r.Title != svc.Title {
+	if r.Confidence >= bar && usableTitle && r.Title != svc.Title {
 		updates["title"] = truncateStr(r.Title, 300)
 		updates["title_source"] = "ai"
 		if strings.TrimSpace(svc.Title) != "" {
@@ -701,7 +907,10 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 		}
 		changed = true
 	}
-	if r.Confident && strings.TrimSpace(r.Product) != "" && r.Product != svc.Fingerprint {
+	// 指纹门槛单独一档（v0.0.54）：模型明确给出产品名（哪怕置信只有 15，例如
+	// IIS/nginx 默认页）就记进 fingerprint。title 是"业务系统名"，模糊时宁可不写；
+	// fingerprint 是"技术栈"，写下来对排查有用，也不会覆盖业务身份。
+	if r.Confidence >= fingerprintBar && strings.TrimSpace(r.Product) != "" && r.Product != svc.Fingerprint {
 		updates["fingerprint"] = truncateStr(r.Product, 300)
 		if strings.TrimSpace(svc.Fingerprint) != "" {
 			updates["prev_fingerprint"] = svc.Fingerprint

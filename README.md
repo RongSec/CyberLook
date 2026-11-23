@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.53-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-0.0.54-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />
@@ -198,6 +198,18 @@ kind=weak    只有厂商级线索、缺产品线            → 渲染
 **提示词可编辑。** 「LLM 配置 → AI Agent」页有「判断」「识别」两个角色，各自的提示词可直接改、
 可恢复默认；改完下一条识别立即生效（每条识别时实时读取，不缓存、不重启）。
 提示词刻意写得条目化、无解释性段落——长提示词里的说明会被模型当成"可选项"，反而稀释硬规则。
+
+**判断不是每条都跑。** 本地规则先把「明显不需要深度判定」的页面挑出去——最后一跳是 2xx、
+去掉标签后的正文 ≥ 400 字，说明页面有真实内容，直接进识别；只有壳页、空壳 SPA、跳转页
+才交给判断 agent。实测 68% 的服务不需要这次调用，单条省 1~3 秒。
+
+**证据只给有用的部分。** 完整报文（16KB）里请求头 User-Agent/Accept 对判断「这是什么系统」
+毫无作用，却占掉大半 token。实际送进模型的是精简版：跳转链、`Server` / `X-Powered-By` /
+`Location` / `WWW-Authenticate` 几行、正文前 3KB，输入约 800 token。
+
+**写回门槛分三档**：填空 15、指纹 15、覆盖已有有效标题 60。「填空」不覆盖任何既有信息，
+最坏是填进一个技术栈名（Microsoft IIS、Kubernetes），也比列表上一片空白有信息量；
+「覆盖」则要求模型足够确定，避免把正确旧值换成半对的新值。
 
 **队列可见。** `GET /api/services/ai-stats` 返回并发数、内存队列长度、库里待识别（仅 HTTP）、
 最近 5 分钟吞吐、四阶段平均耗时（抓包/研判/渲染/识别）、渲染采用与跳过数、ETA；

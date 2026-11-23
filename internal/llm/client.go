@@ -40,7 +40,19 @@ type ChatRequest struct {
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
+	// ResponseFormat 只用来让兼容 OpenAI 的服务返回纯 JSON。
+	// 实测不约束时模型会先写一段分析再给 JSON，输出 300~600 token、
+	// 单条识别拖到 10~15 秒（本地/网关模型约 40 token/s）；约束后稳定在几十 token。
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
+
+// ResponseFormat 响应格式约束
+type ResponseFormat struct {
+	Type string `json:"type"`
+}
+
+// JSONFormat 要求模型只返回 JSON 对象
+func JSONFormat() *ResponseFormat { return &ResponseFormat{Type: "json_object"} }
 
 type ChatResponse struct {
 	ID      string `json:"id"`

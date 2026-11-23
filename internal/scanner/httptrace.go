@@ -362,6 +362,67 @@ func TraceDigest(hops []Hop) string {
 	return traceText(hops, 16*1024)
 }
 
+// TraceDigestBrief 供 AI 判断/识别用的精简证据。
+//
+// 完整报文（TraceDigest，16KB）对模型是纯负担：请求头里的 User-Agent、Accept、
+// Accept-Language 对"这是什么系统"毫无作用，却占掉大半 token；响应头里真正有
+// 识别价值的只有 Server / X-Powered-By / Location / WWW-Authenticate 这几行。
+// 实测 16KB 输入首 token 延迟 2~4 秒，收到 3KB 以内后降到 1 秒级。
+func TraceDigestBrief(hops []Hop) string {
+	if len(hops) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(hops) > 1 {
+		b.WriteString("跳转链：\n")
+		for i, h := range hops {
+			fmt.Fprintf(&b, "  %d) %s", i+1, h.ResponseLine)
+			if loc := headerValue(h.ResponseHeaders, "Location"); loc != "" {
+				b.WriteString(" → " + loc)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	last := hops[len(hops)-1]
+	b.WriteString("最终响应：\n" + last.ResponseLine + "\n")
+	for _, k := range []string{
+		"Server", "X-Powered-By", "Content-Type", "Location",
+		"WWW-Authenticate", "Set-Cookie", "X-Application-Context", "Via", "X-Cache",
+	} {
+		if v := headerValue(last.ResponseHeaders, k); v != "" {
+			fmt.Fprintf(&b, "%s: %s\n", k, v)
+		}
+	}
+	b.WriteString("\n--- 正文 ---\n")
+	switch {
+	case last.Body != "":
+		if len(last.Body) > 3000 {
+			b.WriteString(cutBytes(last.Body, 3000))
+			b.WriteString("\n…（已截断）\n")
+		} else {
+			b.WriteString(last.Body + "\n")
+		}
+	default:
+		b.WriteString("（空）\n")
+	}
+	return b.String()
+}
+
+// headerValue 从 dumpRespHeaders 生成的文本里取某个头的值（大小写不敏感）
+func headerValue(headers, key string) string {
+	for _, ln := range strings.Split(headers, "\n") {
+		i := strings.Index(ln, ":")
+		if i <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(ln[:i]), key) {
+			return strings.TrimSpace(ln[i+1:])
+		}
+	}
+	return ""
+}
+
 // TraceRaw 完整报文（落盘/会话里给人看），不截断 body（抓取阶段已限 32KB）
 func TraceRaw(hops []Hop) string {
 	return traceText(hops, 0)
