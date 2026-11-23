@@ -69,6 +69,17 @@ func PlaceholderTitle(title, statusCode string) bool {
 		return true
 	}
 
+	// 5.1) 设备/浏览器自带的错误页标题。
+	//
+	// 实测 198.19.252.2:80 的原始 HTML title 就是 `Browser Error`——设备检测到
+	// 不支持的浏览器时返回的静态错误页，真正身份（HDM）由 JS 渲染后才写进 title。
+	// 这类标题必须判为占位，否则 L0 会把它当系统名直接入库。
+	switch low {
+	case "browser error", "browser not supported", "error", "error page",
+		"http error", "页面错误", "网页错误", "出错了", "加载失败":
+		return true
+	}
+
 	// 6) 状态码本身是错误，且标题没有实质内容
 	if statusCode != "" && len([]rune(t)) <= 12 {
 		for _, p := range []string{"4", "5"} {

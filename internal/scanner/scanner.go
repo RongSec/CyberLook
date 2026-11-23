@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RongSec/CyberLook-Scan/portscan"
+	"golang.org/x/net/html"
 	// sqlite 驱动注册在 sqlite_driver.go（!mipsle）/ sqlite_driver_unsupported.go（mipsle），
 	// 不能在这里无条件 import——否则 mipsle 交叉编译被 modernc.org/libc 的
 	// 无 MIPS 实现直接卡死（v0.0.27 出包实测发现，审计旁路在 mipsle 上降级为空）。
@@ -436,30 +437,84 @@ func cleanNone(s string) string {
 	return s
 }
 
-// extractTitle 从 HTTP 响应体提取 <title> 标签
+// extractTitle 从 HTTP 响应体提取**原始 HTML 的** <title> 文本。
+//
+// v0.0.55 起改用 golang.org/x/net/html 的 tokenizer。旧实现是
+// 「找 <title → 找第一个 > → 找 </title>」，在四类真实响应上会给出错误结果：
+//  1. `<title data-v="a>b">`：属性值里的 > 被当成标签结束，标题变成 `b">`；
+//  2. script 里的字符串 `document.title="<title>"`：假命中；
+//  3. `<title><b>x</b></title>`（少见但存在）：内嵌标签被原样留在标题里；
+//  4. `&#x4E2D;` 这类数字实体：旧实现只还原 5 个命名实体，中文实体全部丢失变成乱码。
+//
+// tokenizer 还有一个旧实现没有的性质：标题未闭合（响应被 32KB 截断）时，
+// 仍返回已收集到的文本，而不是整条丢弃。
 func extractTitle(resp string) string {
-	lower := strings.ToLower(resp)
-	start := strings.Index(lower, "<title")
-	if start < 0 {
+	if resp == "" {
 		return ""
 	}
-	gt := strings.Index(resp[start:], ">")
-	if gt < 0 {
-		return ""
+	z := html.NewTokenizer(strings.NewReader(resp))
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			return ""
+		}
+		if tt != html.StartTagToken {
+			continue
+		}
+		if name, _ := z.TagName(); string(name) != "title" {
+			continue
+		}
+		var sb strings.Builder
+		for {
+			t2 := z.Next()
+			if t2 == html.TextToken {
+				sb.Write(z.Text()) // z.Text() 已做实体还原，且只在下次 Next 前有效
+				if sb.Len() > 4096 {
+					break
+				}
+				continue
+			}
+			if t2 == html.ErrorToken {
+				break
+			}
+			if t2 == html.EndTagToken {
+				if n2, _ := z.TagName(); string(n2) == "title" {
+					break
+				}
+			}
+		}
+		return normalizeTitleText(sb.String())
 	}
-	content := resp[start+gt+1:]
-	end := strings.Index(strings.ToLower(content), "</title>")
-	if end < 0 {
-		return ""
-	}
-	title := strings.TrimSpace(content[:end])
-	title = strings.NewReplacer("\r", "", "\n", " ", "\t", " ").Replace(title)
-	title = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", "\"", "&#39;", "'").Replace(title)
-	if len(title) > 200 {
-		title = title[:200]
-	}
-	return title
 }
+
+// normalizeTitleText 剥标签、折叠空白、按 rune 截断。
+//
+// 为什么要剥标签：HTML 规范里 <title> 是 RCDATA，内部的 `<b>` 是字面文本
+// （浏览器 document.title 也会原样给出 `<b>登录</b>`）。对"系统名"这个用途来说
+// 那是脏数据，必须清掉。只匹配完整标签 `<tag ...>`，所以 `a < b`、`x < y`
+// 这类裸尖括号不受影响。
+//
+// 按 rune 截断：旧实现 len(title)>200 会把中文截成半个 UTF-8 字符。
+func normalizeTitleText(s string) string {
+	s = reInlineTag.ReplaceAllString(s, "")
+	s = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return ""
+	}
+	if r := []rune(s); len(r) > 200 {
+		s = string(r[:200])
+	}
+	return s
+}
+
+var reInlineTag = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]*)?>`)
+
+// HTMLTitle 对外暴露「从响应体取原始 <title>」。
+//
+// 识别链（service 层）要靠它做 L0 规则判定：页面自己声明了明确标题时，
+// 不需要判断 agent、不需要渲染、也不需要识别 agent——那是三笔 LLM/浏览器开销。
+func HTMLTitle(resp string) string { return extractTitle(resp) }
 
 // cleanFingerprint 过滤非产品指纹（HSTS 等安全特性）并去重
 func cleanFingerprint(fp string) string {

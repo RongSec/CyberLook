@@ -280,8 +280,11 @@ type IdentResult struct {
 	Confident  bool   // 模型给出名字且置信度达标（>=60）
 	Sufficient bool   // 模型认为"现有证据已经足够判断，只是给不出确切名字"
 	Reason     string // 模型给的依据（20 字以内）
-	Stages     []IdentStage
-	Hops       []scanner.Hop
+	// Source 标题从哪来：html（原始 <title> 直接采纳）/ render（渲染后 document.title）
+	// / ai（模型判定）。写回时落到 services.title_source，便于事后区分置信层级。
+	Source string
+	Stages []IdentStage
+	Hops   []scanner.Hop
 	// Timing 分阶段耗时（毫秒）：trace / judge / render / identify。
 	// 没有这一步就只能看到"总共 43 秒"，看不出是渲染慢还是模型慢。
 	Timing map[string]int64
@@ -365,6 +368,16 @@ var chromeErrorMarkers = []string{
 // 判定口径（实测校准）：最后一跳是 2xx 且去掉标签后正文 ≥ 400 字，说明页面
 // 有真实内容，直接识别就够；正文极少或全是脚本（空壳 SPA、JS 跳转页）才值得
 // 花一次判断调用，让模型看整体证据决定渲染。
+// needsJudge 判断「要不要问判断 agent」。
+//
+// v0.0.55 起判据从"可见正文够不够 400 字"换成"标题不可用时的结构信号"：
+//   - 调用本函数的前提已经是「没有可用 title」（有 title 的走 L0 直接采纳）；
+//   - 所以真正拿不准的只剩两种：正文也少（壳页），或者正文虽长但整页是 script
+//     骨架（SPA，正文由 JS 渲染，抓包拿到的只是空 div）。
+//
+// 长度门槛从 400 降到 80：中文页面 400 字是一条很长的正文，正常登录页
+// （导航 + 版权 + 备案号）也就 100 字上下，旧门槛把它们全判成"需要判断"。
+// 80 字相当于"至少有一行真实文案"，再短就只剩空 div 或纯跳转脚本了。
 func needsJudge(hops []scanner.Hop) bool {
 	if len(hops) == 0 {
 		return false
@@ -374,8 +387,69 @@ func needsJudge(hops []scanner.Hop) bool {
 	if st < 200 || st >= 400 {
 		return false
 	}
-	visible := []rune(stripTags(last.Body))
-	return len(visible) < 400
+	if len([]rune(stripTags(last.Body))) >= 80 && !hasScriptBundle(last.Body) {
+		return false
+	}
+	return true
+}
+
+// hasScriptBundle 响应体是否引用了外部脚本（典型 SPA 骨架的特征）。
+//
+// 为什么单独看这个：Vue/React 构建出的 index.html 正文几乎是空的（只有一个
+// `<div id="app">`），所有可见内容都在 bundle 里。这类页面 title 常常有，但
+// 是构建时的默认值（"Vue App"、"Webpack App"），必须交给渲染兜底。
+func hasScriptBundle(body string) bool {
+	low := strings.ToLower(body)
+	return strings.Contains(low, "<script") && strings.Contains(low, "src=")
+}
+
+// titleNoiseWord 整条标题（或分割后的某一段）就是这些词时，不含任何业务身份。
+//
+// 与 scanner.PlaceholderTitle 的分工：那边只认"结构性占位"（状态码文本、跳转壳、
+// 服务器名），这里补的是**中文登录壳与导航词**——`登录`、`首页`、`控制台`。
+// 混在一条规则里会让 scanner 包承担语义判断，所以放在识别侧。
+var titleNoiseWord = map[string]bool{
+	"登录": true, "登陆": true, "登录页": true, "用户登录": true, "统一登录": true,
+	"首页": true, "主页": true, "欢迎": true, "欢迎页": true, "欢迎使用": true,
+	"后台": true, "管理后台": true, "控制台": true, "管理控制台": true,
+	"系统": true, "管理系统": true, "平台": true, "门户": true, "门户首页": true,
+	"login": true, "log in": true, "sign in": true, "signin": true,
+	"home": true, "home page": true, "homepage": true, "welcome": true,
+	"index": true, "index page": true, "portal": true, "console": true,
+	"dashboard": true, "admin": true, "admin console": true, "system": true,
+	"default": true, "untitled": true, "document": true, "web app": true,
+}
+
+func normNoise(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+// titleIsAllNoise 整条标题就是登录壳/导航词。
+func titleIsAllNoise(title string) bool {
+	return titleNoiseWord[normNoise(title)]
+}
+
+// titleHasNoisySegment 标题里有分隔符切开后的一段是登录壳/导航词。
+//
+// 命中说明这是「系统名 | 首页」「示例平台 - 登录」这类长标题：
+// 名字本身有信息量，但需要截掉后缀，交给识别 agent 归整比规则硬切更稳。
+func titleHasNoisySegment(title string) bool {
+	segs := strings.FieldsFunc(title, func(r rune) bool {
+		switch r {
+		case '-', '–', '—', '－', '|', '｜', '_', '·', ':', '：', '/':
+			return true
+		}
+		return false
+	})
+	if len(segs) < 2 {
+		return false
+	}
+	for _, s := range segs {
+		if titleNoiseWord[normNoise(s)] {
+			return true
+		}
+	}
+	return false
 }
 
 // stripTags 粗略去掉标签与脚本，用来估算可见正文长度
@@ -529,15 +603,63 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		return done()
 	}
 
-	// 第 2 步：判断（按需）+ 识别（一次）。
+	// 第 2 步：L0 规则判定——HTML 自己声明的标题能不能直接用。
+	//
+	// v0.0.55：以前识别链完全不看 <title>，把原始字节整个交给模型让它自己读标题。
+	// 等于把"这页有没有明确身份"这件机械判断交给了最贵的一环：判断 agent + 渲染
+	// + 识别 agent 三笔开销，全花在一条已经写着"数据智能平台"的响应上。
+	// 现在先解析 title，分三档：
+	//   - 明确且无导航后缀 → 直接采纳，0 次模型调用、0 次渲染；
+	//   - 明确但带「 | 首页」「- 登录」这类后缀 → 跳过判断与渲染，只让识别 agent 归整；
+	//   - 缺失/占位/错误页 → 走原链路（判断 → 渲染 → 识别）。
+	lastHop := hops[len(hops)-1]
+	htmlTitle := scanner.HTMLTitle(lastHop.Body)
+	stCode := hopStatus(lastHop.ResponseLine)
+	titleUsable := stCode >= 200 && stCode < 300 &&
+		TitleClear(htmlTitle) && !scanner.PlaceholderTitle(htmlTitle, "") &&
+		!titleIsAllNoise(htmlTitle)
+	titleClean := titleUsable && !titleHasNoisySegment(htmlTitle)
+
+	if titleClean {
+		res.Title = htmlTitle
+		res.Confidence = 100
+		res.Confident = true
+		res.Sufficient = true
+		res.Source = "html"
+		res.Reason = "HTML <title> 直接可用"
+		stages = append(stages, IdentStage{
+			Stage:  "规则·HTML 标题",
+			Input:  truncateStr(htmlTitle, 60),
+			Output: "标题明确，跳过判断/渲染/识别（0 次模型调用）",
+			OK:     true,
+		})
+		return done()
+	}
+	if titleUsable {
+		stages = append(stages, IdentStage{
+			Stage:  "规则·HTML 标题",
+			Input:  truncateStr(htmlTitle, 60),
+			Output: "标题可用但带导航后缀，交给识别 agent 归整（不渲染）",
+			OK:     true,
+		})
+	}
+
+	// 第 3 步：判断（按需）。
 	//
 	// 为什么不是每条都调判断 agent：串行两轮调用让每条固定多 1~3 秒；并行两轮又会
 	// 把 LLM 网关的并发打满，实测触发排队（单条 40~70 秒）。所以先用本地规则把
-	// "明显不需要深度判定"的页面挑出去（错误页、正文完整的正常页），只把
-	// 壳页/空壳/跳转这类真正拿不准的交给判断 agent。
+	// "明显不需要深度判定"的页面挑出去（有可用标题、错误页、正文完整的正常页），
+	// 只把壳页/空壳/SPA 骨架这类真正拿不准的交给判断 agent。
 	brief := scanner.TraceDigestBrief(hops)
 	var jv judgeVerdict
-	if needsJudge(hops) {
+	judgeNeeded := !titleUsable && needsJudge(hops)
+	switch {
+	case titleUsable:
+		stages = append(stages, IdentStage{
+			Stage: "研判", Input: fmt.Sprintf("%d 跳", len(hops)),
+			Output: "本地规则：HTML 标题可用，不需要判断 agent 介入",
+		})
+	case judgeNeeded:
 		tJudge := time.Now()
 		jv = askJudge(ctx, brief)
 		mark("judge", tJudge)
@@ -546,7 +668,7 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 			Output: fmt.Sprintf("kind=%s render=%v %s", orNone(jv.Kind), jv.Render, orNone(jv.Reason)),
 			OK:     jv.Kind != "",
 		})
-	} else {
+	default:
 		stages = append(stages, IdentStage{
 			Stage: "研判", Input: fmt.Sprintf("%d 跳", len(hops)),
 			Output: "本地规则已判定：页面结构清楚，不需要判断 agent 介入",
@@ -565,10 +687,22 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	case !localOK:
 		// 物理事实优先：非 HTML / 4xx-5xx / 小正文 401-403，渲染也拿不到更多
 		needRender, renderWhy = false, "本地规则："+localWhy
-	case jv.Kind == "" && !needsJudge(hops):
-		needRender, renderWhy = false, "本地规则：页面结构清楚，正文足够判断"
-	case jv.Kind == "":
+	case isDeviceErrorTitle(htmlTitle):
+		// 设备自带的"浏览器不支持/出错"静态页：真实身份由 JS 渲染后才写进 title。
+		// 实测 198.19.252.2:80 原始 title 是 `Browser Error`，渲染后才是 `HDM`；
+		// 交给判断 agent 会被判成 kind=error 而不渲染，直接把答案丢掉。
+		needRender, renderWhy = true, "标题为设备自带错误页，真实身份需渲染"
+	case titleUsable:
+		// 页面自己声明的标题已经是身份信息，浏览器不会给出更多
+		needRender, renderWhy = false, "本地规则：HTML 标题可用，无需渲染"
+	case len(strings.TrimSpace(lastHop.Body)) < 40 && !hasScriptBundle(lastHop.Body):
+		// 正文连 40 字节都没有、也没有脚本：浏览器打开只会是一张白纸。
+		// 实测 198.18.49.116:8077（正文就一个 pong）白花 14 秒渲染，最后什么也没拿到。
+		needRender, renderWhy = false, "本地规则：正文不足 40 字节且无脚本，渲染也是空白"
+	case judgeNeeded && jv.Kind == "":
 		needRender, renderWhy = true, "研判不可用，按本地规则渲染"
+	case jv.Kind == "":
+		needRender, renderWhy = false, "本地规则：标题缺失但正文完整，无需渲染"
 	case jv.Render:
 		needRender, renderWhy = true, "研判 kind="+jv.Kind
 	default:
@@ -607,10 +741,13 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		}
 	}
 
-	// 第 4 步：识别（一次）。有渲染结果就用渲染结果，否则用抓包证据。
+	// 第 5 步：识别（一次）。有渲染结果就用渲染结果，否则用抓包证据。
 	evidence, source := brief, "请求响应包"
 	if rendered != "" {
 		evidence, source = rendered, "渲染结果"
+	} else if titleUsable {
+		// 带导航后缀的标题单独点出来：模型要做的只是截掉后缀，不需要重新读整页。
+		evidence = "原始 <title>: " + htmlTitle + "\n" + evidence
 	}
 	tId := time.Now()
 	iv := askIdentify(ctx, source, evidence, rendered != "")
@@ -633,13 +770,15 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	})
 
 	switch {
-	case iv.dotConfident():
+	case iv.hasName():
 		res.apply(iv)
 	case strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) &&
-		!scanner.PlaceholderTitle(pageTitle, ""):
-		// 模型没给出高置信名字，但渲染后的标题本身是明确文字：作为低置信候选带上。
-		// 排除 Login / Redirection…… 这类占位标题——浏览器的 <title> 经常就是它们。
+		!scanner.PlaceholderTitle(pageTitle, "") && !titleIsAllNoise(pageTitle):
+		// 模型没给出名字，但渲染后的标题本身是明确文字：作为低置信候选带上。
+		// 排除 Login / Redirection…… / 「登录」/「首页」这类占位标题——
+		// 浏览器的 <title> 经常就是它们（实测 198.19.160.4:80 渲染后 title 就是「登录」）。
 		res.Title = strings.TrimSpace(pageTitle)
+		res.Source = "render"
 		res.Reason = "渲染标题（未经模型确认）"
 	case strings.TrimSpace(iv.Reason) != "":
 		res.Reason = iv.Reason
@@ -661,6 +800,7 @@ func (r *IdentResult) apply(v aiVerdict) {
 	r.Confident = v.Confidence >= 60
 	r.Sufficient = v.Sufficient
 	r.Reason = v.Reason
+	r.Source = "ai"
 }
 
 // shortHeader 取响应头里的 Location / Server 行，用于阶段摘要
@@ -688,6 +828,16 @@ type aiVerdict struct {
 // dotConfident 名字可用：有名字且置信度达标
 func (v aiVerdict) dotConfident() bool {
 	return v.Confidence >= 60 && (strings.TrimSpace(v.Title) != "" || strings.TrimSpace(v.Product) != "")
+}
+
+// hasName 模型给出了任何名字（不论置信）。
+//
+// 为什么采纳门槛不再卡 60：写回侧本来就有三档门槛（填空 15 / 指纹 15 / 覆盖 60），
+// 这里再卡 60 等于把"填空 15"这一档废掉。实测 198.19.160.4:80 模型给 conf=55 的
+// 正确结论「海康威视设备Web管理」被丢弃，链路退到渲染标题「登录」入库——
+// 既白跑了一次模型，又把更好的结论换成了占位词。
+func (v aiVerdict) hasName() bool {
+	return strings.TrimSpace(v.Title) != "" || strings.TrimSpace(v.Product) != ""
 }
 
 // judgeVerdict 研判 agent 的结论
@@ -899,9 +1049,14 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	if usableTitle && IsUnidentified(r.Title) && haveValidOld {
 		usableTitle = false
 	}
+	// 填空时也不写"未知/未识别"：那等于把空标题换成一句废话，还占掉了
+	// title_source 的位置。有产品名就写进 fingerprint，同样能看出技术栈。
+	if usableTitle && IsUnidentified(r.Title) {
+		usableTitle = false
+	}
 	if r.Confidence >= bar && usableTitle && r.Title != svc.Title {
 		updates["title"] = truncateStr(r.Title, 300)
-		updates["title_source"] = "ai"
+		updates["title_source"] = titleSourceOf(r)
 		if strings.TrimSpace(svc.Title) != "" {
 			updates["prev_title"] = svc.Title // 供「新变更」标签
 		}
@@ -919,6 +1074,34 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	}
 	config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates)
 	return changed
+}
+
+// isDeviceErrorTitle 设备/浏览器自带的错误页标题（不是站点真实身份）。
+//
+// 这类页面有一个共同特征：静态 HTML 里写的是错误文案，真实身份由 JS 在
+// 渲染后改写 title。所以判据不是"要不要相信标题"，而是"必须渲染再取一次"。
+var deviceErrorTitles = map[string]bool{
+	"browser error":           true,
+	"browser not supported":   true,
+	"error page":              true,
+	"页面错误":                    true,
+	"网页错误":                    true,
+	"出错了":                     true,
+	"加载失败":                    true,
+}
+
+func isDeviceErrorTitle(title string) bool {
+	return deviceErrorTitles[normNoise(title)]
+}
+
+// titleSourceOf 标题来源标记，落库后用于区分「HTML 直取 / 渲染后读 / 模型判定」。
+// 空值按 ai 处理：历史数据里的 title_source 只有 fingerprint/tscan/ai 三种。
+func titleSourceOf(r IdentResult) string {
+	switch r.Source {
+	case "html", "render", "ai":
+		return r.Source
+	}
+	return "ai"
 }
 
 // recordIdentConversation 一次识别 = 一条会话（v0.0.47 起）。

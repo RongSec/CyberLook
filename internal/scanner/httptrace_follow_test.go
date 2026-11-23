@@ -165,6 +165,10 @@ func TestPlaceholderTitle(t *testing.T) {
 		{"SAP Message Server,release 722 (SP8)", "307", false},
 		{"VMware vSphere", "200", false},
 		{"HTTP Status 404 – Not Found", "404", true},
+		// v0.0.55：设备/浏览器自带的错误页标题（198.19.252.2:80 实测为 Browser Error）
+		{"Browser Error", "200", true},
+		{"Error Page", "200", true},
+		{"网页错误", "200", true},
 	}
 	for _, c := range cases {
 		if got := PlaceholderTitle(c.title, c.status); got != c.want {

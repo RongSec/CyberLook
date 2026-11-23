@@ -276,6 +276,8 @@ func AIIdentifyService(c *gin.Context) {
 		"confident":   r.Confident,
 		"sufficient":  r.Sufficient,
 		"reason":      r.Reason,
+		"source":      r.Source,   // html / render / ai：标题从哪来
+		"timing":      r.Timing,   // trace / judge / render / identify 分阶段毫秒
 		"stages":      r.Stages,
 		"hops":        len(r.Hops),
 	})
