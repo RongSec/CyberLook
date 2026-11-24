@@ -89,10 +89,13 @@ echo "🚀 启动服务..."
 docker compose up -d --no-build
 
 # ---------- 5. 等健康检查 ----------
-echo "⏳ 等待服务就绪（最多 120 秒）..."
+# 端口必须与 compose 同源：HOST_PORT 在 .env 里可改，没写就是 18888。
+HOST_PORT=$(grep '^HOST_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2)
+HOST_PORT=${HOST_PORT:-18888}
+echo "⏳ 等待服务就绪（http://localhost:$HOST_PORT/api/health，最多 120 秒）..."
 READY=0
 for i in $(seq 1 40); do
-    if curl -sf --max-time 3 http://localhost:18888/api/health >/dev/null 2>&1; then
+    if curl -sf --max-time 3 "http://localhost:$HOST_PORT/api/health" >/dev/null 2>&1; then
         READY=1
         break
     fi
@@ -106,7 +109,7 @@ else
     echo "=== 容器已启动，但健康检查未在 120 秒内通过 ==="
     echo "排查：docker compose ps ；docker compose logs --tail=50 server"
 fi
-echo "访问地址: http://localhost:18888（或 http://<本机IP>:18888）"
+echo "访问地址: http://localhost:$HOST_PORT（或 http://<本机IP>:$HOST_PORT）"
 echo "默认账号: admin"
 echo "默认密码: admin123（首次登录后请修改）"
 echo ""

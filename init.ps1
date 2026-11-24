@@ -99,12 +99,14 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "START: 启动服务..." -ForegroundColor Cyan
 docker compose up -d --no-build
 
-# 5. 等健康检查
-Write-Host "WAIT: 等待服务就绪（最多 120 秒）..." -ForegroundColor Cyan
+# 5. 等健康检查（端口与 compose 同源）
+$hostPort = ((Select-String -Path ".env" -Pattern "^HOST_PORT=(.*)$" -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Groups[1].Value)
+if ([string]::IsNullOrEmpty($hostPort)) { $hostPort = "18888" }
+Write-Host "WAIT: 等待服务就绪（http://localhost:$hostPort/api/health，最多 120 秒）..." -ForegroundColor Cyan
 $ready = $false
 for ($i = 0; $i -lt 40; $i++) {
     try {
-        $r = Invoke-WebRequest -Uri "http://localhost:18888/api/health" -TimeoutSec 3 -UseBasicParsing
+        $r = Invoke-WebRequest -Uri "http://localhost:$hostPort/api/health" -TimeoutSec 3 -UseBasicParsing
         if ($r.StatusCode -eq 200) { $ready = $true; break }
     } catch { }
     Start-Sleep -Seconds 3
@@ -117,7 +119,7 @@ if ($ready) {
     Write-Host "=== 容器已启动，但健康检查未在 120 秒内通过 ===" -ForegroundColor Yellow
     Write-Host "排查: docker compose ps ; docker compose logs --tail=50 server"
 }
-Write-Host "访问地址: http://localhost:18888"
+Write-Host "访问地址: http://localhost:$hostPort"
 Write-Host "默认账号: admin"
 Write-Host "默认密码: admin123（首次登录后请修改）"
 Write-Host ""

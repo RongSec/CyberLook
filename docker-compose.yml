@@ -40,7 +40,9 @@ services:
     container_name: asset-server
     restart: always
     ports:
-      - "18888:18888"
+      # 宿主端口可改（.env 里 HOST_PORT=），容器内始终 18888。
+      # init.sh / init.ps1 的健康检查读同一个变量，不会出现「服务起了但脚本说没起」。
+      - "${HOST_PORT:-18888}:18888"
     environment:
       SERVER_PORT: "18888"
       LLM_BASE_URL: ${LLM_BASE_URL:-}
