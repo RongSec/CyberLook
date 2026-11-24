@@ -22,6 +22,28 @@
 现在三个服务只声明 `image`，`init.sh` 只做 `pull → up → 健康检查`。
 拉不到就明确失败，并给出按顺序的排查项。**服务器上不需要 Go、Node、编译工具链。**
 
+### 新增：镜像发布到 Docker Hub，匿名可拉
+
+原先只推 ghcr.io。国内 ghcr 基本没有加速器生态，等于把「直接 pull」这条路堵掉一半，
+用户实际会被逼到本地构建。现在只发 Docker Hub：
+
+```bash
+docker pull rongsec/cyberlook:v1.0.0
+docker pull rongsec/cyberlook-updater:v1.0.0
+docker pull rongsec/cyberlook-agent:v1.0.0
+```
+
+compose 默认源同步改为 `docker.io/rongsec`。内网完全出不去时用 `REGISTRY` 指向自建 harbor。
+
+### 变更：密钥与配置文件的生成规则固化
+
+- 新增 `.env.example` 作为唯一模板（不含任何真实值），`init.sh` / `init.ps1` 由它生成 `.env`
+- `.env` 生成后权限收紧为 600（Windows 下收紧 ACL 到当前用户）
+- `.gitignore` 补上 `.env`、`.env.*`、`*.key`、`*.secret`、`*.pem`、`jwt.secret`、
+  `data/files/`、`data/backup/`
+  —— 之前 `.env` 没被忽略，用户把 LLM key 写进去再 `git add .` 就是事故
+- JWT 密钥由服务端首次启动自动生成到 `data/files/jwt.secret`，不需要人填
+
 ### 新增：发布节点镜像 `cyberlook-agent`
 
 release 原先只推主镜像与 updater，`agent` 只能本地构建——「直接拉镜像」在这条腿上本来就是断的。

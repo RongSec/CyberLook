@@ -26,34 +26,41 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 # ---------- 1. 生成 .env（如果不存在） ----------
+# 模板是 .env.example（随仓库分发、不含任何真实密钥），这里只填两项：部署路径与随机密码。
+# 生成后立刻 chmod 600，并且 .env 已在 .gitignore 里——任何密钥都不该进版本库。
 if [ ! -f .env ]; then
     PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 24)
-    cat > .env << EOF
-# 自动生成，请勿提交到 git
+    if [ -f .env.example ]; then
+        sed -e "s|^HOST_PROJECT_DIR=.*|HOST_PROJECT_DIR=$(pwd)|" \
+            -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$PASSWORD|" \
+            .env.example > .env
+    else
+        cat > .env << EOF
 COMPOSE_PROJECT_NAME=asset-platform
 HOST_PROJECT_DIR=$(pwd)
 POSTGRES_PASSWORD=$PASSWORD
-
-# JWT 密钥（留空则自动生成并持久化到 data/files/jwt.secret）
-# JWT_SECRET=
-
-# 镜像源。默认 ghcr.io/rongsec；内网可用自建 harbor（需事先同步三个镜像）
-# REGISTRY=harbor.example.com/library
 EOF
-    echo "✅ 已生成 .env（数据库密码已随机生成，无需手动配置）"
+    fi
+    chmod 600 .env 2>/dev/null || true
+    echo "✅ 已生成 .env（数据库密码随机；权限 600；已在 .gitignore 中）"
 else
     echo "⏭️  .env 已存在，跳过生成"
 fi
 
 # ---------- 2. 解析版本 ----------
-if [ -z "$(grep '^APP_VERSION=' .env 2>/dev/null)" ]; then
+CUR_VER=$(grep '^APP_VERSION=' .env 2>/dev/null | head -1 | cut -d= -f2)
+if [ -z "$CUR_VER" ]; then
     LATEST=$(curl -sf --max-time 8 https://api.github.com/repos/RongSec/CyberLook/releases/latest 2>/dev/null \
         | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    VER=${LATEST:-latest}
+    if grep -q '^APP_VERSION=' .env; then
+        sed -i "s|^APP_VERSION=.*|APP_VERSION=$VER|" .env
+    else
+        echo "APP_VERSION=$VER" >> .env
+    fi
     if [ -n "$LATEST" ]; then
-        echo "APP_VERSION=$LATEST" >> .env
         echo "🔖 最新版本: $LATEST"
     else
-        echo "APP_VERSION=latest" >> .env
         echo "🔖 无法查询最新版本（网络受限），使用 latest"
     fi
 fi
@@ -66,9 +73,10 @@ if ! docker compose pull; then
     cat << 'MSG'
 
 ❌ 镜像拉取失败。按顺序排查：
-   1) 能否访问镜像源：curl -I https://ghcr.io/v2/
-      ghcr.io 在国内经常不通，这是网络问题，不是程序问题。
-   2) 用自建源：把镜像同步到 harbor 后，在 .env 里加一行
+   1) 能否访问 Docker Hub：curl -I https://registry-1.docker.io/v2/
+      不通就是网络问题。给 Docker 配加速器（阿里云/腾讯云控制台有个人加速地址），
+      写进 /etc/docker/daemon.json 的 registry-mirrors 后重启 docker。
+   2) 内网完全出不去：把三个镜像同步到自建 harbor，然后在 .env 里加一行
       REGISTRY=harbor.example.com/library
       再执行 bash init.sh
    3) 私有仓库需要登录：docker login <registry>

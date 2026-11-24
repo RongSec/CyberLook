@@ -24,6 +24,21 @@ data/*
 *.db-wal
 *.sqlite
 
+# ============ 敏感配置：部署时由 init.sh / init.ps1 在本地自动生成 ============
+# 这里必须全部忽略。.env 里会出现数据库密码，用户如果按旧习惯把 LLM key
+# 写进去，一旦被 git add . 提交上来就是事故。
+.env
+.env.*
+!.env.example
+# JWT 密钥、证书、任何 *_key / *.secret 文件
+*.key
+*.secret
+*.pem
+jwt.secret
+# 备份与页面快照
+data/backup/
+data/files/
+
 # 临时文件
 *.log
 *.tmp

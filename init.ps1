@@ -19,48 +19,66 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 1. 生成 .env（如果不存在）
+# 模板是 .env.example（随仓库分发、不含真实密钥），只填部署路径与随机密码，
+# 写完立刻收紧 ACL 并且不落 BOM —— .env 已在 .gitignore 里。
 if (!(Test-Path ".env")) {
     $Password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
     if ([string]::IsNullOrEmpty($Password)) {
         $Password = [Guid]::NewGuid().ToString("N").Substring(0, 24)
     }
 
-    # 换行用 LF（CRLF 会让 compose 把值读成 "...\r"）；
-    # 编码用无 BOM 的 UTF-8（BOM 会让第一行变量名变成 "﻿COMPOSE_PROJECT_NAME"）。
-    $envContent = @"
-# 自动生成，请勿提交到 git
-COMPOSE_PROJECT_NAME=asset-platform
-HOST_PROJECT_DIR=$PWD
-POSTGRES_PASSWORD=$Password
-
-# JWT 密钥（留空则自动生成并持久化到 data/files/jwt.secret）
-# JWT_SECRET=
-
-# 镜像源。默认 ghcr.io/rongsec；内网可用自建 harbor（需事先同步三个镜像）
-# REGISTRY=harbor.example.com/library
-"@ -replace "`r`n", "`n"
-
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText((Join-Path $PWD ".env"), $envContent, $utf8NoBom)
-    Write-Host "OK: 已生成 .env（数据库密码已随机生成，无需手动配置）" -ForegroundColor Green
+    if (Test-Path ".env.example") {
+        # 换行统一为 LF（CRLF 会让 compose 把值读成 "...\r"）
+        $lines = (Get-Content ".env.example" -Encoding UTF8) | ForEach-Object {
+            if ($_ -match '^HOST_PROJECT_DIR=') { "HOST_PROJECT_DIR=$PWD" }
+            elseif ($_ -match '^POSTGRES_PASSWORD=') { "POSTGRES_PASSWORD=$Password" }
+            else { $_ }
+        }
+        $content = ($lines -join "`n") + "`n"
+    } else {
+        $content = "COMPOSE_PROJECT_NAME=asset-platform`nHOST_PROJECT_DIR=$PWD`nPOSTGRES_PASSWORD=$Password`n"
+    }
+    [System.IO.File]::WriteAllText((Join-Path $PWD ".env"), $content, $utf8NoBom)
+
+    # 只允许当前用户读写（等价于 chmod 600）
+    try {
+        $acl = Get-Acl ".env"
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+        $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($me, "FullControl", "Allow")))
+        Set-Acl ".env" $acl
+    } catch {
+        Write-Host "WARN: 收紧 .env 权限失败（不影响运行），建议手工确认只有当前用户可读" -ForegroundColor Yellow
+    }
+
+    Write-Host "OK: 已生成 .env（数据库密码随机；已在 .gitignore 中）" -ForegroundColor Green
 } else {
     Write-Host "SKIP: .env 已存在，跳过生成" -ForegroundColor Yellow
 }
 
 # 2. 解析版本
-if (!(Select-String -Path ".env" -Pattern "^APP_VERSION=" -Quiet -ErrorAction SilentlyContinue)) {
+$curVer = (Select-String -Path ".env" -Pattern "^APP_VERSION=(.*)$" -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Groups[1].Value
+if ([string]::IsNullOrEmpty($curVer)) {
     $Latest = $null
     try {
         $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/RongSec/CyberLook/releases/latest" -TimeoutSec 8
         $Latest = $rel.tag_name
     } catch { }
-    if ($Latest) {
-        Add-Content -Path ".env" -Value "APP_VERSION=$Latest" -Encoding ASCII
-        Write-Host "VER: 最新版本 $Latest" -ForegroundColor Cyan
+    $ver = if ($Latest) { $Latest } else { "latest" }
+
+    $envLines = Get-Content ".env" -Encoding UTF8
+    if ($envLines | Where-Object { $_ -match '^APP_VERSION=' }) {
+        $envLines = $envLines | ForEach-Object { if ($_ -match '^APP_VERSION=') { "APP_VERSION=$ver" } else { $_ } }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText((Join-Path $PWD ".env"), (($envLines -join "`n") + "`n"), $utf8NoBom)
     } else {
-        Add-Content -Path ".env" -Value "APP_VERSION=latest" -Encoding ASCII
-        Write-Host "VER: 无法查询最新版本（网络受限），使用 latest" -ForegroundColor Yellow
+        Add-Content -Path ".env" -Value "APP_VERSION=$ver" -Encoding ASCII
     }
+
+    if ($Latest) { Write-Host "VER: 最新版本 $Latest" -ForegroundColor Cyan }
+    else { Write-Host "VER: 无法查询最新版本（网络受限），使用 latest" -ForegroundColor Yellow }
 }
 
 # 3. 拉镜像
@@ -69,8 +87,10 @@ docker compose pull
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "FAIL: 镜像拉取失败。排查顺序：" -ForegroundColor Red
-    Write-Host "  1) 能否访问镜像源: curl -I https://ghcr.io/v2/  （国内经常不通，属网络问题）"
-    Write-Host "  2) 用自建源: 在 .env 加一行 REGISTRY=harbor.example.com/library 后重跑本脚本"
+    Write-Host "  1) 能否访问 Docker Hub: curl -I https://registry-1.docker.io/v2/"
+    Write-Host "     不通就是网络问题。给 Docker Desktop 配加速器（Settings -> Docker Engine 的 registry-mirrors）"
+    Write-Host "  2) 内网完全出不去: 把三个镜像同步到自建 harbor，在 .env 加一行"
+    Write-Host "     REGISTRY=harbor.example.com/library  然后重跑本脚本"
     Write-Host "  3) 私有仓库需登录: docker login <registry>"
     exit 1
 }

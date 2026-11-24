@@ -35,7 +35,7 @@ func registryPrefix() string {
 	if v := strings.TrimSpace(os.Getenv("REGISTRY")); v != "" {
 		return v
 	}
-	return "ghcr.io/rongsec"
+	return "docker.io/rongsec"
 }
 
 func run(name string, args ...string) (string, error) {

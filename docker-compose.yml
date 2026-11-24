@@ -36,7 +36,7 @@ services:
     # 部署只做一件事：拉镜像。没有 build 段，拉不到就明确失败，不会静默掉进编译链。
     # 从源码构建见 README「开发者」小节（docker build 手动指定 tag）。
     # REGISTRY 用于内网私有源（如 harbor），需事先把镜像同步过去。
-    image: ${REGISTRY:-ghcr.io/rongsec}/cyberlook:${APP_VERSION:-latest}
+    image: ${REGISTRY:-docker.io/rongsec}/cyberlook:${APP_VERSION:-latest}
     container_name: asset-server
     restart: always
     ports:
@@ -66,7 +66,7 @@ services:
 
   # 更新边车：只有它能碰 docker.sock，主应用通过 HTTP 调它
   updater:
-    image: ${REGISTRY:-ghcr.io/rongsec}/cyberlook-updater:${APP_VERSION:-latest}
+    image: ${REGISTRY:-docker.io/rongsec}/cyberlook-updater:${APP_VERSION:-latest}
     container_name: asset-updater
     restart: always
     volumes:
@@ -76,13 +76,13 @@ services:
     environment:
       TZ: Asia/Shanghai
       # 与 server/agent 的 image 同源，供「本地是否已有镜像」的判断使用
-      REGISTRY: ${REGISTRY:-ghcr.io/rongsec}
+      REGISTRY: ${REGISTRY:-docker.io/rongsec}
     depends_on:
       - server
 
   # 扫描节点：默认走内部网络。若要扫描宿主机所在内网，放开 network_mode: host 并改 -server 为 http://127.0.0.1:18888
   agent:
-    image: ${REGISTRY:-ghcr.io/rongsec}/cyberlook-agent:${APP_VERSION:-latest}
+    image: ${REGISTRY:-docker.io/rongsec}/cyberlook-agent:${APP_VERSION:-latest}
     container_name: asset-agent
     restart: always
     # network_mode: host

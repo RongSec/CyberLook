@@ -396,44 +396,68 @@ Windows 用等价的 `.\init.ps1`（需 Docker Desktop）。
 - **节点加入**：在「节点」页复制一键脚本；也可 `docker run`，或裸机运行
   `scope-agent -server http://<server>:18888 -name <节点名>`
 
-### 8.1 三个镜像与内网镜像源
+### 8.1 三个镜像
 
 | 镜像 | 作用 |
 |---|---|
-| `ghcr.io/rongsec/cyberlook` | 中心（web + API + 调度 + 识别 + 渲染） |
-| `ghcr.io/rongsec/cyberlook-updater` | 更新边车（唯一持有 `docker.sock`） |
-| `ghcr.io/rongsec/cyberlook-agent` | 扫描节点（内置引擎与全量指纹） |
+| `rongsec/cyberlook` | 中心（web + API + 调度 + 识别 + 渲染） |
+| `rongsec/cyberlook-updater` | 更新边车（唯一持有 `docker.sock`） |
+| `rongsec/cyberlook-agent` | 扫描节点（内置引擎与全量指纹） |
 
-**官方镜像只有 `linux/amd64`。** ghcr.io 在国内经常不通——这是网络问题，不是程序问题。
-内网部署的标准做法是把三个镜像同步到自建 harbor，然后在 `.env` 里改一行：
+全部发在 Docker Hub，匿名可拉，`linux/amd64`：
 
 ```bash
-REGISTRY=harbor.example.com/library
+docker pull rongsec/cyberlook:v1.0.0
+docker pull rongsec/cyberlook-updater:v1.0.0
+docker pull rongsec/cyberlook-agent:v1.0.0
 ```
 
-再执行 `bash init.sh`。同步命令：
+拉不动基本是网络问题，给 Docker 配个加速器即可（阿里云/腾讯云都提供个人加速地址，
+配置见各厂商控制台，写入 `/etc/docker/daemon.json` 的 `registry-mirrors`）。
+
+内网完全不能出网的场景，把三个镜像同步到自建 harbor，然后 `.env` 里改一行：
 
 ```bash
 V=v1.0.0
 for n in cyberlook cyberlook-updater cyberlook-agent; do
-  docker pull ghcr.io/rongsec/$n:$V
-  docker tag  ghcr.io/rongsec/$n:$V harbor.example.com/library/$n:$V
+  docker pull rongsec/$n:$V
+  docker tag  rongsec/$n:$V harbor.example.com/library/$n:$V
   docker push harbor.example.com/library/$n:$V
 done
+# 然后
+echo "REGISTRY=harbor.example.com/library" >> .env
 ```
 
-### 8.2 升级
+### 8.2 配置文件与密钥
+
+**仓库里不带任何密钥。** 首次部署时 `init.sh` 会用 `.env.example` 模板在本地生成 `.env`，
+只填两项：部署目录和 24 位随机数据库密码，生成后权限收紧为 600。
+
+| 文件 | 谁生成 | 是否入库 |
+|---|---|---|
+| `.env` | `init.sh` / `init.ps1`（来自 `.env.example`） | ❌ 已 gitignore |
+| `data/files/jwt.secret` | 服务端首次启动自动生成 32 字节随机值 | ❌ 已 gitignore |
+| `data/files/*`（页面快照） | 运行时产生 | ❌ 已 gitignore |
+| `data/backup/*` | 备份 | ❌ 已 gitignore |
+
+**LLM 的 API Key 不要写进 `.env`。** 在「系统配置 → LLM 配置」界面里填，存数据库。
+`.env.example` 里的 `LLM_*` 是可选兜底项，默认注释掉。
+
+`.gitignore` 已覆盖 `.env`、`.env.*`、`*.key`、`*.secret`、`*.pem`、`jwt.secret`；
+如果你新增了别的敏感文件，先确认 `git status` 里看不到它。
+
+### 8.3 升级
 
 界面「系统配置 → 检查更新」（updater 边车负责拉镜像与切版本，主应用不持有 `docker.sock`），
 或手工 `bash update.sh v1.0.0`——备份 → 切版本 → 健康检查 90 秒 → 失败自动回滚。
 
-### 8.3 从源码构建（仅开发者，与部署无关）
+### 8.4 从源码构建（仅开发者，与部署无关）
 
 ```bash
 V=1.0.0
-docker build                     --build-arg VERSION=$V -t ghcr.io/rongsec/cyberlook:$V .
-docker build -f Dockerfile.updater --build-arg VERSION=$V -t ghcr.io/rongsec/cyberlook-updater:$V .
-docker build -f Dockerfile.agent   --build-arg VERSION=$V -t ghcr.io/rongsec/cyberlook-agent:$V .
+docker build                     --build-arg VERSION=$V -t rongsec/cyberlook:$V .
+docker build -f Dockerfile.updater --build-arg VERSION=$V -t rongsec/cyberlook-updater:$V .
+docker build -f Dockerfile.agent   --build-arg VERSION=$V -t rongsec/cyberlook-agent:$V .
 ```
 
 主镜像默认交叉编译 5 个架构的节点二进制（约 20~40 分钟），只要当前架构就传
