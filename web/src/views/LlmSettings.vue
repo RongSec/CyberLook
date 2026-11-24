@@ -164,8 +164,9 @@
 
           <n-divider title-placement="left" style="margin: 12px 0 8px">AI 思考配置</n-divider>
           <div class="param-note">
-            这里的设置只影响<b>对话与诊断</b>。识别链路固定关闭思考：同一份证据实测
-            开思考 21.8s / 386 token，关思考 5.4s / 118 token，结论一致。
+            这里的设置<b>对所有调用生效，包括服务识别</b>。给思考模型开着思考时，
+            识别单条实测 18~48 秒（输出 370 token 左右，大半是思考）；关闭后 5~13 秒
+            （输出 120 token 左右），结论一致。识别是批量任务，建议显式选「关闭思考」。
           </div>
           <n-grid :cols="3" :x-gap="16">
             <n-form-item-gi label="Provider">
@@ -335,12 +336,12 @@ const tlsOptions = [
 
 
 const thinkingOptions = [
-  { label: '不发送（默认）', value: '' },
+  { label: '不发送（网关默认：思考模型会开思考）', value: '' },
   { label: '开启思考', value: 'enabled' },
   { label: '关闭思考', value: 'disabled' },
 ]
 const effortOptions = [
-  { label: '不发送（默认）', value: '' },
+  { label: '不发送（用模型默认强度）', value: '' },
   { label: '低', value: 'low' },
   { label: '中', value: 'medium' },
   { label: '高', value: 'high' },

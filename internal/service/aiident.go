@@ -181,6 +181,33 @@ const aiRetryDelay = 5 * time.Minute
 // aiRetryAfter 失败条目的下次可重试时间（进程内，重启即清空）。
 var aiRetryAfter sync.Map
 
+// aiFailMax 同一目标连续失败多少次后落终态。
+//
+// 为什么必须有上限：有些目标物理上永远识别不出来——重定向环（每次渲染都是
+// ERR_TOO_MANY_REDIRECTS）、只有 pong 的空响应、纯二进制端口。以前"失败即保留
+// ai_need"，这类目标就每 5 分钟重试一次，永远不收敛，长期占着队列和网关配额。
+// 实测 45 条里有 2~3 条属于此类。
+const aiFailMax = 3
+
+// aiFailCount 连续失败次数（进程内）。成功一次即清零。
+var aiFailCount sync.Map
+
+// failKey 计数键，与 aiInFlight/aiRetryAfter 同口径。
+func failKey(ip string, port int) string { return ip + ":" + strconv.Itoa(port) }
+
+// bumpFail 返回该目标累计连续失败次数
+func bumpFail(ip string, port int) int {
+	k := failKey(ip, port)
+	if v, ok := aiFailCount.Load(k); ok {
+		if n, ok := v.(int); ok {
+			aiFailCount.Store(k, n+1)
+			return n + 1
+		}
+	}
+	aiFailCount.Store(k, 1)
+	return 1
+}
+
 // aiQueueFeeder 每 15 秒从库里补一批待识别（仅 HTTP(S)），队列过半就歇着。
 //
 // 队列持久化的取舍：不引入 Redis/表锁，直接以 services.ai_need 作为"待办标记"，
@@ -855,7 +882,9 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		stages = append(stages, IdentStage{Stage: "浏览器渲染", Input: baseURL, Output: "容器内无 chromium，跳过"})
 		needRender = false
 	}
+	renderTried := false
 	if needRender {
+		renderTried = true
 		tRender := time.Now()
 		var pageDesc, pageText string
 		var rerr error
@@ -904,6 +933,15 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 	}
 
 	switch {
+	case renderTried && rendered == "" && !iv.dotConfident():
+		// 与批量路径同口径：渲染试过但没拿到证据，首轮又是低置信猜测 →
+		// 不写结论，保留待办重试。落一个猜测比留空更糟：列表上会显示一个
+		// 看起来确定的错名字，没有人会再去核。
+		res.Failed = true
+		stages = append(stages, IdentStage{
+			Stage:  "结论",
+			Output: "渲染未取得证据且首轮为低置信猜测，本次不写结论，保留待办重试",
+		})
 	case iv.hasName():
 		res.apply(iv)
 	case strings.TrimSpace(pageTitle) != "" && TitleClear(pageTitle) &&
@@ -1058,6 +1096,9 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 	}
 	rendered := map[int]string{}
 	pageTitle := map[int]string{}
+	// renderTried 标记"已经花了浏览器这一次"，但可能没拿到证据（超时/错误页/无 chromium）。
+	// 区分它和"根本没试"很重要：试过没拿到、而首轮又只是猜测时，这条不能落猜测。
+	renderTried := map[int]bool{}
 	if len(ridx) > 0 && scanner.ChromeAvailable() {
 		aiMetricsRef.pendingRender.Add(int64(len(ridx)))
 		runParallel(len(ridx), 2, func(k int) {
@@ -1065,6 +1106,7 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 			aiMetricsRef.rendering.Add(1)
 			defer aiMetricsRef.rendering.Add(-1)
 			i := ridx[k]
+			renderTried[i] = true
 			t0 := time.Now()
 			title, desc, text, err := scanner.RenderPageCtx(ctx, preps[i].baseURL, 6*time.Second)
 			preps[i].timing["render"] = time.Since(t0).Milliseconds()
@@ -1137,8 +1179,21 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 		r := preps[i].res
 		if !preps[i].settled {
 			v := verdict[i]
+			forceFail := v.Failed
 			if v.Failed {
 				r.Failed = true
+			} else if renderTried[i] && rendered[i] == "" && !v.dotConfident() {
+				// 渲染尝试过却没拿到证据（超时 / 浏览器错误页 / 容器无 chromium），
+				// 而首轮只是"低置信猜测"（模型自己都要求渲染或自认在猜）。
+				// 这种猜测一律不落库：实测 198.19.160.4:80 因渲染 6 秒超时，
+				// 把首轮 conf=25 的「AngularJS 登录页（Webs 服务器）」写进了库，
+				// 而真名就在渲染后才能拿到的页面里。
+				r.Failed = true
+				forceFail = true
+				preps[i].stages = append(preps[i].stages, IdentStage{
+					Stage:  "结论",
+					Output: "渲染未取得证据且首轮为低置信猜测，本次不写结论，保留待办重试",
+				})
 			}
 			switch {
 			case v.hasName():
@@ -1151,6 +1206,8 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 			case strings.TrimSpace(v.Reason) != "":
 				r.Reason = v.Reason
 			}
+			// 链路级失败优先级最高，不信任何一次模型结论
+			r.Failed = r.Failed || forceFail
 		}
 		r.Stages, r.Hops, r.Timing = preps[i].stages, preps[i].hops, preps[i].timing
 		out[i] = r
@@ -1195,7 +1252,10 @@ func (r *IdentResult) apply(v aiVerdict) {
 	r.Sufficient = v.Sufficient
 	r.Reason = v.Reason
 	r.Source = "ai"
-	r.Failed = v.Failed
+	// 注意：这里不写 r.Failed。Failed 是链路级判定（网关没答完 / 渲染没拿到证据），
+	// 由调用方在链路层面置位；apply 只负责"采纳某次模型结论"。
+	// v0.0.62 曾在此赋值，导致外层设好的 Failed=true 被抹回 false，
+	// 于是"渲染失败 + 低置信猜测"仍然写了库（198.19.197.129:7443 → Web 服务器）。
 }
 
 // shortHeader 取响应头里的 Location / Server 行，用于阶段摘要
@@ -1578,11 +1638,30 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 	// 网关没答出来 ≠ 识别不出。前者保留待办（5 分钟后重排），后者才是终态。
 	// 不区分就会把一大片"网关超时"写成"待分析"，用户看到的是假结论。
 	if r.Failed {
+		n := bumpFail(svc.IP, svc.Port)
+		if n >= aiFailMax {
+			// 连续失败到上限：这条目标在这个环境下就是识别不出来（重定向环 /
+			// 无内容端口 / 网关持续拒绝）。落终态「待分析」，把队列位置让出来。
+			// 注意只有当库里没有有效标题时才写 title，避免覆盖已有的人工结论。
+			up := map[string]interface{}{"ai_need": false, "ai_checked_at": time.Now()}
+			if !TitleClear(svc.Title) || scanner.PlaceholderTitle(svc.Title, svc.StatusCode) {
+				up["title"] = "待分析"
+				up["title_source"] = "none"
+			}
+			config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(up)
+			aiFailCount.Delete(failKey(svc.IP, svc.Port))
+			aiRetryAfter.Delete(failKey(svc.IP, svc.Port))
+			log.Printf("[ai-ident] %s:%d 连续失败 %d 次，落终态（%s）",
+				svc.IP, svc.Port, n, orNone(r.Reason))
+			return false
+		}
 		config.DB.Model(&model.Service{}).Where("id = ?", svc.ID).
 			Updates(map[string]interface{}{"ai_need": true, "ai_checked_at": nil})
-		aiRetryAfter.Store(svc.IP+":"+strconv.Itoa(svc.Port), time.Now().Add(aiRetryDelay))
+		aiRetryAfter.Store(failKey(svc.IP, svc.Port), time.Now().Add(aiRetryDelay))
 		return false
 	}
+	// 成功一次即清零连续失败计数
+	aiFailCount.Delete(failKey(svc.IP, svc.Port))
 	updates := map[string]interface{}{"ai_checked_at": time.Now(), "ai_need": false}
 	changed := false
 	usableTitle := TitleClear(r.Title) && !scanner.PlaceholderTitle(r.Title, "")

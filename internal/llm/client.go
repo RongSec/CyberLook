@@ -102,7 +102,12 @@ var rrCounter atomic.Uint64
 //  4. PoolExclude=true 的排除
 func AvailableProfiles() []model.LLMProfile {
 	var all []model.LLMProfile
-	config.DB.Where("enabled = ?", true).Order("priority DESC, id").Find(&all)
+	// priority 语义：数字越小越优先（与配置页 tooltip 一致：0 最先尝试）。
+	// v0.0.60 修：这里原来是 DESC（数字越大越优先），与前端文案完全相反，
+	// 导致 priority=1 的主用配置永远排在备胎位。实测因此一直走 priority=2
+	// 的那个 profile——而它没设思考开关，网关默认开思考，单条 18 秒，
+	// 是关思考（5 秒级）的近 4 倍。
+	config.DB.Where("enabled = ?", true).Order("priority ASC, id").Find(&all)
 
 	breaker := GlobalBreaker()
 	var avail []model.LLMProfile
@@ -123,10 +128,10 @@ func AvailableProfiles() []model.LLMProfile {
 		return nil
 	}
 
-	// 同 priority 组内轮换
-	sort.SliceStable(avail, func(i, j int) bool { return avail[i].Priority > avail[j].Priority })
+	// 同 priority 组内轮换；升序 = 数字小的在前
+	sort.SliceStable(avail, func(i, j int) bool { return avail[i].Priority < avail[j].Priority })
 
-	// 找到最高 priority 的组，轮换
+	// 取最小 priority 的组做轮换（数字最小的那批是主用）
 	maxPri := avail[0].Priority
 	var head, rest []model.LLMProfile
 	for _, p := range avail {
