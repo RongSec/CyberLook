@@ -28,6 +28,16 @@ type updateResp struct {
 
 var mu sync.Mutex
 
+// registryPrefix 返回镜像源前缀，与 docker-compose.yml 的 REGISTRY 变量同源。
+// 内网用自建 harbor 时，这里若仍写死 ghcr.io，升级前「本地是否已有镜像」的判断会永远
+// 落空，每次点更新都白拉一遍几百 MB（功能不受影响，但浪费带宽和时间）。
+func registryPrefix() string {
+	if v := strings.TrimSpace(os.Getenv("REGISTRY")); v != "" {
+		return v
+	}
+	return "ghcr.io/rongsec"
+}
+
 func run(name string, args ...string) (string, error) {
 	return runTimeout(3*time.Minute, name, args...)
 }
@@ -144,7 +154,7 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// 3) 拉镜像（本地已有则跳过）
 	emit(w, "== 拉取镜像 ==")
-	img := "ghcr.io/rongsec/cyberlook:" + req.Version
+	img := registryPrefix() + "/cyberlook:" + req.Version
 	if q, err := run("docker", "images", "-q", img); err == nil && strings.TrimSpace(q) != "" {
 		emit(w, "本地已有镜像 "+img+"，跳过拉取")
 	} else if _, err := runTimeout(8*time.Minute, "docker", "compose", "pull", "server"); err != nil {

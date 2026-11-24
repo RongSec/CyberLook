@@ -75,6 +75,8 @@ services:
     working_dir: /project
     environment:
       TZ: Asia/Shanghai
+      # 与 server/agent 的 image 同源，供「本地是否已有镜像」的判断使用
+      REGISTRY: ${REGISTRY:-ghcr.io/rongsec}
     depends_on:
       - server
 
