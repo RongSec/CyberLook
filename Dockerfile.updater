@@ -1,5 +1,9 @@
+# 基础镜像可替换（内网私有源）：--build-arg GO_IMAGE=... / DOCKER_IMAGE=...
+ARG GO_IMAGE=golang:1.26-alpine
+ARG DOCKER_IMAGE=docker:27-cli
+
 # updater 边车镜像：内置 docker CLI + 更新逻辑
-FROM golang:1.26-alpine AS builder
+FROM ${GO_IMAGE} AS builder
 # 与 Dockerfile 保持一致：不加这个，境外的 proxy.golang.org 会卡在 go mod download
 ENV GOPROXY=https://goproxy.cn,direct
 ENV CGO_ENABLED=0
@@ -7,9 +11,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/updater ./cmd/updater
+# VERSION 由 compose/CI 传入，避免与主镜像版本脱节；与 Dockerfile 同样的注入方式。
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/updater ./cmd/updater
 
-FROM docker:27-cli
+FROM ${DOCKER_IMAGE}
 RUN apk add --no-cache curl tzdata
 ENV TZ=Asia/Shanghai
 COPY --from=builder /out/updater /usr/local/bin/updater

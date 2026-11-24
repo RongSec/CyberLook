@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.65-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-0.0.66-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />
@@ -382,15 +382,56 @@
 ```bash
 git clone https://github.com/RongSec/CyberLook.git
 cd CyberLook
-bash init.sh                 # 生成 .env（随机数据库密码）并拉取最新 release
-docker compose up -d         # server + postgres + redis + updater + 一个内置节点
+bash init.sh
 ```
 
+`init.sh` 依次做四件事，全程无需手工配置：生成 `.env`（随机数据库密码）→ 解析最新 release 版本 →
+拉取 `server` / `updater` 官方镜像并就地构建扫描节点镜像 → 轮询 `/api/health` 直到就绪。
+
+Windows 用等价的 `.\init.ps1`（需 Docker Desktop），流程与判定完全一致。
+
 - 控制台：`http://<server>:18888`（首次登录 `admin / admin123`，请立即改密）
-- 节点加入：在「节点」页复制一键脚本；也可 `docker run`，或裸机运行
+- **LLM 在界面里配**：「系统配置 → LLM 配置」填 Base URL / API Key / 模型名，不用改 `.env`；
+  `.env` 里的 `LLM_*` 变量只是首次初始化的默认值
+- **节点加入**：在「节点」页复制一键脚本；也可 `docker run`，或裸机运行
   `scope-agent -server http://<server>:18888 -name <节点名>`
-- 从源码构建：`docker build --build-arg VERSION=0.0.37 -t ghcr.io/rongsec/cyberlook:0.0.37 .`
-- 更新：`updater` 边车负责拉镜像与切版本，主应用不直接持有 `docker.sock`
+
+### 8.1 三条部署路径的区别
+
+| 路径 | 前置条件 | 耗时 | 适用 |
+|---|---|---|---|
+| `bash init.sh`（推荐） | Docker 24+ 与 compose 插件 | 2~5 分钟 | 能访问 ghcr.io |
+| `bash init.sh`（自动回退） | Docker + 能拉 Docker Hub 基础镜像 | 5~15 分钟 | ghcr.io 不可达 |
+| 完全离线 | 内网 registry 有全部基础镜像 | 5~15 分钟 | 内外网物理隔离 |
+
+`server` 与 `updater` 两个服务同时声明了 `image` 与 `build`：镜像拉得到就用官方镜像，
+拉不到就就地构建出同名镜像（`ghcr.io/rongsec/cyberlook:<版本>`），两条路径产物一致，
+后续 `updater` 的版本切换不区分来源。
+
+`agent`（扫描节点）固定本地构建——发布只推送主镜像与更新边车两个镜像，
+节点二进制本身已随主镜像内置（`/app/agent/scope-agent-*`），`docker` 节点沿用本地构建的那份。
+
+**完全离线时**，把基础镜像指向内网源，写进 `.env` 后重跑 `bash init.sh`：
+
+```bash
+NODE_IMAGE=<registry>/library/node:22-alpine
+GO_IMAGE=<registry>/library/golang:1.26-alpine
+RUNTIME_IMAGE=<registry>/library/debian:bookworm-slim
+DOCKER_IMAGE=<registry>/library/docker:27-cli
+APT_MIRROR=mirrors.aliyun.com
+```
+
+### 8.2 手工构建与升级
+
+```bash
+# 只编当前架构的节点二进制（默认全量 5 架构，要 20~40 分钟）
+docker build --build-arg VERSION=0.0.66 --build-arg AGENT_ARCHES=amd64 \
+  -t ghcr.io/rongsec/cyberlook:0.0.66 .
+
+# 升级：updater 边车负责拉镜像与切版本，主应用不持有 docker.sock
+# 界面「系统配置 → 检查更新」，或手工：
+bash update.sh v0.0.66
+```
 
 关键目录：
 
@@ -425,6 +466,8 @@ data/fingerprint/             全量指纹规则（随镜像内置）
 - **识别依赖规则库**：规则未覆盖的自研系统只能拿到标题或 TLS 证书线索，此时会标记 `title_source`。
 - **不做凭据登录与内网横向**：平台止步于"资产是什么"，不做"资产能做什么"。
 - **免扫描通配是四段匹配**：`*.*.*.1` 覆盖每网段 .1，不覆盖 `.254`、`.0` 之类习惯差异，需要就自己加。
+- **容器名固定**：`asset-server` / `asset-postgres` 等是硬编码的，`updater` 与 `update.sh` 都按名字操作。
+  同一台机器要跑第二套时，除改 `COMPOSE_PROJECT_NAME` 外还得改 `container_name` 与端口，否则会撞名。
 
 ---
 

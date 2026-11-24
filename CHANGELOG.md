@@ -9,6 +9,45 @@
 
 ---
 
+## [0.0.66] - 2026-11-24（一键部署修复 · 内网可构建）
+
+### 修复：`init.sh` 的「本地构建兜底」从来不会发生
+
+脚本写着「镜像拉取失败 → 改用本地构建」，但 `docker-compose.yml` 里 `server` 与 `updater`
+只声明了 `image`、没有 `build`。`docker compose up -d --build` 对没有 `build` 的服务
+只会去拉镜像，所以 ghcr 不可达时的实际结果是 `image not found` 直接失败，而不是构建。
+
+现在两个服务同时声明 `image` + `build`：拉得到用官方镜像，拉不到就地构建同名镜像
+（`ghcr.io/rongsec/cyberlook:<版本>`），两条路径产物一致，`updater` 切版本不区分来源。
+
+### 修复：内网环境连构建都做不了
+
+构建需要 `node:22-alpine`、`golang:1.26-alpine`、`debian:bookworm-slim`、`docker:27-cli`
+四个基础镜像，原先全写死在 `FROM` 里，内网只能改 Dockerfile。
+
+改为构建参数 `NODE_IMAGE` / `GO_IMAGE` / `RUNTIME_IMAGE` / `DOCKER_IMAGE`，
+compose 从 `.env` 读取，写 `NODE_IMAGE=<registry>/library/node:22-alpine` 即可指向私有源，
+不用碰 Dockerfile。`APT_MIRROR` 此前已有，一并纳入 `.env` 说明。
+
+### 优化：本地构建不再编 5 个架构
+
+主镜像默认交叉编译 `amd64 arm64 386 mipsle windows` 五份节点二进制，发布需要，
+本地一键部署不需要——要 20~40 分钟。`init.sh` 现在按 `uname -m` 写 `AGENT_ARCHES`，
+只编当前架构。
+
+### 优化：`init.sh` 有前置检查与真实就绪判定
+
+- 检查 docker / compose 插件 / daemon 权限，缺什么直接说清，不再中途报错
+- 轮询 `/api/health` 最多 120 秒，打印「部署完成」时服务真的可访问；超时给出排查命令
+- 明确提示 LLM 在界面里配，不需要改 `.env`
+
+### 文档：快速开始与真实行为对齐
+
+原文档让人 `bash init.sh` 之后再 `docker compose up -d`（重复），版本号示例停在 0.0.37。
+现在补三条部署路径的差异、离线基础镜像配置、手工构建与升级命令。
+
+---
+
 ## [0.0.64 ~ 0.0.65] - 2026-11-24（失败重试可见 · 僵尸进程回收 · 备份修复）
 
 ### 新增：失败重试单独显示

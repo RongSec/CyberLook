@@ -1,0 +1,22 @@
+# 行尾统一：保证任何平台 clone 下来，shell 脚本与容器构建上下文都是 LF。
+# 没有这个文件时，Windows 上 core.autocrlf=true 会把 init.sh 检出成 CRLF，
+# `bash init.sh` 会直接报 "$'\r': command not found"——一键部署第一步就失败。
+* text=auto
+
+*.sh        text eol=lf
+*.sql       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.go        text eol=lf
+*.md        text eol=lf
+Dockerfile* text eol=lf
+*.ps1       text eol=crlf
+
+# 二进制产物：不做任何行尾转换
+*.png binary
+*.jpg binary
+*.svg binary
+*.exe binary
+*.db  binary
+*.gz  binary
+*.tar binary
