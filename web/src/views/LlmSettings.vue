@@ -120,17 +120,27 @@
           </n-grid>
 
           <n-divider title-placement="left" style="margin: 12px 0 8px">生成参数</n-divider>
-          <n-grid :cols="3" :x-gap="16">
-            <n-form-item-gi label="Temperature">
-              <n-input-number v-model:value="editing.temperature" :min="0" :max="2" :step="0.1" style="width:100%" />
-            </n-form-item-gi>
-            <n-form-item-gi label="最大输出 Tokens">
+          <n-grid :cols="2" :x-gap="16">
+            <n-form-item-gi>
+              <template #label>
+                最大输出 Tokens
+                <n-tooltip trigger="hover">
+                  <template #trigger><span class="lbl-tip">?</span></template>
+                  输出的硬上限。识别链路自己算预算（单条 2000 / 批量 600×N+1200），
+                  这里只做上限——调小会生效，调大不会让识别变慢。
+                  给思考模型过大的预算反而会更慢（实测 200 token 预算 5.4s，1200 token 思考 66s）。
+                </n-tooltip>
+              </template>
               <n-input-number v-model:value="editing.maxTokens" :min="256" :step="1024" style="width:100%" placeholder="8192" />
             </n-form-item-gi>
             <n-form-item-gi label="上下文窗口 (K)">
               <n-input-number v-model:value="editing.contextWindowK" :min="8" :step="8" style="width:100%" />
             </n-form-item-gi>
           </n-grid>
+          <div class="param-note">
+            Temperature 已固定为 <b>0</b>：识别是「读证据 → 填字段」，需要可复现的结论，
+            不再开放配置。
+          </div>
 
           <n-divider title-placement="left" style="margin: 12px 0 8px">轮询与熔断</n-divider>
           <n-grid :cols="3" :x-gap="16">
@@ -153,6 +163,10 @@
           </n-grid>
 
           <n-divider title-placement="left" style="margin: 12px 0 8px">AI 思考配置</n-divider>
+          <div class="param-note">
+            这里的设置只影响<b>对话与诊断</b>。识别链路固定关闭思考：同一份证据实测
+            开思考 21.8s / 386 token，关思考 5.4s / 118 token，结论一致。
+          </div>
           <n-grid :cols="3" :x-gap="16">
             <n-form-item-gi label="Provider">
               <n-select v-model:value="editing.provider" :options="providerOptions" />
@@ -521,5 +535,14 @@ onMounted(() => {
   font-size: 12px;
   opacity: .65;
   flex: 1;
+}
+</style>
+<style scoped>
+.param-note { font-size: 12px; opacity: .62; line-height: 1.6; margin: -4px 0 6px; }
+.param-note b { opacity: .9; }
+.lbl-tip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 2px; border-radius: 50%;
+  border: 1px solid currentColor; font-size: 10px; opacity: .5; cursor: help;
 }
 </style>

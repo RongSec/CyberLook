@@ -37,7 +37,10 @@ type ChatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
 	Tools       []Tool    `json:"tools,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
+	// Temperature 不再由用户配置，固定由调用方给值（识别/诊断都是 0）。
+	// 不加 omitempty：0 必须显式发送，否则网关用它的默认值（常见 0.7），
+	// 同一份证据两次调用会给出不同结论，识别结果不可复现。
+	Temperature float64   `json:"temperature"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
 	// ResponseFormat 只用来让兼容 OpenAI 的服务返回纯 JSON。
@@ -48,6 +51,8 @@ type ChatRequest struct {
 	// 目前只用 enable_thinking=false：结构化抽取任务不需要思考链，
 	// 而思考链在思考模型上会带来 3~4 倍延迟。
 	ChatTemplateKwargs map[string]interface{} `json:"chat_template_kwargs,omitempty"`
+	// ReasoningEffort 思考强度（OpenAI o 系列 / 部分网关）。profile 配了才下发。
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ResponseFormat 响应格式约束
@@ -200,14 +205,41 @@ func callOne(p *model.LLMProfile, req ChatRequest, round int) (*CallResult, erro
 	breaker := GlobalBreaker()
 
 	req.Model = p.Model
-	if req.Temperature == 0 {
-		req.Temperature = p.Temperature
-	}
-	if req.MaxTokens == 0 {
+
+	// 生成参数合并规则（v0.0.58 明确）：
+	//
+	// Temperature 一律用调用方给的值（识别/诊断都是 0），不再读 profile。
+	// 识别是"读证据→填字段"，要的是可复现；profile 里的 temperature 只保留
+	// 字段兼容旧数据，不参与请求组装。
+	//
+	// MaxTokens 的反向合并：profile 的值是**上限**而不是默认值。
+	// 之前 `if req.MaxTokens == 0 { req.MaxTokens = p.MaxTokens }` 让配置页
+	// 的"最大输出 Tokens"看起来完全无效（识别链路写死 2000，profile 320000 不参与）；
+	// 反过来直接用 profile 也会有害——给思考模型 320000 的预算，它会把思考链拉长
+	// （同一证据实测 200 token 预算 5.4 秒，1200 token 思考 66 秒）。
+	// 所以：调用方给预算，profile 只能往下压，不能往上抬。
+	if p.MaxTokens > 0 && req.MaxTokens > p.MaxTokens {
 		req.MaxTokens = p.MaxTokens
 	}
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 8192 // 默认 8K，推理模型需要足够空间
+	}
+
+	// 思考配置：profile 里配了才下发，且调用方显式指定时以调用方为准。
+	// 识别链路显式关掉思考（见 aiident.identChatExtra），因为思考链对这个任务
+	// 只增加延迟不增加信息；其它调用（诊断、助手）跟随 profile 设置。
+	if p.ThinkingType != "" {
+		if _, set := req.ChatTemplateKwargs["enable_thinking"]; !set {
+			kw := req.ChatTemplateKwargs
+			if kw == nil {
+				kw = map[string]interface{}{}
+			}
+			kw["enable_thinking"] = p.ThinkingType == "enabled"
+			req.ChatTemplateKwargs = kw
+		}
+	}
+	if p.ReasoningEffort != "" && req.ReasoningEffort == "" {
+		req.ReasoningEffort = p.ReasoningEffort
 	}
 
 	body, _ := json.Marshal(req)

@@ -819,6 +819,14 @@ func IdentifyServiceCtx(ctx context.Context, svc model.Service) IdentResult {
 		// 带导航后缀的标题单独点出来：模型要做的只是截掉后缀，不需要重新读整页。
 		brief = "原始 <title>: " + htmlTitle + "\n" + brief
 	}
+	// 引擎规则集对同一份响应的静态命中：零成本、确定性，作为线索放在证据最前面。
+	// 只做参考不做定论——实测有 spring_cloud_config 这种误报。
+	if len(hops) > 0 {
+		last := hops[len(hops)-1]
+		if fp := scanner.FingerprintHits(last.ResponseHeaders, last.Body, htmlTitle); len(fp) > 0 {
+			brief = "引擎指纹（规则库静态匹配，可能有误报）：" + strings.Join(fp, ", ") + "\n" + brief
+		}
+	}
 	tId := time.Now()
 	iv := askIdentify(ctx, brief, "请求响应包", false)
 	mark("identify", tId)
@@ -1022,6 +1030,12 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 		body := scanner.TraceDigestBrief(preps[i].hops)
 		if preps[i].titleUsable {
 			body = "原始 <title>: " + preps[i].htmlTitle + "\n" + body
+		}
+		if h := preps[i].hops; len(h) > 0 {
+			last := h[len(h)-1]
+			if fp := scanner.FingerprintHits(last.ResponseHeaders, last.Body, preps[i].htmlTitle); len(fp) > 0 {
+				body = "引擎指纹（规则库静态匹配，可能有误报）：" + strings.Join(fp, ", ") + "\n" + body
+			}
 		}
 		pending = append(pending, i)
 		evs = append(evs, identEvidence{

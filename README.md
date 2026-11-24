@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.57-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-0.0.58-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />

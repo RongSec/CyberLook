@@ -640,3 +640,38 @@ func max1(v float64) float64 {
 func portKey(ip string, port int) string {
 	return ip + ":" + strconv.Itoa(port)
 }
+
+// FingerprintHits 用引擎自带的规则集对一份 HTTP 响应做静态匹配。
+//
+// 为什么把这一步单独抽出来：扫描流程里的识别是"自己抓包 + 匹配"，而 AI 识别链路
+// 已经抓到了最后一跳的完整响应。把同一份响应直接喂给规则集，等于零成本多一份
+// 确定性证据（不发请求、不调模型、不受网关影响）。
+//
+// 实测（45 条真值）：引擎能给结论的约 15 条，其中 Tomcat / IIS / 泛微 / 深信服认证 /
+// Sangfor WAF 都对，但也出现过 spring_cloud_config 这种误报（空 title 的 Angular 壳）。
+// 所以这里**只产出证据，不做定论**——真正的判断交给识别 agent，规则命中作为
+// "参考线索"附在证据最前面。
+func FingerprintHits(hdrs, body, title string) []string {
+	rs, _, err := loadRulesCached(BuiltinRulesDir())
+	if err != nil || rs == nil {
+		return nil
+	}
+	hits := rs.MatchWeb(hdrs, body, title, "", "")
+	if len(hits) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, 3)
+	for _, h := range hits {
+		p := strings.TrimSpace(h.Product)
+		if p == "" || seen[strings.ToLower(p)] {
+			continue
+		}
+		seen[strings.ToLower(p)] = true
+		out = append(out, fmt.Sprintf("%s(%d)", p, h.Score))
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
