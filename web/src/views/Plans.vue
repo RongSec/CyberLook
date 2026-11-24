@@ -22,7 +22,7 @@
                  这里显示积压与预计耗时——识别不再由用户在「应用服务」里手动触发。 -->
             <n-tag v-if="aiStats && (aiStats.backlog > 0 || aiStats.queueLen > 0)" round type="info"
               :title="aiStatsTitle" style="margin-left:auto">
-              服务识别：待识别 {{ aiStats.backlog }} 条<template v-if="aiStats.perMinute > 0">
+              服务识别：待识别 {{ aiStats.backlog }} 条<template v-if="aiStats.retrying > 0">（失败重试 {{ aiStats.retrying }}个）</template><template v-if="aiStats.perMinute > 0">
                 · {{ aiStats.perMinute }} 条/分 · 约 {{ aiEtaText }}</template>
             </n-tag>
           </div>
@@ -337,7 +337,8 @@
       <div v-if="aiStats" class="queue-bar ai-bar">
         <n-tag size="small" :bordered="false" type="warning">识别日志</n-tag>
         <template v-if="aiStats.backlog > 0 || aiStats.pendingRender > 0 || aiStats.rendering > 0 || aiStats.inLLM > 0">
-          <span class="q-item">待识别 <b>{{ fmtNum(aiStats.backlog) }}</b></span>
+          <span class="q-item">待识别 <b>{{ fmtNum(aiStats.backlog) }}</b><template
+            v-if="aiStats.retrying > 0"><span class="q-retry">（失败重试 {{ aiStats.retrying }}个）</span></template></span>
           <span class="q-item">待渲染 <b>{{ fmtNum(aiStats.pendingRender) }}</b></span>
           <span class="q-item q-run">渲染中 <b>{{ aiStats.rendering }}</b></span>
           <span class="q-item q-done">模型在途 <b>{{ aiStats.inLLM }}</b></span>
@@ -1282,6 +1283,8 @@ onBeforeUnmount(() => { clearInterval(pollTimer); clearInterval(aiStatsTimer); s
 .queue-bar .q-error { color: #f87171; font-size: 12px; }
 /* 识别条与扫描条并列但语义不同：扫描条用蓝/绿，识别条用琥珀色左边框区分 */
 .ai-bar { border-left: 3px solid #f59e0b; }
+/* 失败重试：与正常待识别区分开——它不是排队，是这批目标上一轮失败了，正在等退避 */
+.q-retry { color: #d97706; font-size: 12px; }
 .ctrl-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 10px; margin-bottom: 10px; border-radius: 8px;

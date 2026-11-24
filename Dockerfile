@@ -41,13 +41,21 @@ FROM debian:bookworm-slim
 #   --build-arg APT_MIRROR=mirrors.aliyun.com
 # 即可，默认行为与官方源完全一致。
 ARG APT_MIRROR=deb.debian.org
+# 备份用的 pg_dump 必须与服务端同大版本：Debian 12 自带的 postgresql-client 是 15.x，
+# 而线上库是 16.x，直接 pg_dump 会 "aborting because of server version mismatch"
+# （实测 2026-11-12 之后所有自动备份都在静默失败）。这里从 PGDG 补一个 16 版客户端。
 RUN set -eux; \
     if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
     else \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
     fi; \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei postgresql-client && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei gnupg curl; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor --yes -o /usr/share/keyrings/pgdg.gpg; \
+    apt-get update && apt-get install -y --no-install-recommends postgresql-client-16; \
+    rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 

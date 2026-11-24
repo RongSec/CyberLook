@@ -162,6 +162,7 @@ func AIQueueStats() map[string]interface{} {
 		"queueLen":         qLen,
 		"queueCap":         qCap,
 		"backlog":          backlog,        // 库里待识别（仅 HTTP）
+		"retrying":         retryingCount(), // 其中处于失败退避期的（backlog 的子集）
 		"backlogNonHTTP":   backlogNonHTTP, // 非 HTTP 的 ai_need（识别链路不处理，不计入 ETA）
 		"doneThisHour":     recent,      // 最近一小时写回数
 		"doneTotal":        done,        // 本进程完成数
@@ -183,4 +184,24 @@ func AIQueueStats() map[string]interface{} {
 		"inLLM":            m.inLLM.Load(),
 		"pendingRender":    m.pendingRender.Load(),
 	}
+}
+
+// retryingCount 统计当前处于失败退避期的目标数。
+//
+// 为什么需要单独显示：失败条目会保留 ai_need=true，界面上「待识别」长期不归零。
+// 用户看到这个数字不降，无法判断是「正常排队」还是「有一批永远识别不出来的在无限重试」。
+// 这两个状态的处理方式完全不同——前者等，后者要么调网关、要么接受结论。
+//
+// 口径：aiRetryAfter 里未到期的条目。它是 backlog 的子集（backlog 统计库内 ai_need，
+// retrying 统计这些里面正在等退避的）。进程内计数，重启后从 0 开始，这是可接受的近似。
+func retryingCount() int64 {
+	now := time.Now()
+	var n int64
+	aiRetryAfter.Range(func(_, v interface{}) bool {
+		if until, ok := v.(time.Time); ok && now.Before(until) {
+			n++
+		}
+		return true
+	})
+	return n
 }

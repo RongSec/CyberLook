@@ -35,6 +35,11 @@ func main() {
 	// 导致本机直跑任务的审计链缺失）。旁路语义不变：写失败只记日志、不影响扫描。
 	scanner.EnableAudit()
 
+	// 容器里 PID 1 是本进程，没有 init 负责回收孤儿：chromium 的 renderer 退出后
+	// 会变 <defunct>，一轮压测累积 50+ 个。这里启用回收（仅 PID 1 生效），
+	// 并用 scanner.CmdGuard 避免抢走 pg_dump/psql 的退出状态。
+	scanner.StartChildReaper()
+
 	// 识别链路审计（dry-run，不写业务表）：/app/asset-server audit-identify --unclear 100 --clear 30
 	if len(os.Args) > 1 && os.Args[1] == "audit-identify" {
 		runAuditIdentify(os.Args[2:])

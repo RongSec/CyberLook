@@ -12,6 +12,7 @@ import (
 
 	"asset-platform/internal/config"
 	"asset-platform/internal/model"
+	"asset-platform/internal/scanner"
 )
 
 // 备份目录：compose 已把 ${HOST_PROJECT_DIR}/data/backup 挂到 /app/backup
@@ -35,7 +36,14 @@ func RunBackup(reason string) (string, int64, error) {
 	name := fmt.Sprintf("asset-%s.sql.gz", time.Now().Format("20060102-150405"))
 	path := filepath.Join(BackupDirPath(), name)
 	// pg_dump 支持直接传连接串；gzip -9 压缩（数据量大时能省一半以上）
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("set -o pipefail; pg_dump '%s' | gzip -9 > '%s'", dsn, path))
+	// 持 CmdGuard：这些子进程的退出状态由 exec.Cmd 自己 wait，
+	// 不能让 PID 1 的僵尸回收循环抢走（否则 Wait 报 no child processes）。
+	scanner.CmdGuard.Lock()
+	defer scanner.CmdGuard.Unlock()
+	// 必须用 bash：容器的 /bin/sh 是 dash，不支持 set -o pipefail，
+	// 原来写 `sh -c "set -o pipefail; ..."` 会直接报 "Illegal option -o pipefail"，
+	// 导致备份从上线起就一直失败（实测最后一次成功备份停在 2026-11-12）。
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("set -o pipefail; pg_dump '%s' | gzip -9 > '%s'", dsn, path))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(path)
 		return "", 0, fmt.Errorf("pg_dump 失败: %v %s", err, strings.TrimSpace(string(out)))
@@ -113,12 +121,14 @@ func RestoreBackup(name string) (string, error) {
 	}
 	// pg_dump 的产物带 CREATE TABLE（无 IF NOT EXISTS），直接灌进"还有表"的库必然冲突。
 	// 所以恢复 = 清空 schema → 灌入。清空前已经做了安全备份，失败可再从安全备份回来。
-	reset := exec.Command("sh", "-c", fmt.Sprintf(
+	scanner.CmdGuard.Lock()
+	defer scanner.CmdGuard.Unlock()
+	reset := exec.Command("bash", "-c", fmt.Sprintf(
 		"psql '%s' -v ON_ERROR_STOP=1 -c \"DROP SCHEMA public CASCADE; CREATE SCHEMA public;\" > /dev/null", dsn))
 	if out, err := reset.CombinedOutput(); err != nil {
 		return safety, fmt.Errorf("清空当前库失败（已中止，未影响数据）: %v %s", err, strings.TrimSpace(string(out)))
 	}
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("gunzip -c '%s' | psql '%s' -v ON_ERROR_STOP=1 > /dev/null", p, dsn))
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("set -o pipefail; gunzip -c '%s' | psql '%s' -v ON_ERROR_STOP=1 > /dev/null", p, dsn))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return safety, fmt.Errorf("恢复失败: %v %s", err, strings.TrimSpace(string(out)))
 	}

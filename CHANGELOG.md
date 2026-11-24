@@ -9,6 +9,74 @@
 
 ---
 
+## [0.0.64 ~ 0.0.65] - 2026-11-24（失败重试可见 · 僵尸进程回收 · 备份修复）
+
+### 新增：失败重试单独显示
+
+失败条目会保留 `ai_need=true`，界面上「待识别」长期不归零，用户分不清是正常排队
+还是有一批永远识别不出来的在无限重试。现在两者分开显示：
+
+```
+待识别 45（失败重试 13个）
+```
+
+口径：`retrying` 是 `backlog` 的子集——库里 `ai_need` 的条目中，处于失败退避期
+（`aiRetryAfter` 未到期）的那部分。进程内计数，重启从 0 开始。
+
+### 修复：容器内 chromium 僵尸进程累积
+
+容器 PID 1 是 `asset-server`，没有 init 回收孤儿；chromium 的 renderer 退出后
+变 `<defunct>`。一轮压测累积 54 个，只占 PID 槽位但长期跑有风险。
+
+新增 `scanner.StartChildReaper()`（仅 PID 1 生效）：监听 `SIGCHLD` + 10 秒兜底 tick，
+`wait4(-1, WNOHANG)` 循环回收。
+
+**与 exec.Cmd 的竞争**：`wait4(-1)` 会抢走 `pg_dump`/`psql` 的退出状态，导致
+`cmd.Wait()` 报 "no child processes"，备份被误判失败。所以加了 `scanner.CmdGuard`
+互斥锁——执行受管子进程时持锁，回收循环 `TryLock` 抢不到就跳过本轮。
+
+验证：跑完 45 条（含 12 次渲染），僵尸数 **0**。
+
+### 修复：备份功能从上线起就一直失败（两个独立问题）
+
+**问题 1：`sh` 不支持 `pipefail`**
+
+```go
+exec.Command("sh", "-c", "set -o pipefail; pg_dump ... | gzip -9 > ...")
+```
+
+容器的 `/bin/sh` 是 dash，`set -o pipefail` 直接报 `Illegal option -o pipefail`。
+改用 `bash -c`（镜像里有 `/usr/bin/bash`）。
+
+**问题 2：pg_dump 版本不匹配**
+
+```
+pg_dump: error: aborting because of server version mismatch
+server version: 16.15; pg_dump version: 15.20
+```
+
+Debian 12 自带的 `postgresql-client` 是 15.x，线上库是 16.x。
+Dockerfile 改为从 PGDG 装 `postgresql-client-16`。
+
+**影响面**：`/app/backup` 里最后一次成功备份是 **2026-11-12**，之后全部静默失败。
+恢复功能（`RestoreBackup`）同样依赖 pg_dump 做恢复前安全备份，所以也一直是坏的。
+
+修复后实测：`{"message":"备份完成","name":"asset-20261124-135518.sql.gz","size":13269720}`（11.9 秒）。
+
+**部署注意**：Dockerfile 的修复要重新构建镜像才生效。当前运行的容器是手工
+`apt-get install postgresql-client-16` 补的，容器重建会丢失。
+
+### 实测（45 条真值）
+
+| 版本 | 有效标题 | 真值有身份召回 |
+|---|---|---|
+| 0.0.63 | 39/45 | 23/23 = 100% |
+| 0.0.64 | 36/45 | 22/23 = 95%（198.18.20.78:8204 真值是 403 错误页） |
+| 0.0.65 | — | 备份修复不涉及识别链路 |
+
+两轮差异属模型波动：`Envoy`↔`nginx`、`Spring`↔`Spring Boot`、
+`海康威视综合安防管理平台`↔`海康威视登录系统`。核心指标稳定。
+
 ## [0.0.60 ~ 0.0.63] - 2026-11-24（整体流程测试：修 4 个真缺陷 · 并发上限实证）
 
 一轮完整流程验证（45 条真值，队列链路）暴露的问题，逐条修完。
