@@ -33,23 +33,10 @@ services:
       retries: 10
 
   server:
-    image: ghcr.io/rongsec/cyberlook:${APP_VERSION:-latest}
-    # build 段是「一键部署」的离线兜底：拉不到官方镜像时（内网/无外网/ghcr 不通），
-    # `docker compose up -d --build` 能就地构建出同名镜像。
-    # 没有这一段，init.sh 的构建分支会直接失败在 "image not found"。
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        VERSION: ${APP_VERSION:-dev}
-        # 本地构建只需当前架构的 agent 二进制；全量 5 架构要 20~40 分钟。
-        # init.sh 会按 uname -m 自动填 amd64 / arm64。
-        AGENT_ARCHES: ${AGENT_ARCHES:-amd64}
-        # 基础镜像与 apt 源：内网环境在 .env 里改这三个变量即可，不必改 Dockerfile。
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
-        GO_IMAGE: ${GO_IMAGE:-golang:1.26-alpine}
-        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-debian:bookworm-slim}
-        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
+    # 部署只做一件事：拉镜像。没有 build 段，拉不到就明确失败，不会静默掉进编译链。
+    # 从源码构建见 README「开发者」小节（docker build 手动指定 tag）。
+    # REGISTRY 用于内网私有源（如 harbor），需事先把镜像同步过去。
+    image: ${REGISTRY:-ghcr.io/rongsec}/cyberlook:${APP_VERSION:-latest}
     container_name: asset-server
     restart: always
     ports:
@@ -79,14 +66,7 @@ services:
 
   # 更新边车：只有它能碰 docker.sock，主应用通过 HTTP 调它
   updater:
-    image: ghcr.io/rongsec/cyberlook-updater:${APP_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.updater
-      args:
-        VERSION: ${APP_VERSION:-dev}
-        GO_IMAGE: ${GO_IMAGE:-golang:1.26-alpine}
-        DOCKER_IMAGE: ${DOCKER_IMAGE:-docker:27-cli}
+    image: ${REGISTRY:-ghcr.io/rongsec}/cyberlook-updater:${APP_VERSION:-latest}
     container_name: asset-updater
     restart: always
     volumes:
@@ -98,17 +78,9 @@ services:
     depends_on:
       - server
 
-  # 扫描节点：默认走内部网络。若要扫描宿主机所在内网，放开 network_mode: host 并改 -server 为 http://127.0.0.1:8080
+  # 扫描节点：默认走内部网络。若要扫描宿主机所在内网，放开 network_mode: host 并改 -server 为 http://127.0.0.1:18888
   agent:
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
-      args:
-        # 不传这个，镜像里的二进制版本号就是 dev，节点每次心跳都会认为
-        # "中心版本比我新"从而自我升级一次（多了 26MB 下载 + 一次重启）。
-        VERSION: ${APP_VERSION:-dev}
-        GO_IMAGE: ${GO_IMAGE:-golang:1.26-alpine}
-        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-debian:bookworm-slim}
+    image: ${REGISTRY:-ghcr.io/rongsec}/cyberlook-agent:${APP_VERSION:-latest}
     container_name: asset-agent
     restart: always
     # network_mode: host

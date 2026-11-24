@@ -9,42 +9,64 @@
 
 ---
 
-## [0.0.66] - 2026-11-24（一键部署修复 · 内网可构建）
+## [1.0.0] - 2026-11-24（首个正式版：部署只拉镜像）
 
-### 修复：`init.sh` 的「本地构建兜底」从来不会发生
+### 变更：部署链收敛为一条路径，砍掉本地构建兜底
 
-脚本写着「镜像拉取失败 → 改用本地构建」，但 `docker-compose.yml` 里 `server` 与 `updater`
-只声明了 `image`、没有 `build`。`docker compose up -d --build` 对没有 `build` 的服务
-只会去拉镜像，所以 ghcr 不可达时的实际结果是 `image not found` 直接失败，而不是构建。
+之前 `init.sh` 写着「拉不到镜像就本地构建」，compose 里 `server` / `updater` 也同时声明
+`image` + `build`。这条兜底把编译期的问题（基础镜像、apt 源、chromium 下载、npm、Go 工具链）
+全引进到了部署流程：ghcr 不通的机器不会得到一个清晰的网络错误，而是掉进构建，
+在服务器上编译十几分钟后再失败。而且它本身从来没成功过——没有 `build` 段时
+`up -d --build` 只会报 `image not found`。
 
-现在两个服务同时声明 `image` + `build`：拉得到用官方镜像，拉不到就地构建同名镜像
-（`ghcr.io/rongsec/cyberlook:<版本>`），两条路径产物一致，`updater` 切版本不区分来源。
+现在三个服务只声明 `image`，`init.sh` 只做 `pull → up → 健康检查`。
+拉不到就明确失败，并给出按顺序的排查项。**服务器上不需要 Go、Node、编译工具链。**
 
-### 修复：内网环境连构建都做不了
+### 新增：发布节点镜像 `cyberlook-agent`
 
-构建需要 `node:22-alpine`、`golang:1.26-alpine`、`debian:bookworm-slim`、`docker:27-cli`
-四个基础镜像，原先全写死在 `FROM` 里，内网只能改 Dockerfile。
+release 原先只推主镜像与 updater，`agent` 只能本地构建——「直接拉镜像」在这条腿上本来就是断的。
+多推一个镜像后，三个服务全部可拉，一键部署零编译。
 
-改为构建参数 `NODE_IMAGE` / `GO_IMAGE` / `RUNTIME_IMAGE` / `DOCKER_IMAGE`，
-compose 从 `.env` 读取，写 `NODE_IMAGE=<registry>/library/node:22-alpine` 即可指向私有源，
-不用碰 Dockerfile。`APT_MIRROR` 此前已有，一并纳入 `.env` 说明。
+### 修复：发布流程挂死 6 小时
 
-### 优化：本地构建不再编 5 个架构
+`platforms: linux/amd64,linux/arm64` 下，arm64 层走 QEMU 模拟，装 chromium 实测
+**6 小时未完成**，被 GitHub 强制取消，整次发版作废（v0.0.66 就是这么没的）。
+改为只构建 `linux/amd64` 原生，5~8 分钟完成；job 加 `timeout-minutes: 40`，
+再出问题也是 40 分钟内明确失败，不会静默烧掉 6 小时。
 
-主镜像默认交叉编译 `amd64 arm64 386 mipsle windows` 五份节点二进制，发布需要，
-本地一键部署不需要——要 20~40 分钟。`init.sh` 现在按 `uname -m` 写 `AGENT_ARCHES`，
-只编当前架构。
+> arm64 需要原生 runner（`ubuntu-24.04-arm`）另开 job，不要回到 QEMU。
 
-### 优化：`init.sh` 有前置检查与真实就绪判定
+### 修复：PGDG 源变量被 shell 展开成 PID
 
-- 检查 docker / compose 插件 / daemon 权限，缺什么直接说清，不再中途报错
-- 轮询 `/api/health` 最多 120 秒，打印「部署完成」时服务真的可访问；超时给出排查命令
+`$${VERSION_CODENAME}` 在 `RUN` 的 shell 里等于 `$$`（PID，容器内是 1）+ 字面量
+`{VERSION_CODENAME}`，仓库地址变成 `1{VERSION_CODENAME}-pgdg`，apt 报
+`does not have a Release file`，`postgresql-client-16` 装不上，整层 exit 100。
+
+这行是 0.0.64 修备份时加的，本地一直手工 apt 装 client 16，**从未经过一次完整构建**。
+改为单美元后实测展开为 `bookworm`。
+
+### 修复：Windows 检出会把 `init.sh` 变成 CRLF
+
+仓库没有 `.gitattributes` 且 Windows 上 `core.autocrlf=true`，检出后的 `init.sh` 带 `\r`，
+`bash init.sh` 直接报 `$'\r': command not found`——一键部署第一步就失败。
+新增 `.gitattributes`：`.sh` 固定 `eol=lf`，`.ps1` 固定 `eol=crlf`，二进制不做转换。
+
+### 修复：`init.ps1` 写 `.env` 带 BOM 与 CRLF
+
+`Set-Content -Encoding UTF8` 在 PowerShell 5.1 下写 BOM，第一行变量名变成
+`﻿COMPOSE_PROJECT_NAME`；CRLF 还会让值尾带上 `\r`。改为无 BOM UTF-8 + LF，
+并补齐版本解析、`REGISTRY`、健康检查。
+
+### 新增：`REGISTRY` 变量
+
+内网用自建 harbor 时，`.env` 里加一行 `REGISTRY=harbor.example.com/library`，
+三个镜像地址整体切换，不用改 compose。文档给了把 ghcr 镜像同步到 harbor 的循环命令。
+
+### 优化：`init.sh` / `init.ps1` 的就绪判定
+
+- 前置检查 docker / compose 插件 / daemon 权限，缺什么直接说清
+- 轮询 `/api/health` 最多 120 秒，打印「部署完成」时服务真的可访问；超时给排查命令
 - 明确提示 LLM 在界面里配，不需要改 `.env`
-
-### 文档：快速开始与真实行为对齐
-
-原文档让人 `bash init.sh` 之后再 `docker compose up -d`（重复），版本号示例停在 0.0.37。
-现在补三条部署路径的差异、离线基础镜像配置、手工构建与升级命令。
 
 ---
 

@@ -1,5 +1,7 @@
 # 未见 - Windows 一键部署脚本
 # 用法: .\init.ps1
+#
+# 与 init.sh 同一口径：只有一条路径——拉镜像。不做本地构建兜底。
 
 $ErrorActionPreference = "Stop"
 
@@ -18,24 +20,24 @@ if ($LASTEXITCODE -ne 0) {
 
 # 1. 生成 .env（如果不存在）
 if (!(Test-Path ".env")) {
-    # 生成 24 位随机密码（字母数字）
     $Password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
     if ([string]::IsNullOrEmpty($Password)) {
-        # 兜底：用 GUID 生成
         $Password = [Guid]::NewGuid().ToString("N").Substring(0, 24)
     }
 
-    # 换行必须用 LF（CRLF 会让 compose 把值读成 "...\r"）；
-    # 编码必须是无 BOM 的 UTF-8（BOM 会让第一行变量名变成 "﻿COMPOSE_PROJECT_NAME"）。
+    # 换行用 LF（CRLF 会让 compose 把值读成 "...\r"）；
+    # 编码用无 BOM 的 UTF-8（BOM 会让第一行变量名变成 "﻿COMPOSE_PROJECT_NAME"）。
     $envContent = @"
 # 自动生成，请勿提交到 git
-# PostgreSQL 数据库密码（服务端连接数据库用，用户无需关心）
 COMPOSE_PROJECT_NAME=asset-platform
 HOST_PROJECT_DIR=$PWD
 POSTGRES_PASSWORD=$Password
 
 # JWT 密钥（留空则自动生成并持久化到 data/files/jwt.secret）
 # JWT_SECRET=
+
+# 镜像源。默认 ghcr.io/rongsec；内网可用自建 harbor（需事先同步三个镜像）
+# REGISTRY=harbor.example.com/library
 "@ -replace "`r`n", "`n"
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -45,7 +47,7 @@ POSTGRES_PASSWORD=$Password
     Write-Host "SKIP: .env 已存在，跳过生成" -ForegroundColor Yellow
 }
 
-# 2. 解析版本（与 init.sh 口径一致：GitHub 最新 release 的 tag，查不到用 latest）
+# 2. 解析版本
 if (!(Select-String -Path ".env" -Pattern "^APP_VERSION=" -Quiet -ErrorAction SilentlyContinue)) {
     $Latest = $null
     try {
@@ -61,14 +63,21 @@ if (!(Select-String -Path ".env" -Pattern "^APP_VERSION=" -Quiet -ErrorAction Si
     }
 }
 
-# 3. 只编当前架构的节点二进制（全量 5 架构要 20~40 分钟）
-if (!(Select-String -Path ".env" -Pattern "^AGENT_ARCHES=" -Quiet -ErrorAction SilentlyContinue)) {
-    Add-Content -Path ".env" -Value "AGENT_ARCHES=amd64" -Encoding ASCII
+# 3. 拉镜像
+Write-Host "PULL: 拉取镜像（server / updater / agent）..." -ForegroundColor Cyan
+docker compose pull
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "FAIL: 镜像拉取失败。排查顺序：" -ForegroundColor Red
+    Write-Host "  1) 能否访问镜像源: curl -I https://ghcr.io/v2/  （国内经常不通，属网络问题）"
+    Write-Host "  2) 用自建源: 在 .env 加一行 REGISTRY=harbor.example.com/library 后重跑本脚本"
+    Write-Host "  3) 私有仓库需登录: docker login <registry>"
+    exit 1
 }
 
-# 4. 启动（server/updater 有官方镜像就用，没有就地构建）
-Write-Host "START: 启动服务（首次构建约 5~15 分钟）..." -ForegroundColor Cyan
-docker compose up -d --build
+# 4. 起服务
+Write-Host "START: 启动服务..." -ForegroundColor Cyan
+docker compose up -d --no-build
 
 # 5. 等健康检查
 Write-Host "WAIT: 等待服务就绪（最多 120 秒）..." -ForegroundColor Cyan

@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 之前没设上限：arm64 在 QEMU 下装 chromium 卡满 6 小时才被 GitHub 掐掉，
+    # 一次发版直接作废。留足余量，但必须有硬上限。
+    timeout-minutes: 40
     permissions:
       contents: write
       packages: write
@@ -26,13 +29,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 只构建 linux/amd64，原生编译 5~8 分钟。
+      # 不再走 multi-arch：arm64 那层在 QEMU 下装 chromium 实测 6 小时没跑完。
+      # 确有 arm64 需求时另开 ubuntu-24.04-arm 原生 runner 的 job，不要回到 QEMU。
       - name: 构建并推送主镜像
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           build-args: |
             VERSION=${{ github.ref_name }}
           tags: |
@@ -47,12 +53,29 @@ jobs:
           context: .
           file: Dockerfile.updater
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           build-args: |
             VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/${{ steps.img.outputs.name }}-updater:${{ github.ref_name }}
             ghcr.io/${{ steps.img.outputs.name }}-updater:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 节点镜像必须发：compose 里 agent 只声明 image、没有 build 段。
+      # 少了它，一键部署就卡在拉不到 cyberlook-agent。
+      - name: 构建并推送节点镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.agent
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ steps.img.outputs.name }}-agent:${{ github.ref_name }}
+            ghcr.io/${{ steps.img.outputs.name }}-agent:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -65,9 +88,10 @@ jobs:
           append_body: true
           generate_release_notes: false
           body: |
-            镜像已发布：
+            镜像已发布（linux/amd64）：
             - `ghcr.io/${{ steps.img.outputs.name }}:${{ github.ref_name }}`
             - `ghcr.io/${{ steps.img.outputs.name }}-updater:${{ github.ref_name }}`
+            - `ghcr.io/${{ steps.img.outputs.name }}-agent:${{ github.ref_name }}`
 
             更新方式：系统配置 → 检查更新 → 更新
 
@@ -76,3 +100,4 @@ jobs:
           echo "### 镜像已推送" >> $GITHUB_STEP_SUMMARY
           echo "- \`ghcr.io/${{ steps.img.outputs.name }}:${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`ghcr.io/${{ steps.img.outputs.name }}-updater:${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ steps.img.outputs.name }}-agent:${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY

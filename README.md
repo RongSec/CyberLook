@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.0.66-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-1.0.0-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />
@@ -379,59 +379,66 @@
 
 ## 8. 快速开始
 
+部署只有一条路径：**拉镜像**。服务器上不需要 Go、Node，也不需要任何编译工具链。
+
 ```bash
 git clone https://github.com/RongSec/CyberLook.git
 cd CyberLook
 bash init.sh
 ```
 
-`init.sh` 依次做四件事，全程无需手工配置：生成 `.env`（随机数据库密码）→ 解析最新 release 版本 →
-拉取 `server` / `updater` 官方镜像并就地构建扫描节点镜像 → 轮询 `/api/health` 直到就绪。
-
-Windows 用等价的 `.\init.ps1`（需 Docker Desktop），流程与判定完全一致。
+`init.sh` 做四件事：生成 `.env`（随机数据库密码）→ 解析最新版本 → `docker compose pull`
+→ `docker compose up -d`，最后轮询 `/api/health` 直到就绪——打印「部署完成」时服务真的可访问。
+Windows 用等价的 `.\init.ps1`（需 Docker Desktop）。
 
 - 控制台：`http://<server>:18888`（首次登录 `admin / admin123`，请立即改密）
-- **LLM 在界面里配**：「系统配置 → LLM 配置」填 Base URL / API Key / 模型名，不用改 `.env`；
-  `.env` 里的 `LLM_*` 变量只是首次初始化的默认值
+- **LLM 在界面里配**：「系统配置 → LLM 配置」填 Base URL / API Key / 模型名，不用改 `.env`
 - **节点加入**：在「节点」页复制一键脚本；也可 `docker run`，或裸机运行
   `scope-agent -server http://<server>:18888 -name <节点名>`
 
-### 8.1 三条部署路径的区别
+### 8.1 三个镜像与内网镜像源
 
-| 路径 | 前置条件 | 耗时 | 适用 |
-|---|---|---|---|
-| `bash init.sh`（推荐） | Docker 24+ 与 compose 插件 | 2~5 分钟 | 能访问 ghcr.io |
-| `bash init.sh`（自动回退） | Docker + 能拉 Docker Hub 基础镜像 | 5~15 分钟 | ghcr.io 不可达 |
-| 完全离线 | 内网 registry 有全部基础镜像 | 5~15 分钟 | 内外网物理隔离 |
+| 镜像 | 作用 |
+|---|---|
+| `ghcr.io/rongsec/cyberlook` | 中心（web + API + 调度 + 识别 + 渲染） |
+| `ghcr.io/rongsec/cyberlook-updater` | 更新边车（唯一持有 `docker.sock`） |
+| `ghcr.io/rongsec/cyberlook-agent` | 扫描节点（内置引擎与全量指纹） |
 
-`server` 与 `updater` 两个服务同时声明了 `image` 与 `build`：镜像拉得到就用官方镜像，
-拉不到就就地构建出同名镜像（`ghcr.io/rongsec/cyberlook:<版本>`），两条路径产物一致，
-后续 `updater` 的版本切换不区分来源。
-
-`agent`（扫描节点）固定本地构建——发布只推送主镜像与更新边车两个镜像，
-节点二进制本身已随主镜像内置（`/app/agent/scope-agent-*`），`docker` 节点沿用本地构建的那份。
-
-**完全离线时**，把基础镜像指向内网源，写进 `.env` 后重跑 `bash init.sh`：
+**官方镜像只有 `linux/amd64`。** ghcr.io 在国内经常不通——这是网络问题，不是程序问题。
+内网部署的标准做法是把三个镜像同步到自建 harbor，然后在 `.env` 里改一行：
 
 ```bash
-NODE_IMAGE=<registry>/library/node:22-alpine
-GO_IMAGE=<registry>/library/golang:1.26-alpine
-RUNTIME_IMAGE=<registry>/library/debian:bookworm-slim
-DOCKER_IMAGE=<registry>/library/docker:27-cli
-APT_MIRROR=mirrors.aliyun.com
+REGISTRY=harbor.example.com/library
 ```
 
-### 8.2 手工构建与升级
+再执行 `bash init.sh`。同步命令：
 
 ```bash
-# 只编当前架构的节点二进制（默认全量 5 架构，要 20~40 分钟）
-docker build --build-arg VERSION=0.0.66 --build-arg AGENT_ARCHES=amd64 \
-  -t ghcr.io/rongsec/cyberlook:0.0.66 .
-
-# 升级：updater 边车负责拉镜像与切版本，主应用不持有 docker.sock
-# 界面「系统配置 → 检查更新」，或手工：
-bash update.sh v0.0.66
+V=v1.0.0
+for n in cyberlook cyberlook-updater cyberlook-agent; do
+  docker pull ghcr.io/rongsec/$n:$V
+  docker tag  ghcr.io/rongsec/$n:$V harbor.example.com/library/$n:$V
+  docker push harbor.example.com/library/$n:$V
+done
 ```
+
+### 8.2 升级
+
+界面「系统配置 → 检查更新」（updater 边车负责拉镜像与切版本，主应用不持有 `docker.sock`），
+或手工 `bash update.sh v1.0.0`——备份 → 切版本 → 健康检查 90 秒 → 失败自动回滚。
+
+### 8.3 从源码构建（仅开发者，与部署无关）
+
+```bash
+V=1.0.0
+docker build                     --build-arg VERSION=$V -t ghcr.io/rongsec/cyberlook:$V .
+docker build -f Dockerfile.updater --build-arg VERSION=$V -t ghcr.io/rongsec/cyberlook-updater:$V .
+docker build -f Dockerfile.agent   --build-arg VERSION=$V -t ghcr.io/rongsec/cyberlook-agent:$V .
+```
+
+主镜像默认交叉编译 5 个架构的节点二进制（约 20~40 分钟），只要当前架构就传
+`--build-arg AGENT_ARCHES=amd64`。内网构建时可用 `GO_IMAGE` / `NODE_IMAGE` /
+`RUNTIME_IMAGE` / `APT_MIRROR` 指向私有源——这几个参数只影响构建，部署完全用不到。
 
 关键目录：
 
