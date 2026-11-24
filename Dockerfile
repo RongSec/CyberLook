@@ -64,7 +64,7 @@ RUN set -eux; \
     aptg install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei gnupg curl \
       || { echo "首次安装失败，重试一次"; aptg update; aptg install -y --no-install-recommends ca-certificates tzdata chromium fonts-wqy-zenhei gnupg curl; }; \
     . /etc/os-release; \
-    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
+    echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
     curl -fsSL --retry 5 --retry-delay 2 https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor --yes -o /usr/share/keyrings/pgdg.gpg; \
     aptg update; \
     aptg install -y --no-install-recommends postgresql-client-16 \
