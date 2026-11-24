@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -50,24 +49,6 @@ const (
 
 // aiInflight 当前在处理的批次数，上限由 aiParallel() 每次实时读取（设置页可改）。
 var aiInflight atomic.Int64
-
-// aiThinkUnsupported 网关不认 chat_template_kwargs 时置位，之后不再携带。
-//
-// 关闭思考链的依据（实测 2026-11-23，deepseek-v4.1-flash @ provider-b，同一份渲染证据）：
-//   开思考             21784ms  out=386  结论：海康威视综合安防管理平台
-//   reasoning_effort=low 10885ms out=192 结论：Hikvision Web Client
-//   enable_thinking=false 5402ms out=118 结论：Hikvision（海康威视）设备/平台登录页
-// 结论一致，延迟降到 1/4。识别是"读证据→填字段"，思考链不产生额外信息，
-// 只产生 token 和时间。所以识别链路默认关思考；网关不支持时自动退回默认行为。
-var aiThinkUnsupported atomic.Bool
-
-// identChatExtra 关闭思考链的模板参数；网关不支持过一次后返回 nil。
-func identChatExtra() map[string]interface{} {
-	if aiThinkUnsupported.Load() {
-		return nil
-	}
-	return map[string]interface{}{"enable_thinking": false}
-}
 
 // aiBatchSize 一次模型调用处理的目标数，可用 AI_BATCH_SIZE 覆盖（1~16）。
 func aiBatchSize() int {
@@ -1333,35 +1314,28 @@ func askJudge(ctx context.Context, evidence string) judgeVerdict {
 
 // askIdentify 识别 agent：给出业务系统名。
 func askIdentify(ctx context.Context, source, evidence string, rendered bool) aiVerdict {
-	return askIdentifyWith(ctx, source, evidence, rendered, identChatExtra())
+	// 生成参数（模型、温度、输出预算、是否思考）全部跟随 LLM 配置页，
+	// 这里不覆盖任何一个——v0.0.59 用户明确要求"LLM 的配置都跟随 LLM 配置"。
+	return askIdentifyWith(ctx, source, evidence, rendered)
 }
 
-func askIdentifyWith(ctx context.Context, source, evidence string, rendered bool, kwargs map[string]interface{}) aiVerdict {
+func askIdentifyWith(ctx context.Context, source, evidence string, rendered bool) aiVerdict {
 	hint := "以下是从该端口抓到的真实请求/响应包（含重定向）"
 	if rendered {
 		hint = "以下是浏览器真正渲染后的页面信息"
 	}
 	res, err := chatWithCtx(ctx, llm.ChatRequest{
-		ChatTemplateKwargs: kwargs,
 		Messages: []llm.Message{
 			{Role: "system", Content: PromptFor(RoleIdentify)},
 			{Role: "user", Content: fmt.Sprintf("%s。\n来源：%s\n\n%s", hint, source, evidence)},
 		},
 		Temperature: 0,
-		// 2000 而不是 600：这个网关上跑的是思考模型（deepseek-v4.1-flash），
-		// 思考 token 计入 completion。600 的预算下实测 finish=length、out=600、
-		// content 为空——不是"看过但没认出来"，是"话没说完就被截断"。
-		// 这类空回复此前被当成"模型没有结论"，直接让上一步的低置信猜测落库
-		// （198.19.160.4:80 就是被这条吃掉的：渲染结果里明明写着 Hikvision）。
-		MaxTokens: 2000,
+		// 0 = 用 LLM 配置页的「最大输出 Tokens」。
+		// 注意思考模型的输出预算是**思考 + 正文**共用的（实测 600 预算时
+		// finish=length、正文为空，思考已经吃掉全部）。配置小了容易截断，
+		// 表现为空回复；链路会把空回复判失败重试，不会写成结论。
+		MaxTokens: 0,
 	})
-	if err != nil && kwargs != nil && ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
-		// 网关不认 chat_template_kwargs（400/422）：永久关掉这个参数再试一次。
-		// 加速项绝不能变成单点故障——换个网关就整条链路瘫掉是不可接受的。
-		aiThinkUnsupported.Store(true)
-		log.Printf("[ai-ident] 网关不接受 enable_thinking 参数，回退默认：%v", err)
-		return askIdentifyWith(ctx, source, evidence, rendered, nil)
-	}
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil && ctx.Err() == nil {
 			aiMetricLLMFail()
@@ -1419,22 +1393,15 @@ func askIdentifyBatch(ctx context.Context, items []identEvidence) []aiVerdict {
 		`[{"title":"","product":"","category":"","confidence":0,"need_render":false,"reason":""}]`, len(items), len(items))
 
 	res, err := chatWithCtxTimeout(ctx, llm.ChatRequest{
-		ChatTemplateKwargs: identChatExtra(),
 		Messages: []llm.Message{
 			{Role: "system", Content: PromptFor(RoleIdentify) + "\n\n本次输入是多条目标，输出必须是 JSON 数组，长度与输入条数一致。"},
 			{Role: "user", Content: sb.String()},
 		},
 		Temperature: 0,
-		// 每条 600 + 固定 1200：批量输出是 JSON 数组，思考链比单条更长，
-		// 220*n 的旧预算在思考模型上稳定被截断（实测 finish=length、响应半截数组）。
-		MaxTokens: 600*len(items) + 1200,
+		// 0 = 跟随 LLM 配置页。批量输出是 N 个短 JSON，比单条多不了多少正文；
+		// 真正吃预算的是思考链，那个由配置页的开关决定，不在这里按条数放大。
+		MaxTokens: 0,
 	}, batchLLMTimeout(len(items)))
-	if err != nil && ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) && identChatExtra() != nil {
-		// 同单条路径：参数被网关拒绝时永久关掉它，退回逐条（逐条请求不带该参数）。
-		aiThinkUnsupported.Store(true)
-		log.Printf("[ai-ident] 网关不接受 enable_thinking 参数，批量回退逐条：%v", err)
-		return askIdentifyEach(ctx, items)
-	}
 	if err != nil || res == nil || res.Resp == nil || len(res.Resp.Choices) == 0 {
 		if err != nil {
 			aiMetricLLMFail()
@@ -1490,12 +1457,9 @@ func batchLLMTimeout(n int) time.Duration {
 	// 实测（deepseek-v4.1-flash，同构证据）：1 条 9.2s、2 条 9.7s、4 条 13.7s、8 条 18.9s。
 	// 批量的单条等效成本随条数下降（9.2s → 2.4s），但总时长仍在涨，所以超时必须
 	// 按条数放宽，否则正常批量会被判成超时、整批回退逐条，比不批量还慢。
-	// 与 max_tokens 同步放宽：预算涨到 600*n+1200 之后，思考链也变长。
-	// 实测 2 条 32 秒不够用，按 40s + 15s/条给，上限 150s。
-	d := 40*time.Second + time.Duration(n)*15*time.Second
-	if d > 150*time.Second {
-		d = 150 * time.Second
-	}
+	// 批量与单条同预算：一次请求只付一次思考链，多几条的正文增量很小。
+	// 同样压在 profile 的 HTTP 超时之内。
+	d := 110 * time.Second
 	return d
 }
 
@@ -1514,9 +1478,10 @@ func usageBrief(r *llm.ChatResponse) string {
 // ctx.Done()。ctx 取消后主协程立刻返回，goroutine 由 HTTP 超时自然结束，
 // channel 带缓冲所以不会永久泄漏。
 func chatWithCtx(ctx context.Context, req llm.ChatRequest) (*llm.CallResult, error) {
-	// 60 秒：思考模型在 2000 token 预算下单条实测 25~45 秒（长时间思考常见），
-	// 30 秒会把正常调用判成超时——实测 198.19.160.4:80 连续两次 context deadline。
-	return chatWithCtxTimeout(ctx, req, 60*time.Second)
+	// 110 秒：给思考模式留余量（实测同一份证据开思考 21~88 秒），
+	// 同时压在 profile 的 HTTP 超时（默认 120 秒）之内——子超时必须更短，
+	// 否则外层 http.Client 先断，错误会变成看不懂的 EOF。
+	return chatWithCtxTimeout(ctx, req, 110*time.Second)
 }
 
 // chatWithCtxTimeout 同 chatWithCtx，但子超时可指定（批量调用输出更长，需要更宽的预算）。

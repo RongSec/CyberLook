@@ -212,17 +212,15 @@ func callOne(p *model.LLMProfile, req ChatRequest, round int) (*CallResult, erro
 	// 识别是"读证据→填字段"，要的是可复现；profile 里的 temperature 只保留
 	// 字段兼容旧数据，不参与请求组装。
 	//
-	// MaxTokens 的反向合并：profile 的值是**上限**而不是默认值。
-	// 之前 `if req.MaxTokens == 0 { req.MaxTokens = p.MaxTokens }` 让配置页
-	// 的"最大输出 Tokens"看起来完全无效（识别链路写死 2000，profile 320000 不参与）；
-	// 反过来直接用 profile 也会有害——给思考模型 320000 的预算，它会把思考链拉长
-	// （同一证据实测 200 token 预算 5.4 秒，1200 token 思考 66 秒）。
-	// 所以：调用方给预算，profile 只能往下压，不能往上抬。
-	if p.MaxTokens > 0 && req.MaxTokens > p.MaxTokens {
+	// MaxTokens 以 LLM 配置页为准：请求方传 0（不指定）就用 profile 的值。
+	// v0.0.59 起识别链路不再自己算预算，配置页填多少就是多少。
+	// 注意这是「输出上限」，对思考模型而言**思考和正文共用**这个额度，
+	// 配得太小会得到 finish=length + 空正文（见 aiident 的空回复处理）。
+	if req.MaxTokens == 0 {
 		req.MaxTokens = p.MaxTokens
 	}
 	if req.MaxTokens == 0 {
-		req.MaxTokens = 8192 // 默认 8K，推理模型需要足够空间
+		req.MaxTokens = 8192 // profile 也没配：8K 兜底
 	}
 
 	// 思考配置：profile 里配了才下发，且调用方显式指定时以调用方为准。
