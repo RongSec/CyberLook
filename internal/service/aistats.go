@@ -159,6 +159,10 @@ func AIQueueStats() map[string]interface{} {
 
 	return map[string]interface{}{
 		"workers":          workers,
+		// llmReady=false 表示只跑到 L0（标题/指纹层），模型那几步被跳过。
+		// 前端据此在识别横条上提示"未配置 LLM"，避免用户误以为在排队等着。
+		"llmReady":         AIIdentifyReady(),
+		"aiEnabled":        AIServiceIdentifyEnabled(),
 		"queueLen":         qLen,
 		"queueCap":         qCap,
 		"backlog":          backlog,        // 库里待识别（仅 HTTP）

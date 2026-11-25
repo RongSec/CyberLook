@@ -557,10 +557,14 @@ func ingestService(ip string, p scanner.ScanResult, taskID uint) {
 	// 由研判 agent 判断这页是不是错误页、要不要渲染；识别 agent 拿到名字后自然覆盖。
 	placeholder := isHTTP && scanner.PlaceholderTitle(p.Title, p.StatusCode)
 
-	// 是否需要 AI 复核：只对 HTTP(S)（v0.0.52 起）。
+	// 是否需要 AI 复核：只对 HTTP(S)（v0.0.52 起），且识别链路真的能跑。
 	// 引擎会给 TCP/MSRPC/SMB 这些也打 needAi=true，但识别链路只处理 web——
 	// 这些行进了队列就被直接标 checked、什么也不做，白白制造"待识别 6,674 条"的假积压。
-	needAI := isHTTP && (p.NeedAI || placeholder || strings.TrimSpace(p.Title) == "")
+	//
+	// v1.0.0 起追加 AIIdentifyReady()：没配 LLM 时不再打待办标记。
+	// 之前的行为是照打不误，但 worker 因为没 LLM 根本不启动，于是
+	// 「待识别 N」永久挂在扫描页上不归零——用户以为在排队，其实永远不会跑。
+	needAI := isHTTP && (p.NeedAI || placeholder || strings.TrimSpace(p.Title) == "") && AIIdentifyReady()
 
 	if err == gorm.ErrRecordNotFound {
 		config.DB.Create(&model.Service{

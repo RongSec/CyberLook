@@ -345,6 +345,11 @@
         </template>
         <span v-else class="q-item q-done"><b>队列空闲</b>（无待识别条目）</span>
         <span class="q-item">并发 <b>{{ aiStats.workers }}</b></span>
+        <!-- 没配 LLM 时识别链路只跑到「标题/指纹层」，模型那几步被跳过。
+             不显式说明的话，用户会以为系统在慢慢处理，其实是根本没在调模型。 -->
+        <span v-if="aiStats.llmReady === false" class="q-item q-warn">
+          <b>未配置 LLM</b>（仅标题/指纹识别，模型环节已跳过）
+        </span>
         <span v-if="aiStats.llmFail > 0" class="q-item q-fail">模型失败 <b>{{ aiStats.llmFail }}</b></span>
         <span class="q-item q-probe">预计时间 <b>{{ aiEtaLongText }}</b></span>
       </div>
@@ -1279,6 +1284,9 @@ onBeforeUnmount(() => { clearInterval(pollTimer); clearInterval(aiStatsTimer); s
 .queue-bar .q-run b { color: #f59e0b; }
 .queue-bar .q-done b { color: #34d399; }
 .queue-bar .q-fail b { color: #ef4444; }
+/* 未配置 LLM：不是错误，只是说明模型环节未启用，用中性灰避免吓人 */
+.queue-bar .q-warn { color: #6b7280; font-size: 12px; }
+.queue-bar .q-warn b { color: #d97706; }
 .queue-bar .q-probe { margin-left: auto; }
 .queue-bar .q-error { color: #f87171; font-size: 12px; }
 /* 识别条与扫描条并列但语义不同：扫描条用蓝/绿，识别条用琥珀色左边框区分 */

@@ -259,12 +259,19 @@ func fillQueueFromDB(limit int) int {
 }
 
 // StartAIWorkers 服务启动时拉起识别工作池与补给协程。
-// 没有可用 LLM 配置时不做任何事（后续 Enqueue 仍会尝试启动）。
+//
+// 不再依赖「有没有配 LLM」：识别链路的第一层（L0，解析原始 <title>）是纯本地字符串处理，
+// 0 次模型调用。之前这里在没有 LLM 配置时直接 return，导致新用户开箱状态扫完端口后
+// services.ai_need 永远为 true——待识别数永久不归零，用户以为在排队，其实什么都不会发生。
+// 现在 worker 常驻，无 LLM 时它只跑 L0，需要模型的那一步直接跳过（不标失败、不重试）。
 func StartAIWorkers() {
-	if len(llm.AvailableProfiles()) == 0 {
-		return
-	}
 	aiQueueOnce.Do(startAIWorkers)
+}
+
+// AIIdentifyReady 识别链路当前是否真的能跑完整流程：
+// 既要有界面开关，也要有可用的 LLM 配置。L0 不受此约束（见 IdentifyBatchCtx）。
+func AIIdentifyReady() bool {
+	return AIServiceIdentifyEnabled() && len(llm.AvailableProfiles()) > 0
 }
 
 func startAIWorkers() {
@@ -1040,10 +1047,22 @@ func IdentifyBatchCtx(ctx context.Context, svcs []model.Service) []IdentResult {
 	})
 
 	// ---- 第一次批量识别：抓包证据 ----
+	// 没有可用 LLM 时，链路到 L0 为止：抓住包、能定论的定论，定不了的原样返回。
+	// 不标 Failed——「没配模型」不是「识别失败」，标失败会让它进 5 分钟退避的重试环。
+	hasLLM := AIIdentifyReady()
 	var pending []int
 	var evs []identEvidence
 	for i := range preps {
 		if preps[i].settled || ctx.Err() != nil {
+			continue
+		}
+		if !hasLLM {
+			preps[i].settled = true
+			preps[i].res.Reason = "未配置 LLM，仅完成标题与指纹层"
+			preps[i].res.Source = "" // 空来源：写回时不改动 title_source
+			preps[i].stages = append(preps[i].stages, IdentStage{
+				Stage: "AI·识别", Output: "跳过：未配置 LLM（系统配置 → LLM 配置）",
+			})
 			continue
 		}
 		body := scanner.TraceDigestBrief(preps[i].hops)
@@ -1726,13 +1745,14 @@ func ApplyIdentResult(svc model.Service, r IdentResult) bool {
 }
 
 // titleSourceOf 标题来源标记，落库后用于区分「HTML 直取 / 渲染后读 / 模型判定」。
-// 空值按 ai 处理：历史数据里的 title_source 只有 fingerprint/tscan/ai 三种。
+// 返回空串表示"本次没有产生新的标题来源"，调用方不应改动 title_source：
+// 典型场景是未配置 LLM 时链路只跑到 L0，此时把来源写成 ai 就是谎报。
 func titleSourceOf(r IdentResult) string {
 	switch r.Source {
 	case "html", "render", "ai":
 		return r.Source
 	}
-	return "ai"
+	return ""
 }
 
 // recordIdentConversation 一次识别 = 一条会话（v0.0.47 起）。
