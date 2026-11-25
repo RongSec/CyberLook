@@ -15,11 +15,21 @@ import (
 	"asset-platform/internal/scanner"
 	"asset-platform/internal/scheduler"
 	"asset-platform/internal/service"
+	"asset-platform/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	// -version：打印版本/构建时间/提交号后退出。
+	// 用途有二：发布流水线拉回镜像自检（确认推上去的确实是这一版），
+	// 以及现场排障时确认"正在跑的到底是哪个镜像"。
+	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Printf("cyberlook %s (build %s, commit %s)\n",
+			version.Version, version.BuildTime, version.Commit)
+		return
+	}
+
 	// 内网设备常用老式自签证书（负序列号），Go 1.23+ 默认在解析阶段就拒绝，
 	// 连 InsecureSkipVerify 都绕不过去，导致 HTTPS 目标抓不到请求响应包。
 	// 打开兼容开关后 TLS 握手能过，抓包/识别才可用。

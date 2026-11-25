@@ -37,6 +37,8 @@ jobs:
           platforms: linux/amd64
           build-args: |
             VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_id }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/cyberlook:${{ github.ref_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/cyberlook:latest
@@ -52,6 +54,8 @@ jobs:
           platforms: linux/amd64
           build-args: |
             VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_id }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/cyberlook-updater:${{ github.ref_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/cyberlook-updater:latest
@@ -69,11 +73,35 @@ jobs:
           platforms: linux/amd64
           build-args: |
             VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_id }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/cyberlook-agent:${{ github.ref_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/cyberlook-agent:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 发布自检：把刚推上去的镜像重新拉回来，让它自报版本与提交号。
+      #
+      # 为什么必须有这一步：CI 显示 success 只代表 push 请求被接受。曾经出现过
+      # Docker Hub 上的 tag 内容其实是上一版（tag 同名、digest 未变），而流水线全绿——
+      # 用户在本地拉到的仍是旧镜像，排查方向全错。
+      # 现在的判据是镜像里二进制的 -version 输出：版本号 + 提交号都对得上才算发布成功。
+      - name: 发布自检（拉回镜像校验版本与提交号）
+        run: |
+          set -e
+          IMG="${{ secrets.DOCKERHUB_USERNAME }}/cyberlook:${{ github.ref_name }}"
+          echo "== 拉回 $IMG =="
+          docker pull "$IMG"
+          docker images --digests "$IMG"
+          OUT=$(docker run --rm --entrypoint /app/asset-server "$IMG" -version)
+          echo "镜像内自报: $OUT"
+
+          VER="${{ github.ref_name }}"; VER="${VER#v}"
+          SHA="${{ github.sha }}"; SHA="${SHA:0:7}"
+          echo "$OUT" | grep -q "$VER" || { echo "::error::版本号不匹配（期望 $VER）"; exit 1; }
+          echo "$OUT" | grep -q "$SHA" || { echo "::error::提交号不匹配（期望 $SHA）——推上去的不是这次构建"; exit 1; }
+          echo "自检通过：$VER / $SHA"
 
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2

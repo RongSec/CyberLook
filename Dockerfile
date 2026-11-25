@@ -16,6 +16,10 @@ RUN npm run build
 FROM ${GO_IMAGE} AS go-builder
 # 版本号由构建参数注入（CI 传 tag，本地构建传 APP_VERSION）
 ARG VERSION=dev
+# 构建时间与提交号：`asset-server -version` 会打印出来，
+# 发布流水线用它拉回镜像自检，确认推上去的确实是这一次构建。
+ARG COMMIT=dev
+ARG BUILD_TIME=dev
 # 分发的 agent 架构。默认全量（发布用）；
 # 本地快速迭代传 --build-arg AGENT_ARCHES=amd64 —— 交叉编译 sqlite(modernc)
 # 单架构就要几分钟，5 个架构在 4 核机器上会跑到 20~40 分钟。
@@ -31,12 +35,12 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY migrations ./migrations
 RUN set -eux; \
-    go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/asset-server ./cmd/server; \
+    go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/asset-server ./cmd/server; \
     for a in ${AGENT_ARCHES}; do \
       case "$a" in \
-        windows) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-windows.exe ./cmd/agent ;; \
-        mipsle)  GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-mipsle ./cmd/agent ;; \
-        *)       GOOS=linux GOARCH=$a go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v}" -o /out/scope-agent-linux-$a ./cmd/agent ;; \
+        windows) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/scope-agent-windows.exe ./cmd/agent ;; \
+        mipsle)  GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/scope-agent-linux-mipsle ./cmd/agent ;; \
+        *)       GOOS=linux GOARCH=$a go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/scope-agent-linux-$a ./cmd/agent ;; \
       esac; \
     done
 
