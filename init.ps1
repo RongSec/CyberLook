@@ -59,13 +59,27 @@ if (!(Test-Path ".env")) {
 }
 
 # 2. 解析版本
+# 不只用 /releases/latest：该指针可能被指回旧版本（标签 force-update 后），
+# 而旧版本没有对应镜像，用户只会看到「拉取失败」。改为按语义化版本取最大值。
 $curVer = (Select-String -Path ".env" -Pattern "^APP_VERSION=(.*)$" -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Groups[1].Value
 if ([string]::IsNullOrEmpty($curVer)) {
     $Latest = $null
     try {
-        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/RongSec/CyberLook/releases/latest" -TimeoutSec 8
-        $Latest = $rel.tag_name
+        $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/RongSec/CyberLook/releases?per_page=15" -TimeoutSec 10
+        $vers = @($rels | Where-Object { $_.tag_name -match '^v?\d+\.\d+\.\d+$' } | ForEach-Object {
+            [pscustomobject]@{
+                Tag = $_.tag_name
+                Key = [version](($_.tag_name -replace '^v',''))
+            }
+        } | Sort-Object Key -Descending)
+        if ($vers.Count -gt 0) { $Latest = $vers[0].Tag }
     } catch { }
+    if (-not $Latest) {
+        try {
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/RongSec/CyberLook/releases/latest" -TimeoutSec 8
+            $Latest = $rel.tag_name
+        } catch { }
+    }
     $ver = if ($Latest) { $Latest } else { "latest" }
 
     $envLines = Get-Content ".env" -Encoding UTF8

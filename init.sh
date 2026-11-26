@@ -48,10 +48,22 @@ else
 fi
 
 # ---------- 2. 解析版本 ----------
+# 为什么不只用 /releases/latest：
+#   1) 该指针由 GitHub 维护，标签被 force-update 时它可能指回旧版本；
+#   2) 旧版本没有对应镜像 → 用户会看到「镜像拉取失败」，而真实原因是版本选错。
+# 因此改为「取最近 15 个正式 release，按语义化版本排序取最大」，latest 仅作兜底。
 CUR_VER=$(grep '^APP_VERSION=' .env 2>/dev/null | head -1 | cut -d= -f2)
 if [ -z "$CUR_VER" ]; then
-    LATEST=$(curl -sf --max-time 8 https://api.github.com/repos/RongSec/CyberLook/releases/latest 2>/dev/null \
-        | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    LATEST=$(curl -sf --max-time 10 "https://api.github.com/repos/RongSec/CyberLook/releases?per_page=15" 2>/dev/null \
+        | tr ',' '\n' | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"/\1/' \
+        | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    if [ -n "$LATEST" ]; then
+        LATEST="v$LATEST"
+    else
+        LATEST=$(curl -sf --max-time 8 https://api.github.com/repos/RongSec/CyberLook/releases/latest 2>/dev/null \
+            | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+    fi
     VER=${LATEST:-latest}
     if grep -q '^APP_VERSION=' .env; then
         sed -i "s|^APP_VERSION=.*|APP_VERSION=$VER|" .env
