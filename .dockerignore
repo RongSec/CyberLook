@@ -10,3 +10,15 @@ data/*
 .git
 .workbuddy
 *.log
+
+# 本机配置与密钥：绝对不能进构建上下文
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+*.bundle
+
+# 文档与截图不进镜像
+docs
