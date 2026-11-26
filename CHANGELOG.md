@@ -9,6 +9,48 @@
 
 ---
 
+## [1.0.4] - 2026-11-26（防泄漏三道闸门 + 发布自检脚本）
+
+### 新增：提交前密钥扫描（`.githooks/pre-commit`）
+
+拦截两类：按文件名（`.env`、`*.pem`、`*.key`、`*.bundle`、`jwt.secret`）和按内容
+（各家云厂商 key、GitHub/DockerHub token、私钥头、JWT）。纯 shell 实现，不依赖联网装工具；
+装了 gitleaks 会额外再跑一遍更全的规则。
+
+启用一行：`git config core.hooksPath .githooks`
+
+### 新增：`scripts/audit-clean.sh`（发布前自检）
+
+四段检查：工作区文件、本机敏感文件、**全部 Git 历史**、**镜像内容**。
+
+```bash
+bash scripts/audit-clean.sh --history --image rongsec/cyberlook:v1.0.4
+```
+
+判定口径（避免噪音，同时不漏真泄漏）：
+- 私网地址只查 Markdown/文档/脚本/compose 这类「会给人看的」载体；
+  Go 单测里的 `10.55.0.x` 是合成数据，查它没有意义
+- `10.0.0.x` / `10.1.1.x` 视为公认示例地址；RFC 5737 / RFC 2544 文档保留段直接放行
+- 第三方指纹规则库（`data/fingerprint/`）不参与，里面全是第三方作者信息
+- 想强制查本单位网段：`SENSITIVE_RANGES='10\.24\.'`
+
+脚本有正负样本自测过：含真实网段/密钥/邮箱/本机路径的临时仓库能全部检出，
+本仓库自身返回 0。
+
+### 新增：CI 侧同源扫描（`.github/workflows/secret-scan.yml`）
+
+每次 push / PR 跑同一份脚本（`fetch-depth: 0`，否则历史扫描会静默失效），
+外加 gitleaks 官方 action 作补充。
+
+### 变更：仓库开启 GitHub 密钥扫描与推送保护
+
+Secret Scanning 与 Push Protection 已启用：平台识别的凭据在 `git push` 阶段就会被拒绝，
+不依赖本地是否装了钩子。
+
+### 文档：README 8.2.1 说明三道闸门
+
+---
+
 ## [1.0.3] - 2026-11-26（升级链自洽：版本自动跟随、旧控制器可见）
 
 ### 修复：`init.sh` 不会把已存在的 `.env` 升到新版本

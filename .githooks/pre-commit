@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# 提交前密钥扫描。
+#
+# 为什么用纯 shell 而不是 gitleaks：
+#   1) 这套仓库要在内网/离线机器上开发，不能依赖联网装二进制；
+#   2) 真正要挡的是「明文密钥被 add 进来」这一类，规则固定、可枚举。
+# 装了 gitleaks 就额外跑一遍（规则更全），没装也不影响拦截。
+#
+# 启用：git config core.hooksPath .githooks
+
+RED='\033[31m'; YEL='\033[33m'; GRN='\033[32m'; RST='\033[0m'
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# ---------- 1. 按文件名拦截 ----------
+blocked_names='(^|/)\.env$|(^|/)\.env\.(local|prod|production|staging)$|\.pem$|\.p12$|\.pfx$|(^|/)id_rsa$|(^|/)id_ed25519$|\.bundle$|(^|/)jwt\.secret$'
+hits=$(printf '%s\n' "$staged" | grep -Ei "$blocked_names" || true)
+if [ -n "$hits" ]; then
+    echo -e "${RED}❌ 这些文件不该进仓库：${RST}"
+    printf '   %s\n' $hits
+    echo "   配置模板请用 .env.example；备份/密钥请放 data/ 并确认已被 .gitignore 覆盖。"
+    fail=1
+fi
+
+# ---------- 2. 按内容拦截 ----------
+# 只扫文本文件；大文件跳过
+patterns='sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|dckr_pat_[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----|eyJhbGciOi[A-Za-z0-9_-]{20,}'
+while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    # 跳过二进制与超大文件（>1MB）
+    if file -b "$f" 2>/dev/null | grep -qiE 'binary|image|font|archive'; then continue; fi
+    sz=$(wc -c < "$f" 2>/dev/null || echo 0)
+    [ "$sz" -gt 1048576 ] && continue
+    m=$(grep -nEI "$patterns" "$f" 2>/dev/null | head -3)
+    if [ -n "$m" ]; then
+        echo -e "${RED}❌ $f 里疑似硬编码密钥：${RST}"
+        printf '%s\n' "$m" | sed 's/^/   /' | cut -c1-140
+        fail=1
+    fi
+done <<EOF
+$staged
+EOF
+
+# ---------- 3. 装了 gitleaks 就再跑一遍 ----------
+if command -v gitleaks >/dev/null 2>&1; then
+    if ! gitleaks protect --staged --redact --no-banner --config .gitleaks.toml >/tmp/_gl.$$ 2>&1; then
+        echo -e "${RED}❌ gitleaks 命中：${RST}"
+        sed 's/^/   /' /tmp/_gl.$$ | tail -15
+        fail=1
+    fi
+    rm -f /tmp/_gl.$$
+fi
+
+if [ "$fail" = "1" ]; then
+    echo -e "${YEL}提交已阻止。确认是误报时，把该行写进 .gitleaks.toml 的 allowlist，或改用占位值。${RST}"
+    exit 1
+fi
+
+echo -e "${GRN}✓ 密钥扫描通过${RST}"
+exit 0

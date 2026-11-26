@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-1.0.3-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-1.0.4-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />
@@ -462,6 +462,34 @@ echo "REGISTRY=harbor.example.com/library" >> .env
 
 `.gitignore` 已覆盖 `.env`、`.env.*`、`*.key`、`*.secret`、`*.pem`、`jwt.secret`；
 如果你新增了别的敏感文件，先确认 `git status` 里看不到它。
+
+### 8.2.1 防止敏感信息入库：三道闸门
+
+`.gitignore` 只挡未来的文件，挡不住已经提交过的历史，也挡不住编译进镜像的字符串。
+本仓库用三层拦截，任何一层命中都不该继续发布：
+
+| 闸门 | 位置 | 挡什么 | 怎么启用 |
+|---|---|---|---|
+| 提交前 | `.githooks/pre-commit` | 密钥、`.env`、私钥、`.bundle` | `git config core.hooksPath .githooks` |
+| 推送时 | GitHub Push Protection | 平台识别的凭据（PAT、云密钥等） | 仓库 Settings → Code security 开启 |
+| 发布前 | `scripts/audit-clean.sh` | 文档里的私网地址、本机路径、非占位邮箱、历史、镜像 | 见下 |
+
+```bash
+# 发布前跑一次（约 15 秒，含全量历史）
+bash scripts/audit-clean.sh --history --image rongsec/cyberlook:v1.0.3
+
+# 加了新关键词（比如你单位的网段名）可以临时追加
+EXTRA_PATTERNS='某公司|某系统' bash scripts/audit-clean.sh
+
+# 想强制全仓库查自己单位的网段
+SENSITIVE_RANGES='10\.24\.|10\.188\.' bash scripts/audit-clean.sh
+```
+
+脚本输出四段：工作区文件、本机敏感文件、Git 历史、镜像内容；有命中就返回非 0。
+CI 里 `secret-scan.yml` 跑同一份脚本，规则只维护一处。
+
+**为什么镜像也要扫**：源码注释里的一句「示例：10.x.x.0/24」会被编译进二进制，
+`docker run --rm <镜像> sh -c 'grep ...'` 就能读出来。扫源码干净不等于发布物干净。
 
 ### 8.3 升级
 

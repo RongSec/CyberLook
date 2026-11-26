@@ -1,0 +1,31 @@
+# gitleaks 配置：只做「阻止明文密钥进仓库」这一件事。
+# 没有安装 gitleaks 时，.githooks/pre-commit 里的纯 shell 规则仍然生效。
+
+[extend]
+# 保留官方默认规则（各家云厂商 key、私钥、JWT 等）
+useDefault = true
+
+[[allowlists]]
+description = "指纹规则库与第三方数据，不是凭据"
+paths = [
+  '''data/fingerprint/.*''',
+  '''docs/images/.*''',
+]
+
+[[allowlists]]
+description = "示例与占位值"
+regexTarget = "match"
+regexes = [
+  '''(?i)example''',
+  '''(?i)placeholder''',
+  '''(?i)your[-_]?key''',
+  '''(?i)changeme''',
+  '''<[A-Z_]+>''',
+]
+
+[[allowlists]]
+description = "审计脚本自身的规则表"
+paths = [
+  '''scripts/audit-clean\.sh''',
+  '''\.githooks/.*''',
+]
