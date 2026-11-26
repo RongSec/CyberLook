@@ -73,14 +73,21 @@ report_hits() {
 
 # --- 私网地址 ---
 # 只查「会给人看的」载体：Markdown、文档、脚本、compose/模板。
-# Go 测试里的 10.55.0.1 这类是合成数据，不代表任何真实网段，查它只会制造噪音；
+# Go 测试里的 10.55.0.x 这类是合成数据，不代表任何真实网段，查它只会制造噪音；
 # 历史上真正的泄漏（内网段写进 CHANGELOG）恰好都在这类文档里。
 # 想强制全仓库查你单位的网段：SENSITIVE_RANGES='10\.24\.|10\.188\.'
 if [ -n "${SENSITIVE_RANGES:-}" ]; then
     ip_hits=$(git grep -nIE "$SENSITIVE_RANGES" -- . 2>/dev/null | grep -vE "^${SKIP_ALT}")
     report_hits "命中指定敏感网段" "$ip_hits"
 else
-    ip_all=$(git grep -hoIE "$RE_IP" -- '*.md' '*.sh' '*.ps1' '*.yml' '*.yaml' '*.example' 'docs' 2>/dev/null | sort -u)
+    ip_all=$(git grep -hoIE "$RE_IP" -- '*.md' '*.sh' '*.ps1' '*.yml' '*.yaml' '*.example' 'docs' 2>/dev/null \
+        | sort -u | grep -vE "^($ALLOW_IPS)$" | grep -vE "^($RE_DOC_IP)$" | grep -v '^$' || true)
+    # 脚本/钩子自身必然含地址样例，按路径剔除（-h 去掉了文件名，这里用反向思路：整文件跳过）
+    ip_all=$(printf '%s\n' "$ip_all" | while read -r _ip; do
+        [ -z "$_ip" ] && continue
+        if git grep -lIE "$_ip" -- '*.md' '*.sh' '*.ps1' '*.yml' '*.yaml' '*.example' 'docs' 2>/dev/null \
+             | grep -vE "^${SKIP_ALT}" | grep -q .; then printf '%s\n' "$_ip"; fi
+      done | sort -u)
     ip_bad=$(printf '%s\n' "$ip_all" | grep -vE "^($ALLOW_IPS)$" | grep -vE "^($RE_DOC_IP)$" | grep -v '^$' || true)
     if [ -n "$ip_bad" ]; then
         say "${RED}  文档/脚本里的私网地址（非文档保留段、非公认示例）${RST}"
