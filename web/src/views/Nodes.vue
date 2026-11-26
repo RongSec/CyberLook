@@ -8,7 +8,8 @@
             控制文件指纹 {{ latestVersion || '读取中…' }}
           </n-tag>
           <span class="muted" style="font-size:12px">
-            指纹 = 控制文件内容哈希，agent 代码没变就不会变；不一致时节点会在下次心跳自动更新
+            指纹 = 控制文件内容哈希，agent 代码没变就不会变；不一致时节点会在下次心跳自动更新。
+            容器节点更新的是容器内的副本，<b>重建容器会回到镜像版本</b>——要长期生效请更新镜像（`docker compose pull`）
           </span>
         </div>
       </template>
@@ -201,10 +202,16 @@ const columns = [
     title: '控制文件指纹', key: 'agentVersion', width: 150,
     render: row => {
       const v = row.agentVersion || '-'
+      // 旧控制器（v1.0.0 及更早）上报的是平台版本号（1.0.0），不是内容指纹。
+      // 这种节点必须更新一次控制器，否则永远对不上指纹。
+      const legacy = /^v?\d+\.\d+\.\d+$/.test(v)
       const outdated = v !== '-' && latestVersion.value && v !== latestVersion.value
+      const color = legacy ? '#ef4444' : (outdated ? '#f59e0b' : '#22c55e')
+      const text = legacy ? `${v} (旧控制器)` : (outdated ? `${v} (旧)` : v)
       return h('span', {
-        style: `font-family:monospace;font-size:12px;color:${outdated ? '#f59e0b' : '#22c55e'}`
-      }, outdated ? `${v} (旧)` : v)
+        style: `font-family:monospace;font-size:12px;color:${color}`,
+        title: legacy ? '旧版控制器上报的是平台版本号，没有内容指纹；点右侧「更新控制文件」' : ''
+      }, text)
     }
   },
   { title: '最近心跳', key: 'lastHeartbeat', width: 180, render: r => fmt(r.lastHeartbeat) },

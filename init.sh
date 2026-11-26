@@ -52,28 +52,44 @@ fi
 #   1) 该指针由 GitHub 维护，标签被 force-update 时它可能指回旧版本；
 #   2) 旧版本没有对应镜像 → 用户会看到「镜像拉取失败」，而真实原因是版本选错。
 # 因此改为「取最近 15 个正式 release，按语义化版本排序取最大」，latest 仅作兜底。
-CUR_VER=$(grep '^APP_VERSION=' .env 2>/dev/null | head -1 | cut -d= -f2)
-if [ -z "$CUR_VER" ]; then
-    LATEST=$(curl -sf --max-time 10 "https://api.github.com/repos/RongSec/CyberLook/releases?per_page=15" 2>/dev/null \
+#
+# 另一个坑：.env 一旦写入 APP_VERSION 就再也不会变。用户升级时只跑 init.sh，
+# compose 仍按旧版本拉镜像 —— 表现为「服务端是新的、节点还是旧的」「点更新控制文件没反应」。
+# 所以这里默认跟随最新版；要锁版本就在 .env 里写 PIN_VERSION=1。
+resolve_latest() {
+    _v=$(curl -sf --max-time 10 "https://api.github.com/repos/RongSec/CyberLook/releases?per_page=15" 2>/dev/null \
         | tr ',' '\n' | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"/\1/' \
         | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
         | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
-    if [ -n "$LATEST" ]; then
-        LATEST="v$LATEST"
-    else
-        LATEST=$(curl -sf --max-time 8 https://api.github.com/repos/RongSec/CyberLook/releases/latest 2>/dev/null \
-            | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/')
-    fi
+    if [ -n "$_v" ]; then printf 'v%s' "$_v"; return; fi
+    curl -sf --max-time 8 https://api.github.com/repos/RongSec/CyberLook/releases/latest 2>/dev/null \
+        | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"/\1/'
+}
+
+CUR_VER=$(grep '^APP_VERSION=' .env 2>/dev/null | head -1 | cut -d= -f2)
+PIN=$(grep '^PIN_VERSION=' .env 2>/dev/null | head -1 | cut -d= -f2)
+LATEST=$(resolve_latest)
+
+VER="$CUR_VER"
+if [ -z "$CUR_VER" ]; then
     VER=${LATEST:-latest}
+    [ -n "$LATEST" ] && echo "🔖 最新版本: $LATEST" || echo "🔖 无法查询最新版本（网络受限），使用 latest"
+elif [ "$PIN" = "1" ]; then
+    echo "📌 已锁定版本: $CUR_VER（PIN_VERSION=1）"
+elif [ -n "$LATEST" ] && [ "$CUR_VER" != "$LATEST" ]; then
+    # 只升不降：以上限排序比较，避免网络返回旧版本时把已经升上去的环境降级
+    NEWEST=$(printf '%s\n%s\n' "${CUR_VER#v}" "${LATEST#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    if [ "$NEWEST" = "${LATEST#v}" ]; then
+        echo "🔁 版本跟随：$CUR_VER → $LATEST"
+        VER=$LATEST
+    fi
+fi
+
+if [ "$VER" != "$CUR_VER" ]; then
     if grep -q '^APP_VERSION=' .env; then
         sed -i "s|^APP_VERSION=.*|APP_VERSION=$VER|" .env
     else
         echo "APP_VERSION=$VER" >> .env
-    fi
-    if [ -n "$LATEST" ]; then
-        echo "🔖 最新版本: $LATEST"
-    else
-        echo "🔖 无法查询最新版本（网络受限），使用 latest"
     fi
 fi
 APP_VERSION=$(grep '^APP_VERSION=' .env | head -1 | cut -d= -f2)

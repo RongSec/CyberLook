@@ -61,16 +61,14 @@ if (!(Test-Path ".env")) {
 # 2. 解析版本
 # 不只用 /releases/latest：该指针可能被指回旧版本（标签 force-update 后），
 # 而旧版本没有对应镜像，用户只会看到「拉取失败」。改为按语义化版本取最大值。
-$curVer = (Select-String -Path ".env" -Pattern "^APP_VERSION=(.*)$" -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Groups[1].Value
-if ([string]::IsNullOrEmpty($curVer)) {
+# 另：.env 里的 APP_VERSION 默认跟随最新版（否则升级后 compose 仍按旧版本拉镜像，
+# 表现为「服务端新的、节点还是旧的」）；要锁版本在 .env 写 PIN_VERSION=1。
+function Get-LatestVer {
     $Latest = $null
     try {
         $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/RongSec/CyberLook/releases?per_page=15" -TimeoutSec 10
         $vers = @($rels | Where-Object { $_.tag_name -match '^v?\d+\.\d+\.\d+$' } | ForEach-Object {
-            [pscustomobject]@{
-                Tag = $_.tag_name
-                Key = [version](($_.tag_name -replace '^v',''))
-            }
+            [pscustomobject]@{ Tag = $_.tag_name; Key = [version](($_.tag_name -replace '^v','')) }
         } | Sort-Object Key -Descending)
         if ($vers.Count -gt 0) { $Latest = $vers[0].Tag }
     } catch { }
@@ -80,8 +78,30 @@ if ([string]::IsNullOrEmpty($curVer)) {
             $Latest = $rel.tag_name
         } catch { }
     }
-    $ver = if ($Latest) { $Latest } else { "latest" }
+    return $Latest
+}
 
+$curVer = (Select-String -Path ".env" -Pattern "^APP_VERSION=(.*)$" -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Groups[1].Value
+$pinVer = (Select-String -Path ".env" -Pattern "^PIN_VERSION=(.*)$" -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Groups[1].Value
+$Latest = Get-LatestVer
+$ver = $curVer
+
+if ([string]::IsNullOrEmpty($curVer)) {
+    $ver = if ($Latest) { $Latest } else { "latest" }
+    if ($Latest) { Write-Host "VER: 最新版本 $Latest" -ForegroundColor Cyan }
+    else { Write-Host "VER: 无法查询最新版本（网络受限），使用 latest" -ForegroundColor Yellow }
+} elseif ($pinVer -eq "1") {
+    Write-Host "VER: 已锁定版本 $curVer（PIN_VERSION=1）" -ForegroundColor Cyan
+} elseif ($Latest -and $curVer -ne $Latest) {
+    $a = [version]($curVer -replace '^v','')
+    $b = [version]($Latest -replace '^v','')
+    if ($b -gt $a) {
+        Write-Host "VER: 版本跟随 $curVer -> $Latest" -ForegroundColor Cyan
+        $ver = $Latest
+    }
+}
+
+if ($ver -ne $curVer) {
     $envLines = Get-Content ".env" -Encoding UTF8
     if ($envLines | Where-Object { $_ -match '^APP_VERSION=' }) {
         $envLines = $envLines | ForEach-Object { if ($_ -match '^APP_VERSION=') { "APP_VERSION=$ver" } else { $_ } }
@@ -90,9 +110,6 @@ if ([string]::IsNullOrEmpty($curVer)) {
     } else {
         Add-Content -Path ".env" -Value "APP_VERSION=$ver" -Encoding ASCII
     }
-
-    if ($Latest) { Write-Host "VER: 最新版本 $Latest" -ForegroundColor Cyan }
-    else { Write-Host "VER: 无法查询最新版本（网络受限），使用 latest" -ForegroundColor Yellow }
 }
 
 # 3. 拉镜像
