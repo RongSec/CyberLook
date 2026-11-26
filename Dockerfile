@@ -38,9 +38,9 @@ RUN set -eux; \
     go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/asset-server ./cmd/server; \
     for a in ${AGENT_ARCHES}; do \
       case "$a" in \
-        windows) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/scope-agent-windows.exe ./cmd/agent ;; \
-        mipsle)  GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/scope-agent-linux-mipsle ./cmd/agent ;; \
-        *)       GOOS=linux GOARCH=$a go build -trimpath -ldflags="-s -w -X asset-platform/internal/version.Version=${VERSION#v} -X asset-platform/internal/version.Commit=${COMMIT} -X asset-platform/internal/version.BuildTime=${BUILD_TIME}" -o /out/scope-agent-linux-$a ./cmd/agent ;; \
+        windows) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/scope-agent-windows.exe ./cmd/agent ;; \
+        mipsle)  GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux-mipsle ./cmd/agent ;; \
+        *)       GOOS=linux GOARCH=$a go build -trimpath -ldflags="-s -w" -o /out/scope-agent-linux-$a ./cmd/agent ;; \
       esac; \
     done
 

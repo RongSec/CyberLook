@@ -63,7 +63,7 @@ func main() {
 
 	// 初始化数据库（失败仅告警，便于开发阶段先起服务）
 	config.LatestAgentVersion = config.ComputeAgentVersion()
-	log.Printf("[agent] 当前控制文件版本: %s", config.LatestAgentVersion)
+	log.Printf("[agent] 当前控制文件指纹: %s", config.LatestAgentVersion)
 
 	if err := config.InitDB(cfg.PGDSN); err != nil {
 		log.Printf("[warn] PostgreSQL 连接失败（服务仍会启动，DB 相关接口暂不可用）: %v", err)

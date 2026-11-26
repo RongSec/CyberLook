@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,7 +31,6 @@ import (
 	_ "time/tzdata"
 
 	"asset-platform/internal/scanner"
-	"asset-platform/internal/version"
 	"github.com/RongSec/CyberLook-Scan/portscan"
 )
 
@@ -202,8 +203,27 @@ func agentReq(method, url string, body []byte) (*http.Response, error) {
 }
 
 // selfVersion 自身二进制的版本（数字版本号）
+// selfVersion 返回自身二进制的内容指纹（SHA256 前 8 位）。
+//
+// 与平台版本号解耦：只有 agent 代码真的变了，指纹才会变。
+// 之前上报的是 version.Version（平台版本），平台每发一版——哪怕只改了 server
+// 的识别逻辑——重新构建的 agent 二进制里都带着新版本串，全集群节点就被判定
+// 「控制文件需要升级」，白下载 11MB 再重启一轮。
 func selfVersion() string {
-	return version.Version
+	exe, err := os.Executable()
+	if err != nil {
+		return "unknown"
+	}
+	f, err := os.Open(exe)
+	if err != nil {
+		return "unknown"
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(h.Sum(nil))[:8]
 }
 
 var myVersion = "unknown"
@@ -1368,7 +1388,7 @@ func doHeartbeat() {
 	if projects == nil {
 		projects = []string{}
 	}
-	body, _ := json.Marshal(map[string]interface{}{"version": myVersion, "projects": projects})
+	body, _ := json.Marshal(map[string]interface{}{"version": myVersion, "arch": runtime.GOARCH, "projects": projects})
 	resp, err := agentReq("POST", fmt.Sprintf("%s/api/nodes/%d/heartbeat", *serverURL, nodeID), body)
 	if err != nil {
 		return

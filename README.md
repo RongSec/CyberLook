@@ -3,7 +3,7 @@
   <h1>未见 · CyberLook</h1>
   <p><em>见你未见 · 照你所患</em></p>
   <p>
-    <img src="https://img.shields.io/badge/version-1.0.0-blue" alt="version" />
+    <img src="https://img.shields.io/badge/version-1.0.1-blue" alt="version" />
     <img src="https://img.shields.io/badge/Go-1.26-00ADD8" alt="go" />
     <img src="https://img.shields.io/badge/Vue-3-4FC08D" alt="vue" />
     <img src="https://img.shields.io/badge/PostgreSQL-16-336791" alt="postgres" />
@@ -409,6 +409,9 @@ Windows 用等价的 `.\init.ps1`（需 Docker Desktop）。
 - **LLM 在界面里配**：「系统配置 → LLM 配置」填 Base URL / API Key / 模型名，不用改 `.env`
 - **节点加入**：在「节点」页复制一键脚本；也可 `docker run`，或裸机运行
   `scope-agent -server http://<server>:18888 -name <节点名>`
+- **节点升级是全自动的**：节点每次心跳上报自己二进制的 SHA256 前 8 位（控制文件指纹），
+  与服务端内置的同架构副本比对，不一致就在下次心跳自动下载替换并重启，**不需要手动点**。
+  关键是这个指纹只随 agent 代码变化——平台发补丁版本时节点不会被动升级。
 
 ### 8.1 三个镜像
 

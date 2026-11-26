@@ -5,9 +5,11 @@
         <div style="display:flex;align-items:center;gap:10px">
           <span>扫描节点</span>
           <n-tag type="info" size="small" :bordered="false" style="font-family:monospace">
-            控制文件最新版 {{ latestVersion || '读取中…' }}
+            控制文件指纹 {{ latestVersion || '读取中…' }}
           </n-tag>
-          <span class="muted" style="font-size:12px">节点版本与此不一致时，点该行「更新控制文件」</span>
+          <span class="muted" style="font-size:12px">
+            指纹 = 控制文件内容哈希，agent 代码没变就不会变；不一致时节点会在下次心跳自动更新
+          </span>
         </div>
       </template>
       <n-data-table :columns="columns" :data="nodes" :loading="loading" size="small" />
@@ -196,7 +198,7 @@ const columns = [
   // 并发由智能调速决定、超时由任务决定，节点上不再有扫描参数可配
   { title: '并发', key: 'concurrency', width: 90, render: () => '自动调速' },
   {
-    title: '控制文件版本', key: 'agentVersion', width: 150,
+    title: '控制文件指纹', key: 'agentVersion', width: 150,
     render: row => {
       const v = row.agentVersion || '-'
       const outdated = v !== '-' && latestVersion.value && v !== latestVersion.value

@@ -103,6 +103,19 @@ jobs:
           echo "$OUT" | grep -q "$SHA" || { echo "::error::提交号不匹配（期望 $SHA）——推上去的不是这次构建"; exit 1; }
           echo "自检通过：$VER / $SHA"
 
+          # 控制文件一致性：主镜像内置的 amd64 agent 必须与 agent 镜像里的那份逐字节相同。
+          # 不一致的后果很具体：容器节点每次心跳都被判定「控制文件需要升级」，
+          # 升级写进容器可写层，容器一重建又回到镜像里那份，形成升级-回滚循环。
+          # 两边都用 `-trimpath -ldflags="-s -w"`（不注入平台版本），构建可复现，所以必须相等。
+          AGENT_IMG="${{ secrets.DOCKERHUB_USERNAME }}/cyberlook-agent:${{ github.ref_name }}"
+          docker pull "$AGENT_IMG"
+          SHA_MAIN=$(docker run --rm --entrypoint sha256sum "$IMG" /app/agent/scope-agent-linux-amd64 | cut -d' ' -f1)
+          SHA_AGENT=$(docker run --rm --entrypoint sha256sum "$AGENT_IMG" /app/scope-agent | cut -d' ' -f1)
+          echo "主镜像内置 amd64: $SHA_MAIN"
+          echo "节点镜像内:       $SHA_AGENT"
+          [ "$SHA_MAIN" = "$SHA_AGENT" ] || { echo "::error::两个镜像的 agent 二进制不一致，容器节点会被误判需升级"; exit 1; }
+          echo "控制文件指纹自检通过：${SHA_MAIN:0:8}"
+
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:

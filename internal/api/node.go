@@ -61,6 +61,7 @@ func Heartbeat(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var req struct {
 		Version  string   `json:"version"`
+		Arch     string   `json:"arch"` // 节点架构，决定比对哪个控制文件副本的指纹
 		Projects []string `json:"projects"`
 	}
 	_ = c.ShouldBindJSON(&req)
@@ -80,10 +81,12 @@ func Heartbeat(c *gin.Context) {
 	// 这样即使节点上报的版本号有误（曾被降级过），也能强制拉回最新二进制
 	var node model.Node
 	needUpgrade := false
+	// 按节点架构比对：服务端内置 5 个架构的控制文件，指纹各不相同
+	latest := config.AgentVersionFor(req.Arch)
 	if err := config.DB.First(&node, id).Error; err == nil {
-		latest := config.ComputeAgentVersion()
-		// 自动比对版本：上报版本与服务端内置版本不一致就自动下发升级
-		if req.Version != "" && req.Version != latest {
+		// 自动比对内容指纹：不一致（agent 代码真的变了）才下发升级。
+		// 指纹是二进制 SHA256 前 8 位，与平台版本号无关——平台发补丁版不再惊动全集群。
+		if req.Version != "" && latest != "unknown" && req.Version != latest {
 			needUpgrade = true
 		}
 		// 手动标记升级也触发
@@ -96,7 +99,7 @@ func Heartbeat(c *gin.Context) {
 		"message":       "ok",
 		"upgrade":       needUpgrade,
 		"uninstall":     node.UninstallReq,
-		"latestVersion": config.ComputeAgentVersion(),
+		"latestVersion": latest,
 	})
 }
 
